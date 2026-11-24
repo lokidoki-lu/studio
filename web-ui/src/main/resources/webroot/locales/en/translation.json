@@ -86,8 +86,8 @@
       "purging": "Removing old packs...",
       "purged": "{{count}} entry removed, {{size}} freed.",
       "purged_plural": "{{count}} entries removed, {{size}} freed.",
-      "partial": "{{count}} entry removed ({{size}} freed); {{failed}} not removed because it is no longer an old pack or could not be deleted.",
-      "partial_plural": "{{count}} entries removed ({{size}} freed); {{failed}} not removed because they are no longer old packs or could not be deleted.",
+      "partial": "{{count}} entry removed ({{size}} freed); {{failed}} not removed: no longer old, or could not be deleted.",
+      "partial_plural": "{{count}} entries removed ({{size}} freed); {{failed}} not removed: no longer old, or could not be deleted.",
       "purgingFailed": "Failed to remove old packs."
     }
   },

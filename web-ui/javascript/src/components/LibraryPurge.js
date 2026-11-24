@@ -30,6 +30,8 @@ class LibraryPurge extends React.Component {
         super(props);
         this.state = {
             searching: false,
+            // A purge under way: until it ends, a new search could list what is being deleted
+            purging: false,
             candidates: null,
             selection: {}
         };
@@ -43,7 +45,7 @@ class LibraryPurge extends React.Component {
 
     onSearch = () => {
         const { t } = this.props;
-        if (this.state.searching) {
+        if (this.state.searching || this.state.purging) {
             return;
         }
         this.setState({searching: true});
@@ -85,6 +87,7 @@ class LibraryPurge extends React.Component {
         }
         // Close first, so a second click cannot send a second request
         this.dismiss();
+        this.setState({purging: true});
         const toastId = toast(t('libraryPurge.toasts.purging'), { autoClose: false });
         purgeLibrary(paths)
             .then(response => {
@@ -102,6 +105,7 @@ class LibraryPurge extends React.Component {
             })
             .finally(() => {
                 // Whatever happened, show the library as it now is
+                this.setState({purging: false});
                 this.props.refreshLibrary();
             });
     };
@@ -150,7 +154,7 @@ class LibraryPurge extends React.Component {
                       content={content}
                       buttons={[
                           { label: t('libraryPurge.cancel'), onClick: this.dismiss },
-                          { label: `${t('libraryPurge.confirm')} (${count})`, onClick: this.onConfirm }
+                          { label: `${t('libraryPurge.confirm')} (${count})`, onClick: this.onConfirm, disabled: count === 0 }
                       ]}
                       onClose={this.dismiss}
         />;
@@ -160,7 +164,7 @@ class LibraryPurge extends React.Component {
         const { t } = this.props;
         return <>
             <span title={t('libraryPurge.button')}
-                  className={`btn btn-default glyphicon glyphicon-erase library-purge-button ${this.state.searching ? 'disabled' : ''}`}
+                  className={`btn btn-default glyphicon glyphicon-erase library-purge-button ${this.state.searching || this.state.purging ? 'disabled' : ''}`}
                   onClick={this.onSearch}/>
             {this.state.candidates && this.renderDialog()}
         </>;

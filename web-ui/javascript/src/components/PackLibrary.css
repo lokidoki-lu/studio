@@ -353,6 +353,9 @@
 .pack-archive .pack-format-badge, .pack-tile.pack-archive .pack-format span { background-color: var(--ui-format-archive); }
 .pack-raw .pack-format-badge, .pack-tile.pack-raw .pack-format span { background-color: var(--ui-format-raw); }
 .pack-fs .pack-format-badge, .pack-tile.pack-fs .pack-format span { background-color: var(--ui-format-fs); }
+/* White on the light amber and teal fell under 3:1: dark text there, in both themes */
+.pack-archive .pack-format-badge, .pack-tile.pack-archive .pack-format span,
+.pack-raw .pack-format-badge, .pack-tile.pack-raw .pack-format span { color: #1f2430; }
 
 .pack-grid .pack-draggable {
     cursor: move;

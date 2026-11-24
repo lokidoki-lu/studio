@@ -31,7 +31,7 @@ class Modal extends React.Component {
                             {this.props.content}
                         </div>
                         <div className="modal-footer">
-                            {this.props.buttons.map((btn,idx) => <button key={`modal-button-${idx}`} type="button" className="btn btn-secondary" onClick={btn.onClick}>{btn.label}</button>)}
+                            {this.props.buttons.map((btn,idx) => <button key={`modal-button-${idx}`} type="button" className="btn btn-secondary" disabled={btn.disabled === true} onClick={btn.onClick}>{btn.label}</button>)}
                         </div>
                     </div>
                 </div>

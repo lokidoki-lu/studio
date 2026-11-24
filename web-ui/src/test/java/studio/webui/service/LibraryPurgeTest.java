@@ -251,6 +251,22 @@ class LibraryPurgeTest {
         assertTrue(service.purgeCandidates().isEmpty());
     }
 
+    @Test
+    @DisplayName("a link to an archive never counts as the copy kept: the real archive is not offered")
+    void linkIsNotTheKeptCopy() throws Exception {
+        writeArchive("a.zip", DALTONS, "first version");
+        try {
+            Files.createSymbolicLink(library.resolve("z.zip"), library.resolve("a.zip"));
+        } catch (IOException | UnsupportedOperationException e) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symbolic links unavailable here: " + e);
+        }
+
+        assertFalse(paths(service.purgeCandidates()).contains("a.zip"));
+        List<LibraryService.PurgeResult> results = service.purge(Collections.singletonList("a.zip"));
+        assertEquals("NOT_A_CANDIDATE", results.get(0).getError());
+        assertTrue(Files.exists(library.resolve("a.zip")));
+    }
+
     // ------------------------------------------------- the purge checks again
 
     @Test
