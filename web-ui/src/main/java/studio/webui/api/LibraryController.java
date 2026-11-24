@@ -18,8 +18,11 @@ import studio.driver.StoryTellerException;
 import studio.webui.service.ApiErrors;
 import studio.webui.service.LibraryService;
 import studio.webui.service.ProvenanceVerdict;
+import studio.webui.service.PurgeCandidate;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 public class LibraryController {
@@ -143,6 +146,68 @@ public class LibraryController {
                 // Answering UNKNOWN here would quietly accept a question that should be refused.
                 LOGGER.error("Refused a conversion verification request", e);
                 ctx.fail(400, e);
+            }
+        });
+
+        // Library entries that serve no purpose any more (see LibraryService.purgeCandidates).
+        // Read-only. Reads artefacts in full when provenance or duplicates have to be established.
+        router.get("/purge/candidates").blockingHandler(ctx -> {
+            try {
+                List<PurgeCandidate> candidates = libraryService.purgeCandidates();
+                JsonArray list = new JsonArray();
+                long total = 0;
+                for (PurgeCandidate candidate : candidates) {
+                    list.add(candidate.toJson());
+                    total += Math.max(candidate.getSize(), 0);
+                }
+                ctx.response()
+                        .putHeader("content-type", "application/json")
+                        .end(Json.encode(new JsonObject().put("candidates", list).put("totalSize", total)));
+            } catch (RuntimeException e) {
+                LOGGER.error("Failed to list purge candidates", e);
+                ApiErrors.respond(ctx, e);
+            }
+        });
+
+        // Remove purge candidates, named explicitly: {"paths": ["<library entry>", ...]}. Each one is
+        // checked again against the candidates as they are now; anything else is left alone.
+        router.post("/purge").blockingHandler(ctx -> {
+            JsonObject body = DeviceController.jsonBody(ctx);
+            if (body == null) {
+                return;
+            }
+            JsonArray paths = body.getValue("paths") instanceof JsonArray ? body.getJsonArray("paths") : null;
+            if (paths == null || paths.isEmpty()) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "'paths' must list at least one library entry"));
+                return;
+            }
+            List<String> names = new ArrayList<>();
+            for (Object o : paths) {
+                if (!(o instanceof String)) {
+                    ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "'paths' must only contain library entry names"));
+                    return;
+                }
+                names.add((String) o);
+            }
+            try {
+                List<LibraryService.PurgeResult> results = libraryService.purge(names);
+                JsonArray list = new JsonArray();
+                long freed = 0;
+                for (LibraryService.PurgeResult result : results) {
+                    list.add(result.toJson());
+                    freed += result.getSize();
+                }
+                boolean all = results.stream().allMatch(LibraryService.PurgeResult::isRemoved);
+                ctx.response()
+                        .putHeader("content-type", "application/json")
+                        .end(Json.encode(new JsonObject().put("success", all).put("freed", freed).put("results", list)));
+            } catch (IllegalArgumentException e) {
+                // A name outside the library: refused before anything is removed.
+                LOGGER.error("Refused a purge request", e);
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, e.getMessage(), e));
+            } catch (RuntimeException e) {
+                LOGGER.error("Failed to purge the library", e);
+                ApiErrors.respond(ctx, e);
             }
         });
 
