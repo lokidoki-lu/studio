@@ -12,7 +12,7 @@
 
     <groupId>studio</groupId>
     <artifactId>studio-parent</artifactId>
-    <version>0.4.3-lunii.1</version>
+    <version>0.4.3-lunii.2</version>
 
     <packaging>pom</packaging>
 
