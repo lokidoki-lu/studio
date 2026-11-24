@@ -65,3 +65,63 @@ code {
     font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New",
     monospace;
 }
+
+/*
+ * Generic buttons. Use `ui-btn` (optionally with `ui-btn-primary`, `ui-btn-danger` or `ui-btn-icon`)
+ * for any new button. Bootstrap `.btn` buttons placed in the library headers get the same look.
+ */
+.ui-btn,
+.pack-library .header .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-sm);
+    background-color: var(--ui-surface);
+    color: var(--ui-text);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow: var(--ui-shadow);
+    transition: background-color .15s, border-color .15s, color .15s;
+}
+.pack-library .header .btn.glyphicon {
+    top: 0;
+    padding: 8px 10px;
+}
+.ui-btn:hover, .ui-btn:focus,
+.pack-library .header .btn:hover, .pack-library .header .btn:focus {
+    border-color: var(--ui-accent);
+    color: var(--ui-accent);
+    background-color: var(--ui-surface);
+    outline: none;
+}
+.ui-btn-primary,
+.pack-library .header .btn-primary {
+    background-color: var(--ui-accent);
+    border-color: var(--ui-accent);
+    color: #fff;
+}
+.ui-btn-primary:hover, .ui-btn-primary:focus,
+.pack-library .header .btn-primary:hover, .pack-library .header .btn-primary:focus {
+    background-color: var(--ui-accent-hover);
+    border-color: var(--ui-accent-hover);
+    color: #fff;
+}
+.ui-btn-danger:hover, .ui-btn-danger:focus {
+    border-color: var(--ui-danger);
+    color: var(--ui-danger);
+}
+.ui-btn-icon {
+    padding: 6px 9px;
+}
+.ui-btn[disabled], .ui-btn.disabled,
+.pack-library .header .btn.disabled {
+    opacity: .5;
+    pointer-events: none;
+    box-shadow: none;
+}
