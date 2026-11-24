@@ -8,14 +8,18 @@ package studio.webui.api;
 
 import io.vertx.core.Vertx;
 import io.vertx.core.json.Json;
+import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
 import io.vertx.ext.web.Router;
+import studio.driver.StoryTellerException;
+import studio.webui.service.ApiErrors;
 import studio.webui.service.IStoryTellerService;
 import studio.webui.service.LibraryService;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.List;
 
 public class DeviceController {
@@ -66,17 +70,26 @@ public class DeviceController {
                     });
         });
 
-        // Add pack from library to device
+        // Add pack from library to device.
+        // Answers at once with a transfer id; the transfer itself is queued behind any other device
+        // operation. Its progress and outcome are on the event bus and at GET /transfer/:id.
+        // Refusals known up front get a status and a JSON body (see ApiErrors): 409 for a pack
+        // already on the device, 503 without a device, 404 for a library file that is not there.
         router.post("/addFromLibrary").blockingHandler(ctx -> {
-            String uuid = ctx.getBodyAsJson().getString("uuid");
-            String packPath = ctx.getBodyAsJson().getString("path");
+            JsonObject body = ctx.getBodyAsJson();
+            String uuid = body == null ? null : body.getString("uuid");
+            String packPath = body == null ? null : body.getString("path");
+            if (uuid == null || packPath == null) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "Both 'uuid' and 'path' are required"));
+                return;
+            }
             File packFile = new File(libraryService.libraryPath() + packPath);
             // Start transfer to device
             storyTellerService.addPack(uuid, packFile)
                     .whenComplete((maybeTransferId, e) -> {
                         if (e != null) {
                             LOGGER.error("Failed to transfer pack to device", e);
-                            ctx.fail(500, e);
+                            ApiErrors.respond(ctx, e);
                         } else {
                             maybeTransferId
                                     .ifPresentOrElse(
@@ -87,9 +100,75 @@ public class DeviceController {
                                                             .end(Json.encode(new JsonObject().put("transferId", transferId))),
                                             () -> {
                                                 LOGGER.error("Failed to transfer pack to device");
-                                                ctx.fail(500);
+                                                ApiErrors.respond(ctx, new StoryTellerException("Failed to transfer pack to device"));
                                             }
                                     );
+                        }
+                    });
+        });
+
+        // State of one transfer: queued, running, succeeded or failed, with its progress and, on
+        // failure, the reason. Kept after the transfer ends, so it can be read whenever the client
+        // gets round to it.
+        router.get("/transfer/:id").handler(ctx -> {
+            String id = ctx.pathParam("id");
+            storyTellerService.transfers().get(id).ifPresentOrElse(
+                    transfer -> ctx.response()
+                            .putHeader("content-type", "application/json")
+                            .end(Json.encode(transfer)),
+                    () -> ctx.response()
+                            .setStatusCode(404)
+                            .putHeader("content-type", "application/json")
+                            .end(Json.encode(new JsonObject()
+                                    .put("success", false)
+                                    .put("error", "TRANSFER_NOT_FOUND")
+                                    .put("message", "No transfer with id " + id))));
+        });
+
+        // Every recent transfer, oldest first
+        router.get("/transfers").handler(ctx -> ctx.response()
+                .putHeader("content-type", "application/json")
+                .end(Json.encode(storyTellerService.transfers().list())));
+
+        // Pack content folders the pack index does not reference, typically left by an upload that
+        // failed part-way. Read-only.
+        router.get("/orphans").blockingHandler(ctx -> {
+            storyTellerService.orphanFolders()
+                    .whenComplete((folders, e) -> {
+                        if (e != null) {
+                            LOGGER.error("Failed to list unreferenced pack folders", e);
+                            ApiErrors.respond(ctx, e);
+                        } else {
+                            ctx.response()
+                                    .putHeader("content-type", "application/json")
+                                    .end(Json.encode(new JsonObject().put("folders", folders)));
+                        }
+                    });
+        });
+
+        // Remove unreferenced pack content folders, named explicitly: {"folders": ["1A2B3C4D", ...]}.
+        // A folder the index references is refused, whatever the request says.
+        router.post("/orphans/remove").blockingHandler(ctx -> {
+            JsonObject body = ctx.getBodyAsJson();
+            JsonArray folders = body == null ? null : body.getJsonArray("folders");
+            if (folders == null || folders.isEmpty()) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "'folders' must list at least one folder name"));
+                return;
+            }
+            List<String> names = new ArrayList<>();
+            for (Object o : folders) {
+                names.add(String.valueOf(o));
+            }
+            storyTellerService.removeOrphanFolders(names)
+                    .whenComplete((results, e) -> {
+                        if (e != null) {
+                            LOGGER.error("Failed to remove unreferenced pack folders", e);
+                            ApiErrors.respond(ctx, e);
+                        } else {
+                            boolean all = results.stream().allMatch(r -> ((JsonObject) r).getBoolean("removed", false));
+                            ctx.response()
+                                    .putHeader("content-type", "application/json")
+                                    .end(Json.encode(new JsonObject().put("success", all).put("results", results)));
                         }
                     });
         });
@@ -101,7 +180,7 @@ public class DeviceController {
                     .whenComplete((removed, e) -> {
                         if (e != null) {
                             LOGGER.error("Failed to remove pack from device", e);
-                            ctx.fail(500, e);
+                            ApiErrors.respond(ctx, e);
                         } else {
                             if (removed) {
                                 ctx.response()
@@ -109,7 +188,7 @@ public class DeviceController {
                                         .end(Json.encode(new JsonObject().put("success", true)));
                             } else {
                                 LOGGER.error("Pack was not removed from device");
-                                ctx.fail(500);
+                                ApiErrors.respond(ctx, new StoryTellerException("Pack was not removed from device"));
                             }
                         }
                     });
@@ -122,7 +201,7 @@ public class DeviceController {
                     .whenComplete((reordered, e) -> {
                         if (e != null) {
                             LOGGER.error("Failed to reorder packs on device", e);
-                            ctx.fail(500, e);
+                            ApiErrors.respond(ctx, e);
                         } else {
                             if (reordered) {
                                 ctx.response()
@@ -130,7 +209,7 @@ public class DeviceController {
                                         .end(Json.encode(new JsonObject().put("success", true)));
                             } else {
                                 LOGGER.error("Failed to reorder packs on device");
-                                ctx.fail(500);
+                                ApiErrors.respond(ctx, new StoryTellerException("Failed to reorder packs on device"));
                             }
                         }
                     });
@@ -154,7 +233,7 @@ public class DeviceController {
                     .whenComplete((maybeTransferId, e) -> {
                         if (e != null) {
                             LOGGER.error("Failed to transfer pack from device", e);
-                            ctx.fail(500, e);
+                            ApiErrors.respond(ctx, e);
                         } else {
                             maybeTransferId
                                     .ifPresentOrElse(
