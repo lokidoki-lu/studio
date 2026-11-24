@@ -6,8 +6,18 @@
 
 package studio.webui.service;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.IdentityHashMap;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
+
+import studio.driver.StoryTellerException;
 
 /**
  * Runs device operations one at a time, in the order they were submitted.
@@ -20,39 +30,194 @@ import java.util.function.Supplier;
  *
  * <p>An operation that fails does not stop the queue: the next one starts once it has settled,
  * whatever its outcome.
+ *
+ * <p>An operation that never settles (a frozen USB volume, a card that stopped answering) must not
+ * hold the queue for ever. Its caller is failed once {@code timeoutMillis} have passed, and the
+ * queue is then marked stuck: further submissions are refused at once instead of waiting behind it.
+ * The next operation is <em>not</em> simply let through, since the stuck one may still write the
+ * index afterwards and drop what the next one added. The queue recovers by itself if the stuck
+ * operation eventually settles, and {@link #reset()} (called when the device is unplugged) abandons
+ * it together with everything still waiting.
  */
 public class DeviceOperationQueue {
 
+    /** Default upper bound for one operation: generous, a large pack over a slow USB link included. */
+    public static final long DEFAULT_TIMEOUT_MILLIS = TimeUnit.MINUTES.toMillis(
+            Long.getLong("studio.device.operationTimeoutMinutes", 30L));
+
+    private final long timeoutMillis;
     private CompletableFuture<?> tail = CompletableFuture.completedFuture(null);
-    private int pending = 0;
+    private CompletableFuture<?> stuck;
+    private CompletableFuture<?> running;
+
+    /** How long the first operation after a reset waits for an abandoned one still in flight. */
+    static final long RESET_GRACE_MILLIS = 10_000;
+
+    private final long resetGraceMillis;
+    private long generation;
+    /** What callers hold for operations not yet settled, so that {@link #reset()} can fail them. */
+    private final Set<CompletableFuture<?>> unsettled = Collections.newSetFromMap(new IdentityHashMap<>());
+
+    public DeviceOperationQueue() {
+        this(DEFAULT_TIMEOUT_MILLIS);
+    }
+
+    public DeviceOperationQueue(long timeoutMillis) {
+        this(timeoutMillis, RESET_GRACE_MILLIS);
+    }
+
+    DeviceOperationQueue(long timeoutMillis, long resetGraceMillis) {
+        this.timeoutMillis = timeoutMillis;
+        this.resetGraceMillis = resetGraceMillis;
+    }
 
     /**
      * Queues an operation. The supplier is invoked only once every operation submitted before it
-     * has completed; whatever it throws becomes the failure of the returned future.
+     * has completed, never on the calling thread; whatever it throws becomes the failure of the
+     * returned future.
+     *
+     * <p>The timeout runs from the moment the operation starts, not from its submission: waiting
+     * behind other operations is not a sign that the device stopped answering.
+     *
+     * <p>An operation must not submit to this queue and wait for the result: the inner operation
+     * would wait for the outer one, which waits for it.
      */
-    public synchronized <T> CompletableFuture<T> submit(Supplier<CompletableFuture<T>> operation) {
-        pending++;
-        CompletableFuture<T> result = tail
-                .handle((ignored, error) -> null)
-                .thenCompose(ignored -> {
-                    try {
-                        CompletableFuture<T> started = operation.get();
-                        return started != null ? started : CompletableFuture.<T>completedFuture(null);
-                    } catch (Throwable t) {
-                        return CompletableFuture.<T>failedFuture(t);
-                    }
-                });
-        result.whenComplete((r, e) -> {
+    public <T> CompletableFuture<T> submit(Supplier<CompletableFuture<T>> operation) {
+        CompletableFuture<T> result = new CompletableFuture<>();
+        synchronized (this) {
+            if (stuck != null && !stuck.isDone()) {
+                return CompletableFuture.failedFuture(notResponding());
+            }
+            final long submittedIn = generation;
+            CompletableFuture<T> underlying = tail
+                    .handle((ignored, error) -> null)
+                    // Async: the supplier may block (file system, USB). It must neither run on the
+                    // caller's thread, possibly a Vert.x event loop, nor under this object's monitor.
+                    .thenComposeAsync(ignored -> start(operation, submittedIn, result));
+            // The queue waits for the operation's real end; the caller only up to the timeout.
+            tail = underlying;
+            unsettled.add(result);
+            underlying.whenComplete((value, error) -> {
+                if (error == null) {
+                    result.complete(value);
+                } else {
+                    result.completeExceptionally(error instanceof CompletionException && error.getCause() != null
+                            ? error.getCause() : error);
+                }
+            });
+        }
+        result.whenComplete((value, error) -> {
             synchronized (DeviceOperationQueue.this) {
-                pending--;
+                unsettled.remove(result);
             }
         });
-        tail = result;
         return result;
     }
 
-    /** Operations submitted and not yet settled, the running one included. */
+    private <T> CompletableFuture<T> start(Supplier<CompletableFuture<T>> operation, long submittedIn,
+                                           CompletableFuture<T> result) {
+        CompletableFuture<T> started;
+        synchronized (this) {
+            if (submittedIn != generation || result.isDone()) {
+                return CompletableFuture.failedFuture(new StoryTellerException(
+                        StoryTellerException.Reason.NO_DEVICE,
+                        "Abandoned: the device was unplugged before this operation could start"));
+            }
+            // Registered as running before it starts, under the same lock as the generation check:
+            // a reset from now on knows there is an operation of the old generation in flight.
+            started = new CompletableFuture<>();
+            running = started;
+        }
+        CompletableFuture<T> actual;
+        try {
+            actual = operation.get();
+            if (actual == null) {
+                actual = CompletableFuture.completedFuture(null);
+            }
+        } catch (Throwable t) {
+            actual = CompletableFuture.failedFuture(t);
+        }
+        actual.whenComplete((value, error) -> {
+            synchronized (DeviceOperationQueue.this) {
+                if (running == started) {
+                    running = null;
+                }
+            }
+            if (error == null) {
+                started.complete(value);
+            } else {
+                started.completeExceptionally(error);
+            }
+        });
+        started.copy().orTimeout(timeoutMillis, TimeUnit.MILLISECONDS).whenComplete((value, error) -> {
+            if (!isTimeout(error) || started.isDone()) {
+                return;
+            }
+            synchronized (DeviceOperationQueue.this) {
+                if (submittedIn == generation) {
+                    stuck = started;
+                }
+            }
+            result.completeExceptionally(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE,
+                    "The device did not answer within " + TimeUnit.MILLISECONDS.toSeconds(timeoutMillis)
+                            + " s; unplug and plug it back in", error));
+        });
+        return started;
+    }
+
+    /**
+     * Abandons the running operation, if any, and every operation still waiting: those fail without
+     * being started. Called when the device goes away, so that plugging it back in starts afresh.
+     *
+     * <p>The abandoned operation may still be running. The next operation waits for it to settle,
+     * but no more than {@link #RESET_GRACE_MILLIS}: a frozen one must not hold the new device, and
+     * the drivers refuse to write once the device they started on is gone.
+     */
+    public void reset() {
+        List<CompletableFuture<?>> toFail;
+        synchronized (this) {
+            generation++;
+            CompletableFuture<?> inFlight = running;
+            tail = inFlight == null || inFlight.isDone()
+                    ? CompletableFuture.completedFuture(null)
+                    : CompletableFuture.anyOf(inFlight.handle((v, e) -> null),
+                            CompletableFuture.runAsync(() -> { },
+                                    CompletableFuture.delayedExecutor(resetGraceMillis, TimeUnit.MILLISECONDS)));
+            stuck = null;
+            toFail = new ArrayList<>(unsettled);
+        }
+        // Completed outside the lock: their dependants answer HTTP requests and publish events.
+        StoryTellerException abandoned = new StoryTellerException(StoryTellerException.Reason.NO_DEVICE,
+                "Abandoned: the device was unplugged");
+        for (CompletableFuture<?> f : toFail) {
+            f.completeExceptionally(abandoned);
+        }
+    }
+
+    /** True once an operation has overrun its timeout and has not settled since. */
+    public synchronized boolean isStuck() {
+        return stuck != null && !stuck.isDone();
+    }
+
+    /** Operations submitted and not yet settled for their callers, the running one included. */
     public synchronized int pending() {
-        return pending;
+        return unsettled.size();
+    }
+
+    private static boolean isTimeout(Throwable error) {
+        for (Throwable c = error; c != null; c = c.getCause()) {
+            if (c instanceof TimeoutException) {
+                return true;
+            }
+            if (c.getCause() == c) {
+                break;
+            }
+        }
+        return false;
+    }
+
+    private static StoryTellerException notResponding() {
+        return new StoryTellerException(StoryTellerException.Reason.NO_DEVICE,
+                "A previous device operation is not answering; unplug and plug the device back in");
     }
 }

@@ -31,6 +31,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.stream.Collectors;
 
 public class StoryTellerService implements IStoryTellerService {
@@ -66,7 +67,7 @@ public class StoryTellerService implements IStoryTellerService {
                 if (device == null) {
                     LOGGER.error("Device 1.x plugged but got null device");
                     // Send 'failure' event on bus
-                    eventBus.send("storyteller.failure", null);
+                    eventBus.publish("storyteller.failure", null);
                 } else {
                     LOGGER.info("Device 1.x plugged");
                     StoryTellerService.this.device = device;
@@ -75,7 +76,7 @@ public class StoryTellerService implements IStoryTellerService {
                                 if (e != null) {
                                     LOGGER.error("Failed to plug device 1.x", e);
                                     // Send 'failure' event on bus
-                                    eventBus.send("storyteller.failure", null);
+                                    eventBus.publish("storyteller.failure", null);
                                 } else {
                                     JsonObject eventData = new JsonObject()
                                             .put("uuid", infos.getUuid().toString())
@@ -89,7 +90,7 @@ public class StoryTellerService implements IStoryTellerService {
                                             .put("error", infos.isInError())
                                             .put("driver", "raw");
                                     // Send 'plugged' event on bus
-                                    eventBus.send("storyteller.plugged", eventData);
+                                    eventBus.publish("storyteller.plugged", eventData);
                                 }
                                 return null;
                             })
@@ -101,8 +102,9 @@ public class StoryTellerService implements IStoryTellerService {
             public void onDeviceUnplugged(Device device) {
                 LOGGER.info("Device 1.x unplugged");
                 StoryTellerService.this.device = null;
+                abandonDeviceOperations();
                 // Send 'unplugged' event on bus
-                eventBus.send("storyteller.unplugged", null);
+                eventBus.publish("storyteller.unplugged", null);
             }
         });
 
@@ -113,7 +115,7 @@ public class StoryTellerService implements IStoryTellerService {
                 if (device == null) {
                     LOGGER.error("Device 2.x plugged but got null device");
                     // Send 'failure' event on bus
-                    eventBus.send("storyteller.failure", null);
+                    eventBus.publish("storyteller.failure", null);
                 } else {
                     LOGGER.info("Device 2.x plugged");
                     StoryTellerService.this.fsDevice = device;
@@ -122,7 +124,7 @@ public class StoryTellerService implements IStoryTellerService {
                                 if (e != null) {
                                     LOGGER.error("Failed to plug device 2.x", e);
                                     // Send 'failure' event on bus
-                                    eventBus.send("storyteller.failure", null);
+                                    eventBus.publish("storyteller.failure", null);
                                 } else {
                                     JsonObject eventData = new JsonObject()
                                             .put("uuid", Hex.encodeHexString(infos.getUuid()))
@@ -136,7 +138,7 @@ public class StoryTellerService implements IStoryTellerService {
                                             .put("error", false)
                                             .put("driver", "fs");
                                     // Send 'plugged' event on bus
-                                    eventBus.send("storyteller.plugged", eventData);
+                                    eventBus.publish("storyteller.plugged", eventData);
                                 }
                                 return null;
                             })
@@ -148,15 +150,27 @@ public class StoryTellerService implements IStoryTellerService {
             public void onDeviceUnplugged(Device device) {
                 LOGGER.info("Device 2.x unplugged");
                 StoryTellerService.this.fsDevice = null;
+                abandonDeviceOperations();
                 // Send 'unplugged' event on bus
-                eventBus.send("storyteller.unplugged", null);
+                eventBus.publish("storyteller.unplugged", null);
             }
         });
     }
 
+    /**
+     * Called when a device goes away: an operation still running against it, or waiting for it,
+     * cannot succeed, and a frozen one would otherwise hold the queue until STUdio is restarted.
+     */
+    private void abandonDeviceOperations() {
+        queue.reset();
+        notifier.failAllUnfinished(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE,
+                "The device was unplugged before the transfer ended"));
+    }
+
     public CompletableFuture<Optional<JsonObject>> deviceInfos() {
         if (device != null) {
-            return deviceInfosV1();
+            // A 1.x device is read over USB, which must not overlap a transfer.
+            return queue.submit(this::deviceInfosV1);
         } else if (fsDevice != null) {
             return deviceInfosV2();
         } else {
@@ -200,7 +214,7 @@ public class StoryTellerService implements IStoryTellerService {
 
     public CompletableFuture<JsonArray> packs() {
         if (device != null) {
-            return packsV1();
+            return queue.submit(this::packsV1);
         } else if (fsDevice != null) {
             return packsV2();
         } else {
@@ -268,7 +282,14 @@ public class StoryTellerService implements IStoryTellerService {
                     }
                     String transferId = notifier.create(uuid, "add");
                     LOGGER.info("Transfer " + transferId + " queued (" + (queue.pending()) + " device operation(s) ahead)");
-                    queue.submit(() -> runAddPack(transferId, uuid, packFile));
+                    queue.submit(() -> runAddPack(transferId, uuid, packFile))
+                            // The queue may give up on the operation (timeout, device unplugged)
+                            // before it settles: the transfer must not stay "running" for ever.
+                            .whenComplete((ignored, t) -> {
+                                if (t != null) {
+                                    notifier.failed(transferId, t);
+                                }
+                            });
                     return Optional.of(transferId);
                 });
     }
@@ -414,19 +435,32 @@ public class StoryTellerService implements IStoryTellerService {
     }
 
     public CompletableFuture<Optional<String>> extractPack(String uuid, File packFile) {
+        try {
+            if (!UUID.fromString(uuid).toString().equalsIgnoreCase(uuid)) {
+                throw new IllegalArgumentException("Not a canonical UUID");
+            }
+        } catch (RuntimeException e) {
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "Invalid pack UUID: " + uuid, e));
+        }
         if (device == null && fsDevice == null) {
             return CompletableFuture.failedFuture(noDevice());
         }
         if (device != null ? packFile.exists() : new File(packFile, uuid).exists()) {
             LOGGER.error("Cannot extract pack from device because the destination file already exists");
-            return CompletableFuture.completedFuture(Optional.empty());
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.CONTENT_FOLDER_EXISTS,
+                    "The pack " + uuid + " is already in the library"));
         }
         String transferId = notifier.create(uuid, "extract");
         queue.submit(() -> {
             notifier.started(transferId);
             CompletableFuture<TransferStatus> extraction;
             try {
-                if (device != null) {
+                // Checked again in turn: another extraction of the same pack may have been queued
+                // ahead of this one since the request was accepted.
+                if (device != null ? packFile.exists() : new File(packFile, uuid).exists()) {
+                    extraction = CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.CONTENT_FOLDER_EXISTS,
+                            "The pack " + uuid + " is already in the library"));
+                } else if (device != null) {
                     extraction = extractPackV1(transferId, uuid, packFile);
                 } else if (fsDevice != null) {
                     extraction = fsDriver.downloadPack(uuid, packFile.getAbsolutePath(), notifier.listener(transferId));
@@ -445,14 +479,21 @@ public class StoryTellerService implements IStoryTellerService {
                     notifier.succeeded(transferId);
                 }
             });
+        }).whenComplete((ignored, t) -> {
+            if (t != null) {
+                notifier.failed(transferId, t);
+            }
         });
         return CompletableFuture.completedFuture(Optional.of(transferId));
     }
 
     private CompletableFuture<TransferStatus> extractPackV1(String transferId, String uuid, File destFile) {
+        // Written beside the destination under a hidden name, then renamed: the library never lists
+        // a partial pack, and an existing file is never truncated.
+        File partFile = new File(destFile.getParentFile(), ".part-" + destFile.getName() + "." + transferId);
         FileOutputStream fos;
         try {
-            fos = new FileOutputStream(destFile);
+            fos = new FileOutputStream(partFile);
         } catch (IOException e) {
             return CompletableFuture.failedFuture(new StoryTellerException("Failed to open destination file", e));
         }
@@ -462,22 +503,43 @@ public class StoryTellerService implements IStoryTellerService {
         } catch (RuntimeException e) {
             download = CompletableFuture.failedFuture(e);
         }
-        return download.whenComplete((status, t) -> {
+        return download.handle((status, t) -> {
             try {
                 fos.close();
             } catch (IOException e) {
                 LOGGER.error("Failed to close destination file.", e);
+                if (t == null) {
+                    t = e;
+                }
             }
+            if (t == null) {
+                try {
+                    java.nio.file.Files.move(partFile.toPath(), destFile.toPath());
+                } catch (IOException e) {
+                    t = new StoryTellerException(destFile.exists() ? StoryTellerException.Reason.CONTENT_FOLDER_EXISTS : StoryTellerException.Reason.UNKNOWN,
+                            "Could not install the extracted pack as " + destFile.getName(), e);
+                }
+            }
+            if (t != null) {
+                if (partFile.exists() && !partFile.delete()) {
+                    LOGGER.warn("Could not remove the partial pack file " + partFile);
+                }
+                throw t instanceof CompletionException ? (CompletionException) t : new CompletionException(t);
+            }
+            return status;
         });
     }
 
     public CompletableFuture<Void> dump(String outputPath) {
         if (this.device == null) {
-            return CompletableFuture.completedFuture(null);
-        } else {
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE,
+                    "Only a plugged device with firmware 1.x can be dumped"));
+        }
+        // Read over USB: in the queue, like every other access to a 1.x device.
+        return queue.submit(() -> {
             new File(outputPath).mkdirs();
             return driver.dump(outputPath);
-        }
+        });
     }
 
     private JsonObject getRawPackMetadata(RawStoryPackInfos pack) {

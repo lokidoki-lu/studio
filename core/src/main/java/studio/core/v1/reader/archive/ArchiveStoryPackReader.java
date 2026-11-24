@@ -11,7 +11,6 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream;
-import org.apache.commons.io.IOUtils;
 import studio.core.v1.Constants;
 import studio.core.v1.model.*;
 import studio.core.v1.model.enriched.EnrichedNodeMetadata;
@@ -20,12 +19,108 @@ import studio.core.v1.model.enriched.EnrichedNodeType;
 import studio.core.v1.model.enriched.EnrichedPackMetadata;
 import studio.core.v1.model.metadata.StoryPackMetadata;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.Charset;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.logging.Logger;
 
 public class ArchiveStoryPackReader {
+
+    private static final Logger LOGGER = Logger.getLogger(ArchiveStoryPackReader.class.getName());
+
+    /** Largest uncompressed zip entry accepted (story.json, thumbnail or asset). */
+    public static final long DEFAULT_MAX_ENTRY_BYTES = 256L * 1024 * 1024;
+    /** Largest cumulated uncompressed size of all the entries read from one archive. */
+    public static final long DEFAULT_MAX_TOTAL_BYTES = 2L * 1024 * 1024 * 1024;
+
+    private final long maxEntryBytes;
+    private final long maxTotalBytes;
+
+    public ArchiveStoryPackReader() {
+        this(DEFAULT_MAX_ENTRY_BYTES, DEFAULT_MAX_TOTAL_BYTES);
+    }
+
+    public ArchiveStoryPackReader(long maxEntryBytes, long maxTotalBytes) {
+        this.maxEntryBytes = maxEntryBytes;
+        this.maxTotalBytes = maxTotalBytes;
+    }
+
+    /** Running total of the bytes read from one archive. */
+    private static final class ReadBudget {
+        private long total;
+    }
+
+    /**
+     * Reads the current entry in full, refusing it when it exceeds the per-entry limit or makes the
+     * archive exceed the cumulated limit. The declared size is not trusted: the bytes are counted.
+     */
+    private byte[] readEntry(ZipArchiveInputStream zis, ZipArchiveEntry entry, ReadBudget budget) throws IOException {
+        if (entry.getSize() > maxEntryBytes) {
+            throw new IOException("Archive entry too large: " + entry.getName() + " (" + entry.getSize() + " bytes, max " + maxEntryBytes + ")");
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        long count = 0;
+        int n;
+        while ((n = zis.read(buffer)) != -1) {
+            count += n;
+            if (count > maxEntryBytes) {
+                throw new IOException("Archive entry too large: " + entry.getName() + " (more than " + maxEntryBytes + " bytes)");
+            }
+            if (budget.total + count > maxTotalBytes) {
+                throw new IOException("Archive content too large (more than " + maxTotalBytes + " bytes uncompressed)");
+            }
+            out.write(buffer, 0, n);
+        }
+        budget.total += count;
+        return out.toByteArray();
+    }
+
+    /**
+     * Parses story.json as UTF-8, which is what the editor and this module's writer produce.
+     *
+     * <p>Archives written by older versions of the Java writer used the platform charset, which on
+     * Windows with Java 11 is not UTF-8. Such a file is not valid UTF-8 as soon as it has an accented
+     * character, so it is decoded as windows-1252 instead of being mangled.
+     */
+    private static JsonObject parseJson(byte[] json) throws IOException {
+        String text;
+        try {
+            text = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(json))
+                    .toString();
+        } catch (CharacterCodingException e) {
+            LOGGER.warning("story.json is not valid UTF-8, decoding it as windows-1252");
+            text = new String(json, Charset.forName("windows-1252"));
+        }
+        try {
+            return JsonParser.parseString(text).getAsJsonObject();
+        } catch (RuntimeException e) {
+            throw new IOException("Invalid story.json: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * The entry name with every {@code \} turned into {@code /}. The zip format mandates forward
+     * slashes, but archives re-zipped on Windows by some tools store {@code assets\x.mp3}: the
+     * asset is there, and must not be reported missing because of the separator.
+     */
+    static String normalizeEntryName(String name) {
+        return name == null ? "" : name.replace('\\', '/');
+    }
+
+    /** A directory entry, including one whose name only ends with a Windows separator. */
+    private static boolean isDirectory(ZipArchiveEntry entry, String normalizedName) {
+        return entry.isDirectory() || normalizedName.endsWith("/");
+    }
 
     public StoryPackMetadata readMetadata(InputStream inputStream) throws IOException {
         // Zip archive contains a json file and separate assets
@@ -35,15 +130,17 @@ public class ArchiveStoryPackReader {
         StoryPackMetadata metadata = new StoryPackMetadata(Constants.PACK_FORMAT_ARCHIVE);
 
         boolean hasStoryJsonEntry = false;
-
+        ReadBudget budget = new ReadBudget();
 
         ZipArchiveEntry entry;
         while((entry = zis.getNextEntry()) != null) {
+            String name = normalizeEntryName(entry.getName());
+            boolean directory = isDirectory(entry, name);
             // Story descriptor file: story.json
-            if (!entry.isDirectory() && entry.getName().equalsIgnoreCase("story.json")) {
+            if (!directory && name.equalsIgnoreCase("story.json")) {
                 hasStoryJsonEntry = true;
 
-                JsonObject root = JsonParser.parseReader(new InputStreamReader(zis)).getAsJsonObject();
+                JsonObject root = parseJson(readEntry(zis, entry, budget));
 
                 // Read metadata
                 metadata.setVersion(root.get("version").getAsShort());
@@ -63,11 +160,11 @@ public class ArchiveStoryPackReader {
                 metadata.setUuid(mainStageNode.get("uuid").getAsString());
             }
             // Pack thumbnail
-            else if (!entry.isDirectory() && entry.getName().equalsIgnoreCase("thumbnail.png")) {
-                metadata.setThumbnail(IOUtils.toByteArray(zis));
+            else if (!directory && name.equalsIgnoreCase("thumbnail.png")) {
+                metadata.setThumbnail(readEntry(zis, entry, budget));
             }
             // Ignore asset files
-            else if (!entry.isDirectory() && entry.getName().startsWith("assets/")) {
+            else if (!directory && name.startsWith("assets/")) {
                 // no-op
             }
         }
@@ -97,13 +194,20 @@ public class ArchiveStoryPackReader {
         // Enriched pack metadata
         EnrichedPackMetadata enrichedPack = null;
         boolean nightModeAvailable = false;
+        boolean hasStoryJsonEntry = false;
+        ReadBudget budget = new ReadBudget();
+        // Transitions to validate once action nodes know their options
+        Map<Transition, String> transitionsToCheck = new LinkedHashMap<>();
 
 
         ZipArchiveEntry entry;
         while((entry = zis.getNextEntry()) != null) {
+            String name = normalizeEntryName(entry.getName());
+            boolean directory = isDirectory(entry, name);
             // Story descriptor file: story.json
-            if (!entry.isDirectory() && entry.getName().equalsIgnoreCase("story.json")) {
-                JsonObject root = JsonParser.parseReader(new InputStreamReader(zis)).getAsJsonObject();
+            if (!directory && name.equalsIgnoreCase("story.json")) {
+                hasStoryJsonEntry = true;
+                JsonObject root = parseJson(readEntry(zis, entry, budget));
 
                 // Read metadata
                 version = root.get("version").getAsShort();
@@ -135,15 +239,13 @@ public class ArchiveStoryPackReader {
                 while (stagesIter.hasNext()) {
                     JsonObject node = stagesIter.next().getAsJsonObject();
                     String uuid = node.get("uuid").getAsString();
-                    Transition okTransition = null;
-                    if (node.get("okTransition") != null && node.get("okTransition").isJsonObject()) {
-                        ActionNode actionNode = actionNodes.get(node.getAsJsonObject("okTransition").get("actionNode").getAsString());
-                        okTransition = new Transition(actionNode, node.getAsJsonObject("okTransition").get("optionIndex").getAsShort());
+                    Transition okTransition = readTransition(node, "okTransition", uuid, actionNodes);
+                    if (okTransition != null) {
+                        transitionsToCheck.put(okTransition, "okTransition of stage node " + uuid);
                     }
-                    Transition homeTransition = null;
-                    if (node.get("homeTransition") != null && node.get("homeTransition").isJsonObject()) {
-                        ActionNode actionNode = actionNodes.get(node.getAsJsonObject("homeTransition").get("actionNode").getAsString());
-                        homeTransition = new Transition(actionNode, node.getAsJsonObject("homeTransition").get("optionIndex").getAsShort());
+                    Transition homeTransition = readTransition(node, "homeTransition", uuid, actionNodes);
+                    if (homeTransition != null) {
+                        transitionsToCheck.put(homeTransition, "homeTransition of stage node " + uuid);
                     }
                     JsonObject controlSettings = node.getAsJsonObject("controlSettings");
 
@@ -194,28 +296,66 @@ public class ArchiveStoryPackReader {
                     List<StageNode> options = new ArrayList<>();
                     Iterator<JsonElement> optionsIter = node.getAsJsonArray("options").iterator();
                     while (optionsIter.hasNext()) {
-                        String stageUuid = optionsIter.next().getAsString();
-                        options.add(stageNodes.get(stageUuid));
+                        JsonElement option = optionsIter.next();
+                        StageNode optionNode = option != null && option.isJsonPrimitive() ? stageNodes.get(option.getAsString()) : null;
+                        if (optionNode == null) {
+                            throw new IOException("Invalid story.json: action node " + node.get("id").getAsString()
+                                    + " has an option that is not a known stage node: " + option);
+                        }
+                        options.add(optionNode);
                     }
                     actionNode.setOptions(options);
                 }
 
             }
             // Separate asset files
-            else if (!entry.isDirectory() && entry.getName().startsWith("assets/")) {
-                assets.put(entry.getName().substring("assets/".length()), IOUtils.toByteArray(zis));
+            else if (!directory && name.startsWith("assets/")) {
+                String assetName = name.substring("assets/".length());
+                if (assets.containsKey(assetName)) {
+                    // Same name twice, possibly once with each separator. The last entry wins, as it
+                    // always did for exact duplicates; it is no longer silent.
+                    LOGGER.warning("Duplicate asset entry in archive, the last one is kept: " + entry.getName());
+                }
+                assets.put(assetName, readEntry(zis, entry, budget));
+            }
+        }
+
+        if (!hasStoryJsonEntry) {
+            throw new IOException("Invalid archive story pack: no story.json entry");
+        }
+        if (stageNodes.isEmpty()) {
+            throw new IOException("Invalid story.json: no stage node");
+        }
+
+        // Every transition must point to an existing option (-1 stands for a random option)
+        for (Map.Entry<Transition, String> check : transitionsToCheck.entrySet()) {
+            Transition transition = check.getKey();
+            int optionsCount = transition.getActionNode().getOptions() == null ? 0 : transition.getActionNode().getOptions().size();
+            if (transition.getOptionIndex() < -1 || transition.getOptionIndex() >= optionsCount) {
+                throw new IOException("Invalid story.json: " + check.getValue() + " has option index "
+                        + transition.getOptionIndex() + " but its action node has " + optionsCount + " option(s)");
+            }
+        }
+
+        // Every asset referenced by a stage node must be in the archive
+        for (String referencedAsset : assetToStageNodes.keySet()) {
+            if (!assets.containsKey(referencedAsset)) {
+                throw new IOException("Invalid archive story pack: asset referenced by the story is missing: assets/" + referencedAsset);
             }
         }
 
         // Update assets in stage nodes
         for (Map.Entry<String, byte[]> assetEntry : assets.entrySet()) {
             String assetName = assetEntry.getKey();
-            int dotIndex = assetName.lastIndexOf(".");
-            String extension = assetName.substring(dotIndex).toLowerCase();
 
             // Stage nodes explicitly reference their assets' filenames
             List<StageNode> stageNodesReferencingAsset = assetToStageNodes.get(assetName);
             if (stageNodesReferencingAsset != null && !stageNodesReferencingAsset.isEmpty()) {
+                int dotIndex = assetName.lastIndexOf(".");
+                if (dotIndex == -1) {
+                    throw new IOException("Invalid archive story pack: referenced asset has no file extension: assets/" + assetName);
+                }
+                String extension = assetName.substring(dotIndex).toLowerCase();
                 for (StageNode stageNode : stageNodesReferencingAsset) {
                     switch (extension.toLowerCase()) {
                         case ".bmp":
@@ -239,7 +379,8 @@ public class ArchiveStoryPackReader {
                             stageNode.setAudio(new AudioAsset("audio/ogg", assetEntry.getValue(), assetName));
                             break;
                         default:
-                            // Unsupported asset
+                            // Unsupported asset: kept as before (the node has no such asset)
+                            LOGGER.warning("Unsupported asset type, ignored: assets/" + assetName);
                     }
                 }
             }
@@ -255,6 +396,25 @@ public class ArchiveStoryPackReader {
         }
 
         return new StoryPack(nodes.get(0).getUuid(), factoryDisabled, version, nodes, enrichedPack, nightModeAvailable);
+    }
+
+    private static Transition readTransition(JsonObject node, String field, String stageUuid, Map<String, ActionNode> actionNodes) throws IOException {
+        JsonElement element = node.get(field);
+        if (element == null || !element.isJsonObject()) {
+            return null;
+        }
+        JsonObject transition = element.getAsJsonObject();
+        JsonElement actionNodeId = transition.get("actionNode");
+        ActionNode actionNode = actionNodeId != null && actionNodeId.isJsonPrimitive() ? actionNodes.get(actionNodeId.getAsString()) : null;
+        if (actionNode == null) {
+            throw new IOException("Invalid story.json: " + field + " of stage node " + stageUuid
+                    + " references an unknown action node: " + actionNodeId);
+        }
+        JsonElement optionIndex = transition.get("optionIndex");
+        if (optionIndex == null || !optionIndex.isJsonPrimitive()) {
+            throw new IOException("Invalid story.json: " + field + " of stage node " + stageUuid + " has no option index");
+        }
+        return new Transition(actionNode, optionIndex.getAsShort());
     }
 
     private EnrichedNodeMetadata readEnrichedNodeMetadata(JsonObject node) {

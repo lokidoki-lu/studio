@@ -49,7 +49,7 @@ class TemporaryFilePackIndexWriter implements PackIndexWriter {
     private static final Logger LOGGER = Logger.getLogger(TemporaryFilePackIndexWriter.class.getName());
 
     /** The suffix the temporary has always carried. Unchanged: the firmware may have seen it. */
-    private static final String TEMPORARY_SUFFIX = ".new";
+    static final String TEMPORARY_SUFFIX = ".new";
 
     @Override
     public void write(String packIndexFilePath, List<UUID> packUUIDs) throws IOException {
@@ -101,6 +101,20 @@ class TemporaryFilePackIndexWriter implements PackIndexWriter {
         }
 
         // The move consumed the temporary. There is nothing left to clean up on this path.
+
+        // The move changed a directory entry, and that entry lives in the parent directory, not in
+        // the file that was forced above. Ask for it to be pushed too. Best effort only: forcing a
+        // directory is not supported everywhere (Windows refuses to open one as a channel), and the
+        // index is already installed — failing the operation now would report as failed a write
+        // that succeeded.
+        Path parent = index.toAbsolutePath().getParent();
+        if (parent != null) {
+            try {
+                syncDirectory(parent);
+            } catch (IOException | RuntimeException unsupported) {
+                LOGGER.log(Level.FINE, "Could not force the directory " + parent + " after installing the pack index", unsupported);
+            }
+        }
     }
 
     /**
@@ -170,6 +184,11 @@ class TemporaryFilePackIndexWriter implements PackIndexWriter {
      */
     void installIndex(Path temporary, Path index) throws IOException {
         Files.move(temporary, index, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    }
+
+    /** Asks for the directory holding the index to be pushed to the device; may be unsupported. */
+    void syncDirectory(Path directory) throws IOException {
+        FsSync.forceDirectory(directory);
     }
 
     void deleteTemporary(Path temporary) throws IOException {

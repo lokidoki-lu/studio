@@ -51,3 +51,13 @@ export const addToLibrary = (uuid, driver) => {
     })
         .then(handleJsonOrError);
 };
+
+/*
+ * The state of one transfer, as the backend's transfer registry knows it: {transferId, state, done,
+ * success, progress, error?, message?, ...}. Rejects with err.code === 'TRANSFER_NOT_FOUND' (and
+ * err.status === 404) when the backend has no record of it.
+ */
+export const fetchTransfer = (transferId) => {
+    return fetch('/api/device/transfer/' + encodeURIComponent(transferId))
+        .then(handleJsonOrError);
+};

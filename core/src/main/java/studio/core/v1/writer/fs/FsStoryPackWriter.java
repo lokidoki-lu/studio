@@ -17,7 +17,7 @@ import javax.sound.sampled.AudioSystem;
 import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.*;
 
@@ -58,44 +58,11 @@ public class FsStoryPackWriter {
         // Store assets bytes
         TreeMap<String, byte[]> assets = new TreeMap<>();
 
-        // Add nodes index file: ni
-        FileOutputStream niFos = new FileOutputStream(new File(packFolder, NODE_INDEX_FILENAME));
-        DataOutputStream niDos = new DataOutputStream(niFos);
-        ByteBuffer bb = ByteBuffer.allocate(512).order(ByteOrder.LITTLE_ENDIAN);
-
-        // Nodes index file format version (1)
-        bb.putShort((short) 1);
-        // Story pack version (1)
-        bb.putShort(pack.getVersion());
-        // Start of actual nodes list in this file (0x200 / 512)
-        bb.putInt(512);
-        // Size of a stage node in this file (0x2C / 44)
-        bb.putInt(44);
-        // Number of stage nodes in this file
-        bb.putInt(pack.getStageNodes().size());
-        // Number of images (in RI file and rf/ folder)
-        bb.putInt((int) pack.getStageNodes().stream()
-                .map(StageNode::getImage)
-                .filter(Objects::nonNull)
-                .map(ImageAsset::getRawData)
-                .map(DigestUtils::sha1Hex)
-                .distinct()
-                .count());
-        // Number of sounds (in SI file and sf/ folder)
-        bb.putInt((int) pack.getStageNodes().stream()
-                .map(StageNode::getAudio)
-                .filter(Objects::nonNull)
-                .map(AudioAsset::getRawData)
-                .map(DigestUtils::sha1Hex)
-                .distinct()
-                .count());
-        // Is factory pack (boolean) set to true to avoid pack inspection by official Luniistore application
-        bb.put((byte) 1);
-
-        // Jump to address 0x200 for actual list of nodes
-        bb.put(new byte[512-25]);
-        niDos.write(bb.array());
-        bb.clear();
+        // Nodes index file 'ni': the stage nodes are serialized first, because the header must state
+        // the number of entries actually written into 'ri' and 'si' (including the blank audio
+        // placeholder), which is only known once every node has been visited.
+        ByteArrayOutputStream niNodes = new ByteArrayOutputStream();
+        DataOutputStream niDos = new DataOutputStream(niNodes);
 
         // Write stage nodes and keep track of action nodes and assets
         List<ActionNode> actionNodesOrdered = new ArrayList<>();
@@ -105,7 +72,6 @@ public class FsStoryPackWriter {
         List<String> audioHashOrdered = new ArrayList<>();
         for (int i = 0; i < pack.getStageNodes().size(); i++) {
             StageNode node = pack.getStageNodes().get(i);
-
             int imageIndex = -1;
             ImageAsset image = node.getImage();
             if (image != null) {
@@ -162,12 +128,14 @@ public class FsStoryPackWriter {
                 audioIndex = audioHashOrdered.indexOf(audioHash);
             }
             Transition okTransition = node.getOkTransition();
+            requireActionNode(okTransition);
+            Transition homeTransition = node.getHomeTransition();
+            requireActionNode(homeTransition);
             if (okTransition != null && !actionNodesOrdered.contains(okTransition.getActionNode())) {
                 actionNodesOrdered.add(okTransition.getActionNode());
                 actionNodesIndexes.put(okTransition.getActionNode(), nextActionNodeIndex);
                 nextActionNodeIndex += okTransition.getActionNode().getOptions().size();
             }
-            Transition homeTransition = node.getHomeTransition();
             if (homeTransition != null && !actionNodesOrdered.contains(homeTransition.getActionNode())) {
                 actionNodesOrdered.add(homeTransition.getActionNode());
                 actionNodesIndexes.put(homeTransition.getActionNode(), nextActionNodeIndex);
@@ -190,78 +158,89 @@ public class FsStoryPackWriter {
                     node.getControlSettings().isAutoJumpEnabled()   // AUTOPLAY flag
             );
         }
-        niDos.close();
-        niFos.close();
+        niDos.flush();
+
+        try (FileOutputStream niFos = new FileOutputStream(new File(packFolder, NODE_INDEX_FILENAME))) {
+            ByteBuffer bb = ByteBuffer.allocate(512).order(ByteOrder.LITTLE_ENDIAN);
+            // Nodes index file format version (1)
+            bb.putShort((short) 1);
+            // Story pack version (1)
+            bb.putShort(pack.getVersion());
+            // Start of actual nodes list in this file (0x200 / 512)
+            bb.putInt(512);
+            // Size of a stage node in this file (0x2C / 44)
+            bb.putInt(44);
+            // Number of stage nodes in this file
+            bb.putInt(pack.getStageNodes().size());
+            // Number of images (entries in RI file and rf/ folder)
+            bb.putInt(imageHashOrdered.size());
+            // Number of sounds (entries in SI file and sf/ folder, blank placeholder included)
+            bb.putInt(audioHashOrdered.size());
+            // Is factory pack (boolean) set to true to avoid pack inspection by official Luniistore application
+            bb.put((byte) 1);
+            // Jump to address 0x200 for actual list of nodes
+            bb.put(new byte[512-25]);
+            niFos.write(bb.array());
+            niNodes.writeTo(niFos);
+        }
 
 
         // Add lists index file: li
-        FileOutputStream liFos = new FileOutputStream(new File(packFolder, LIST_INDEX_FILENAME));
         ByteArrayOutputStream liBaos = new ByteArrayOutputStream();
         DataOutputStream liDos = new DataOutputStream(liBaos);
         // Add action nodes
         for (ActionNode actionNode : actionNodesOrdered) {
-            writeActionNode(
-                    liDos,
-                    actionNode.getOptions().stream().mapToInt(stage -> pack.getStageNodes().indexOf(stage)).toArray()   // Each option points to a stage node by index in Nodes Index file (ni)
-            );
+            int[] optionIndexes = new int[actionNode.getOptions().size()];
+            for (int o = 0; o < optionIndexes.length; o++) {
+                // Each option points to a stage node by index in Nodes Index file (ni)
+                optionIndexes[o] = pack.getStageNodes().indexOf(actionNode.getOptions().get(o));
+                if (optionIndexes[o] == -1) {
+                    throw new IllegalArgumentException("FS pack file: an action node option is not a stage node of this pack.");
+                }
+            }
+            writeActionNode(liDos, optionIndexes);
         }
-        liDos.close();
-        liBaos.close();
-        byte[] liBytes = liBaos.toByteArray();
-        liFos.write(liBytes);
-        liFos.close();
+        liDos.flush();
+        try (FileOutputStream liFos = new FileOutputStream(new File(packFolder, LIST_INDEX_FILENAME))) {
+            liBaos.writeTo(liFos);
+        }
 
 
         // Add images index file: ri
-        FileOutputStream riFos = new FileOutputStream(new File(packFolder, IMAGE_INDEX_FILENAME));
-        ByteArrayOutputStream riBaos = new ByteArrayOutputStream();
-        DataOutputStream riDos = new DataOutputStream(riBaos);
         // For each image asset: 12-bytes relative path (e.g. 000\11111111)
-        for (int i=0; i<imageHashOrdered.size(); i++) {
-            // Write image path into ri file
-            String imageHash = imageHashOrdered.get(i);
-            String rfPath = assetPathFromIndex(i);
-            riDos.write(rfPath.getBytes(Charset.forName("UTF-8")));
-            // Write image data into file
-            File rfFile = new File(packFolder, IMAGE_FOLDER + rfPath.replace('\\', '/'));
-            rfFile.getParentFile().mkdirs();
-            FileOutputStream rfFos = new FileOutputStream(rfFile);
-            byte[] rfBytes = assets.get(imageHash);
-            rfFos.write(rfBytes);
-            rfFos.close();
-        }
-        riDos.close();
-        riBaos.close();
-        byte[] riBytes = riBaos.toByteArray();
-        riFos.write(riBytes);
-        riFos.close();
-
+        writeAssets(packFolder, IMAGE_INDEX_FILENAME, IMAGE_FOLDER, imageHashOrdered, assets);
 
         // Add sound index file: si
-        FileOutputStream siFos = new FileOutputStream(new File(packFolder, SOUND_INDEX_FILENAME));
-        ByteArrayOutputStream siBaos = new ByteArrayOutputStream();
-        DataOutputStream siDos = new DataOutputStream(siBaos);
-        // For each image asset: 12-bytes relative path (e.g. 000\11111111)
-        for (int i=0; i<audioHashOrdered.size(); i++) {
-            // Write sound path into si file
-            String audioHash = audioHashOrdered.get(i);
-            String sfPath = assetPathFromIndex(i);
-            siDos.write(sfPath.getBytes(Charset.forName("UTF-8")));
-            // Write sound data into file
-            File sfFile = new File(packFolder, SOUND_FOLDER + sfPath.replace('\\', '/'));
-            sfFile.getParentFile().mkdirs();
-            FileOutputStream sfFos = new FileOutputStream(sfFile);
-            byte[] sfBytes = assets.get(audioHash);
-            sfFos.write(sfBytes);
-            sfFos.close();
-        }
-        siDos.close();
-        siBaos.close();
-        byte[] siBytes = siBaos.toByteArray();
-        siFos.write(siBytes);
-        siFos.close();
+        // For each sound asset: 12-bytes relative path (e.g. 000\11111111)
+        writeAssets(packFolder, SOUND_INDEX_FILENAME, SOUND_FOLDER, audioHashOrdered, assets);
 
         return packFolder.toPath();
+    }
+
+    /** Writes the index file and the asset files it lists, in the order of {@code hashesOrdered}. */
+    private static void writeAssets(File packFolder, String indexFilename, String folder,
+                                    List<String> hashesOrdered, Map<String, byte[]> assets) throws IOException {
+        ByteArrayOutputStream indexBaos = new ByteArrayOutputStream();
+        for (int i = 0; i < hashesOrdered.size(); i++) {
+            String assetPath = assetPathFromIndex(i);
+            // Write asset path into index file
+            indexBaos.write(assetPath.getBytes(StandardCharsets.UTF_8));
+            // Write asset data into file
+            File assetFile = new File(packFolder, folder + assetPath.replace('\\', '/'));
+            assetFile.getParentFile().mkdirs();
+            try (FileOutputStream assetFos = new FileOutputStream(assetFile)) {
+                assetFos.write(assets.get(hashesOrdered.get(i)));
+            }
+        }
+        try (FileOutputStream indexFos = new FileOutputStream(new File(packFolder, indexFilename))) {
+            indexBaos.writeTo(indexFos);
+        }
+    }
+
+    private static void requireActionNode(Transition transition) {
+        if (transition != null && (transition.getActionNode() == null || transition.getActionNode().getOptions() == null)) {
+            throw new IllegalArgumentException("FS pack file: a transition has no action node.");
+        }
     }
 
     private static String transformUuid(UUID uuid) {

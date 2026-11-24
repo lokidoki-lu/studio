@@ -49,6 +49,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class DeviceControllerApiTest {
 
+    private static final String U = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+
     @TempDir
     Path root;
 
@@ -124,7 +126,7 @@ class DeviceControllerApiTest {
         service.addPack = () -> CompletableFuture.failedFuture(new StoryTellerException(
                 StoryTellerException.Reason.PACK_ALREADY_ON_DEVICE, "The pack is already on the device"));
 
-        HttpResponse<String> response = post("/api/device/addFromLibrary", new JsonObject().put("uuid", "u").put("path", "u.zip"));
+        HttpResponse<String> response = post("/api/device/addFromLibrary", new JsonObject().put("uuid", U).put("path", "u.zip"));
 
         assertEquals(409, response.statusCode());
         JsonObject body = new JsonObject(response.body());
@@ -137,18 +139,18 @@ class DeviceControllerApiTest {
     @DisplayName("no device is a 503, and a missing field a 400")
     void otherRefusals() throws Exception {
         service.addPack = () -> CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
-        assertEquals(503, post("/api/device/addFromLibrary", new JsonObject().put("uuid", "u").put("path", "u.zip")).statusCode());
-        assertEquals(400, post("/api/device/addFromLibrary", new JsonObject().put("uuid", "u")).statusCode());
+        assertEquals(503, post("/api/device/addFromLibrary", new JsonObject().put("uuid", U).put("path", "u.zip")).statusCode());
+        assertEquals(400, post("/api/device/addFromLibrary", new JsonObject().put("uuid", U)).statusCode());
         assertEquals(400, post("/api/device/orphans/remove", new JsonObject().put("folders", new JsonArray())).statusCode());
     }
 
     @Test
     @DisplayName("an accepted transfer can be followed over HTTP until it ends, failure reason included")
     void transferState() throws Exception {
-        String id = service.registry.create("u", "add");
+        String id = service.registry.create(U, "add");
         service.addPack = () -> CompletableFuture.completedFuture(Optional.of(id));
 
-        HttpResponse<String> accepted = post("/api/device/addFromLibrary", new JsonObject().put("uuid", "u").put("path", "u.zip"));
+        HttpResponse<String> accepted = post("/api/device/addFromLibrary", new JsonObject().put("uuid", U).put("path", "u.zip"));
         assertEquals(200, accepted.statusCode());
         assertEquals(id, new JsonObject(accepted.body()).getString("transferId"));
 
@@ -184,10 +186,80 @@ class DeviceControllerApiTest {
         assertEquals(List.of("0A0B0C0D"), service.removedFolders);
     }
 
+    @Test
+    @DisplayName("addFromLibrary refuses a path out of the library before anything is read")
+    void addFromLibraryIsConfined() throws Exception {
+        service.addPack = () -> CompletableFuture.completedFuture(Optional.of("t"));
+        for (String path : List.of("../secret", "../../.ssh", "sub/x.zip", "/etc/passwd", "")) {
+            HttpResponse<String> response = post("/api/device/addFromLibrary", new JsonObject().put("uuid", U).put("path", path));
+            assertEquals(400, response.statusCode(), path);
+            assertEquals("INVALID_REQUEST", new JsonObject(response.body()).getString("error"), path);
+        }
+        assertEquals(null, service.lastPackFile);
+
+        assertEquals(200, post("/api/device/addFromLibrary", new JsonObject().put("uuid", U).put("path", "p.zip")).statusCode());
+        assertEquals(root.resolve("library").resolve("p.zip").toAbsolutePath().normalize().toFile(), service.lastPackFile);
+    }
+
+    @Test
+    @DisplayName("a UUID that is not canonical is refused: its folder would not be the indexed pack's")
+    void uuidsMustBeCanonical() throws Exception {
+        for (String uuid : List.of("u", "0-0-0-1-2", "../../../tmp/x", "00000000-0000-0000-0001-2")) {
+            assertEquals(400, post("/api/device/addFromLibrary", new JsonObject().put("uuid", uuid).put("path", "p.zip")).statusCode(), uuid);
+            assertEquals(400, post("/api/device/removeFromDevice", new JsonObject().put("uuid", uuid)).statusCode(), uuid);
+            assertEquals(400, post("/api/device/addToLibrary", new JsonObject().put("uuid", uuid).put("driver", "raw")).statusCode(), uuid);
+            assertEquals(400, post("/api/device/reorder", new JsonObject().put("uuids", new JsonArray().add(U).add(uuid))).statusCode(), uuid);
+        }
+        assertEquals(null, service.lastExtractDestination);
+        assertEquals(null, service.lastReorder);
+        assertEquals("0-0-0-1-2".length() > 0, DeviceController.canonicalUuid("0-0-0-1-2") == null);
+        assertEquals(U, DeviceController.canonicalUuid(U.toUpperCase()));
+    }
+
+    @Test
+    @DisplayName("addToLibrary writes a raw pack inside the library only")
+    void addToLibraryDestination() throws Exception {
+        post("/api/device/addToLibrary", new JsonObject().put("uuid", U).put("driver", "raw"));
+        assertEquals(root.resolve("library").resolve(U + ".pack").toAbsolutePath().normalize().toFile(), service.lastExtractDestination);
+        assertEquals(400, post("/api/device/addToLibrary", new JsonObject().put("uuid", U).put("driver", "zip")).statusCode());
+    }
+
+    @Test
+    @DisplayName("a missing or malformed body is a 400 with a JSON error, not a 500")
+    void malformedBodies() throws Exception {
+        for (String route : List.of("removeFromDevice", "reorder", "addToLibrary", "addFromLibrary", "orphans/remove")) {
+            HttpResponse<String> empty = http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.actualPort() + "/api/device/" + route))
+                    .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString("")).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(400, empty.statusCode(), route);
+            HttpResponse<String> broken = http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.actualPort() + "/api/device/" + route))
+                    .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString("{nope")).build(), HttpResponse.BodyHandlers.ofString());
+            assertEquals(400, broken.statusCode(), route);
+            assertEquals("INVALID_REQUEST", new JsonObject(broken.body()).getString("error"), route);
+        }
+        // A field of the wrong type is a 400 too, not a ClassCastException answered 500
+        assertEquals(400, post("/api/device/addFromLibrary", new JsonObject().put("uuid", 42).put("path", "p.zip")).statusCode());
+        assertEquals(400, post("/api/device/removeFromDevice", new JsonObject().put("uuid", new JsonObject())).statusCode());
+        assertEquals(400, post("/api/device/reorder", new JsonObject().put("uuids", "x")).statusCode());
+        assertEquals(400, post("/api/device/orphans/remove", new JsonObject().put("folders", 1)).statusCode());
+    }
+
+    @Test
+    @DisplayName("dump writes under STUdio's temporary folder, whatever path the client sends")
+    void dumpIsConfined() throws Exception {
+        HttpResponse<String> response = post("/api/device/dump", new JsonObject().put("outputPath", root.resolve("elsewhere").toString()));
+        assertEquals(200, response.statusCode());
+        Path written = Path.of(new JsonObject(response.body()).getString("path"));
+        assertTrue(written.toAbsolutePath().normalize().startsWith(root.resolve("tmp").toAbsolutePath().normalize()), written.toString());
+        assertFalse(Files.exists(root.resolve("elsewhere")));
+    }
+
     private static final class FakeService implements IStoryTellerService {
         final TransferRegistry registry = new TransferRegistry();
         Supplier<CompletableFuture<Optional<String>>> addPack = () -> CompletableFuture.completedFuture(Optional.empty());
         final List<String> removedFolders = new ArrayList<>();
+        File lastPackFile;
+        File lastExtractDestination;
+        List<String> lastReorder;
 
         @Override
         public CompletableFuture<Optional<JsonObject>> deviceInfos() {
@@ -201,6 +273,7 @@ class DeviceControllerApiTest {
 
         @Override
         public CompletableFuture<Optional<String>> addPack(String uuid, File packFile) {
+            lastPackFile = packFile;
             return addPack.get();
         }
 
@@ -211,11 +284,13 @@ class DeviceControllerApiTest {
 
         @Override
         public CompletableFuture<Boolean> reorderPacks(List<String> uuids) {
+            lastReorder = uuids;
             return CompletableFuture.completedFuture(true);
         }
 
         @Override
         public CompletableFuture<Optional<String>> extractPack(String uuid, File destFile) {
+            lastExtractDestination = destFile;
             return CompletableFuture.completedFuture(Optional.empty());
         }
 

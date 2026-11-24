@@ -69,6 +69,13 @@ public class ConversionProvenanceStore {
     private static final String CONVERSIONS_FIELD = "conversions";
     private static final String TEMPORARY_SUFFIX = ".new";
 
+    /**
+     * Serialises read-modify-write cycles. Static because every instance writes to the same file
+     * (the path comes from a system property): two conversions finishing together, in one or in
+     * several instances, must not each read the old ledger and then overwrite the other's record.
+     */
+    private static final Object WRITE_LOCK = new Object();
+
     /** Whether the ledger can be read, does not exist yet, or exists and cannot be understood. */
     public enum State {
         LOADED, ABSENT, INVALID
@@ -130,6 +137,12 @@ public class ConversionProvenanceStore {
      *         first can prove anything.
      */
     public boolean record(String artifactName, ConversionRecord record) {
+        synchronized (WRITE_LOCK) {
+            return recordLocked(artifactName, record);
+        }
+    }
+
+    private boolean recordLocked(String artifactName, ConversionRecord record) {
         Path path = storePath();
         JsonObject root;
         if (Files.isRegularFile(path)) {
@@ -181,12 +194,13 @@ public class ConversionProvenanceStore {
      * content depends on this file — losing it costs a dialog, and never a wrong answer.
      */
     private boolean write(Path path, JsonObject root) {
-        Path temporary = path.resolveSibling(path.getFileName() + TEMPORARY_SUFFIX);
+        Path temporary = null;
         try {
-            Path parent = path.getParent();
-            if (parent != null) {
-                Files.createDirectories(parent);
-            }
+            Path parent = path.toAbsolutePath().getParent();
+            Files.createDirectories(parent);
+            // A temporary of its own, beside the target so the move stays on one filesystem: a fixed
+            // name would let two writers (another instance, a crashed write) share and corrupt it.
+            temporary = Files.createTempFile(parent, path.getFileName() + ".", TEMPORARY_SUFFIX);
             try (Writer writer = Files.newBufferedWriter(temporary)) {
                 gson().toJson(root, writer);
             }
@@ -197,11 +211,20 @@ public class ConversionProvenanceStore {
                 LOGGER.warn("Atomic move unavailable for " + path + ", replacing without it", e);
                 Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING);
             }
+            // Earlier versions used a fixed temporary name; one left by an interrupted write is
+            // now only litter, never read.
+            try {
+                Files.deleteIfExists(path.resolveSibling(path.getFileName() + TEMPORARY_SUFFIX));
+            } catch (IOException cleanup) {
+                LOGGER.warn("Failed to remove a stale temporary provenance file beside " + path, cleanup);
+            }
             return true;
         } catch (IOException e) {
             LOGGER.error("Failed to write provenance database: " + path, e);
             try {
-                Files.deleteIfExists(temporary);
+                if (temporary != null) {
+                    Files.deleteIfExists(temporary);
+                }
             } catch (IOException cleanup) {
                 LOGGER.warn("Failed to remove the temporary provenance file: " + temporary, cleanup);
             }
@@ -216,8 +239,8 @@ public class ConversionProvenanceStore {
      * more: a file written by a later version of STUdio must be left alone rather than reinterpreted
      * or overwritten by this one.
      *
-     * <p>A stale {@code conversions.json.new} left by an interrupted write is never consulted. Only
-     * the ledger itself is read; the temporary is inert until the next write truncates it.
+     * <p>A stale {@code conversions.json.*.new} left by an interrupted write is never consulted. Only
+     * the ledger itself is read; each write uses a temporary of its own.
      */
     private Optional<JsonObject> read(Path path) {
         try (Reader reader = Files.newBufferedReader(path)) {

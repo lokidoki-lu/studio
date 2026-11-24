@@ -275,6 +275,24 @@ class FsPackRoundTripTest {
         assertFalse(Arrays.equals(audioB, read.getStageNodes().get(1).getAudio().getRawData()));
     }
 
+    @Test
+    @DisplayName("counts the blank placeholder in the ni header, like the si entries it writes")
+    void headerCountsMatchTheIndexFiles(@TempDir Path folder) throws Exception {
+        StoryPack pack = twoStagePack(false);
+        pack.getStageNodes().get(1).setAudio(null);
+        pack.getStageNodes().get(1).setImage(null);
+
+        Path written = write(pack, folder);
+        ByteBuffer ni = ByteBuffer.wrap(Files.readAllBytes(written.resolve("ni"))).order(ByteOrder.LITTLE_ENDIAN);
+        int riEntries = Files.readAllBytes(written.resolve("ri")).length / 12;
+        int siEntries = Files.readAllBytes(written.resolve("si")).length / 12;
+
+        assertEquals(1, riEntries, "one image written");
+        assertEquals(2, siEntries, "one sound and the blank placeholder written");
+        assertEquals(riEntries, ni.getInt(16), "image count in the header matches ri");
+        assertEquals(siEntries, ni.getInt(20), "sound count in the header matches si");
+    }
+
     // ---------------------------------------------------------------- the bytes on disk
 
     @Test

@@ -10,12 +10,13 @@ import {Mutex, withTimeout} from 'async-mutex';
 
 import IssueReportToast from "../components/IssueReportToast";
 import PackDiagramModel from "../components/diagram/models/PackDiagramModel";
-import {fetchDeviceInfos, fetchDevicePacks, addFromLibrary, removeFromDevice, reorderPacks, addToLibrary} from '../services/device';
-import {SUBSCRIBED} from '../services/eventBusChannel';
+import {fetchDeviceInfos, fetchDevicePacks, addFromLibrary, removeFromDevice, reorderPacks, addToLibrary, fetchTransfer} from '../services/device';
+import {SUBSCRIBED, CHANNEL_OPEN} from '../services/eventBusChannel';
 import {fetchLibraryInfos, fetchLibraryPacks, downloadFromLibrary, uploadToLibrary, convertInLibrary, removeFromLibrary} from '../services/library';
 import {fetchEvergreenInfos, fetchEvergreenLatestRelease, fetchEvergreenAnnounce} from '../services/evergreen';
 import {generateFilename, sortPacks} from "../utils/packs";
 import {readFromArchive} from "../utils/reader";
+import {errorMessage} from "../utils/fetch";
 import {simplifiedSample} from "../utils/sample";
 
 
@@ -122,6 +123,9 @@ export const actionRefreshDevice = (t) => {
                                     dispatch(devicePlugged(metadata));
                                     dispatch(setDevicePacks(packs));
                                 });
+                        } else {
+                            // The device went away (possibly while its unplugged event was lost)
+                            dispatch(deviceUnplugged());
                         }
                     })
                     .catch(e => {
@@ -139,15 +143,180 @@ export const actionRefreshDevice = (t) => {
             });
 };
 
+/** How often a transfer whose verdict has not arrived is re-read over HTTP. */
+export const TRANSFER_RECONCILE_INTERVAL_MS = 3000;
+
+/**
+ * How many registry reads in a row may fail (other than with a 404) before the transfer is given
+ * up on: about two minutes at TRANSFER_RECONCILE_INTERVAL_MS. Past that, its outcome is reported
+ * as unknown and the device is re-read, rather than polling forever.
+ */
+export const TRANSFER_RECONCILE_MAX_FAILURES = 40;
+
+/*
+ * Follows one transfer until its verdict is known, and calls onVerdict(verdict) exactly once.
+ *
+ * The event bus alone cannot be trusted with this: an event published before the subscription is
+ * on the wire, or while the socket is down, is lost and never replayed. So the transfer registry
+ * (GET /api/device/transfer/{id}) is read right after subscribing, every few seconds until the
+ * verdict is known, and on every reconnection. Whichever source answers first wins; `settled`
+ * makes sure the other is ignored. Only one registry read is in flight at a time. Everything
+ * (interval, subscriptions, state listener) is torn down on settlement.
+ *
+ * verdict is {success, error?, message?} — the same fields in the done event and in the registry —
+ * or {success: false, unknown: true} when the outcome cannot be known: the backend answers 404 for
+ * the transfer (e.g. after a restart), or its registry could not be read
+ * TRANSFER_RECONCILE_MAX_FAILURES times in a row. Waiting longer would be pointless.
+ *
+ * Progress handed to onProgress never goes backwards, whichever source reports it.
+ *
+ * Returns what subscribing to the done address returned (SUBSCRIBED or DEFERRED).
+ */
+function followTransfer(transferId, channel, {onProgress, onVerdict}) {
+    const progressAddress = 'storyteller.transfer.' + transferId + '.progress';
+    const doneAddress = 'storyteller.transfer.' + transferId + '.done';
+    let settled = false;
+    let interval = null;
+    let removeStateListener = null;
+    let inFlight = false;
+    let failures = 0;
+    let lastProgress = 0;
+
+    const settle = (verdict) => {
+        if (settled) {
+            return;
+        }
+        settled = true;
+        if (interval !== null) {
+            clearInterval(interval);
+            interval = null;
+        }
+        channel.unsubscribe(progressAddress, handleProgress);
+        channel.unsubscribe(doneAddress, handleDone);
+        if (removeStateListener) {
+            removeStateListener();
+            removeStateListener = null;
+        }
+        onVerdict(verdict);
+    };
+
+    const reportProgress = (progress) => {
+        if (settled || typeof progress !== 'number' || isNaN(progress)) {
+            return;
+        }
+        // The event bus and the registry may answer out of order: never show a step back.
+        lastProgress = Math.max(lastProgress, progress);
+        onProgress(lastProgress);
+    };
+
+    const handleProgress = (error, message) => {
+        if (error || !message || !message.body) {
+            return;
+        }
+        reportProgress(message.body.progress);
+    };
+    const handleDone = (error, message) => {
+        if (error || !message || !message.body) {
+            return;
+        }
+        console.log('transfer ' + transferId + ': backend reported ' + (message.body.success ? 'success' : 'failure') + ' (event bus)');
+        settle(message.body);
+    };
+
+    const reconcile = () => {
+        if (settled || inFlight) {
+            // A read still pending answers for this tick as well: do not pile requests up.
+            return Promise.resolve();
+        }
+        inFlight = true;
+        return Promise.resolve()
+            .then(() => fetchTransfer(transferId))
+            .then(transfer => {
+                failures = 0;
+                if (settled || !transfer) {
+                    return;
+                }
+                if (transfer.done) {
+                    console.log('transfer ' + transferId + ': backend reported ' + (transfer.success ? 'success' : 'failure') + ' (registry)');
+                    settle(transfer);
+                } else if (transfer.total > 0) {
+                    reportProgress(transfer.progress);
+                }
+            })
+            .catch(e => {
+                if (settled) {
+                    return;
+                }
+                if (e && (e.status === 404 || e.code === 'TRANSFER_NOT_FOUND')) {
+                    console.warn('transfer ' + transferId + ': unknown to the backend, its outcome cannot be known');
+                    settle({success: false, unknown: true});
+                    return;
+                }
+                failures++;
+                if (failures >= TRANSFER_RECONCILE_MAX_FAILURES) {
+                    console.warn('transfer ' + transferId + ': state unreadable ' + failures + ' times in a row, giving up', e);
+                    settle({success: false, unknown: true});
+                } else {
+                    // Not a verdict: try again on the next tick.
+                    console.warn('transfer ' + transferId + ': could not read its state, will retry', e);
+                }
+            })
+            .finally(() => {
+                inFlight = false;
+            });
+    };
+
+    channel.subscribe(progressAddress, handleProgress);
+    const doneSubscription = channel.subscribe(doneAddress, handleDone);
+    if (typeof channel.addStateListener === 'function') {
+        removeStateListener = channel.addStateListener(state => {
+            if (state === CHANNEL_OPEN) {
+                reconcile();
+            }
+        });
+    }
+    interval = setInterval(reconcile, TRANSFER_RECONCILE_INTERVAL_MS);
+    // The verdict may already be known: the transfer can end before the subscription is active.
+    reconcile();
+    return doneSubscription;
+}
+
+/** Toast progress: the bar is only meaningful below 1. */
+const updateProgress = (toastId) => (progress) => {
+    if (typeof progress === 'number' && progress < 1) {
+        toast.update(toastId, {progress, autoClose: false});
+    }
+};
+
+/** A failure toast that shows the backend's reason when it gave one. */
+function failureRender(content, verdict) {
+    return verdict && verdict.message
+        ? <IssueReportToast content={content} error={new Error(verdict.message)} showDetails />
+        : <IssueReportToast content={content} />;
+}
+
+/*
+ * Packs whose transfer has been accepted and is still being followed, keyed by direction and uuid.
+ * The mutex is released as soon as the backend accepts a transfer (it queues device operations
+ * itself), so this is what stops the very same pack from being sent twice in a row by a double
+ * drop. The backend would refuse the second one anyway (409); this only spares the round trip.
+ */
+const followedPacks = new Set();
+
 export const actionAddFromLibrary = (uuid, path, format, driver, context, t) => {
     return dispatch => mutex.acquire()
         .then(
             release => {
+                const key = 'device:' + uuid;
                 // First, make sure the story pack is in the right format.
                 if (driver !== format) {
                     console.error('pack format is not compatible with the device');
                     toast.error(t('toasts.device.notCompatible'));
                     // Always release the mutex
+                    release();
+                } else if (followedPacks.has(key)) {
+                    console.warn('pack ' + uuid + ' is already being transferred to the device');
+                    toast.error(t('toasts.device.busy'));
                     release();
                 } else {
                     // Then start transfer
@@ -157,68 +326,49 @@ export const actionAddFromLibrary = (uuid, path, format, driver, context, t) => 
                             // From here on the backend has accepted the transfer and is running it.
                             // Nothing that happens to the monitoring channel below changes that, so
                             // no failure reported from this point may claim the transfer failed.
+                            // The backend queues device operations itself, so the mutex is released
+                            // right away: other actions (a refresh on reconnection, a removal) are
+                            // not refused for the whole length of the transfer. The verdict is still
+                            // followed, from the event bus or from the transfer registry.
                             const transferId = resp.transferId;
-                            const progressAddress = 'storyteller.transfer.' + transferId + '.progress';
-                            const doneAddress = 'storyteller.transfer.' + transferId + '.done';
                             console.log('transfer ' + transferId + ': accepted by the backend (add to device)');
+                            followedPacks.add(key);
 
-                            let released = false;
-                            const releaseOnce = () => {
-                                if (!released) {
-                                    released = true;
-                                    release();
-                                }
-                            };
-
-                            const onProgress = (error, message) => {
-                                if (message.body.progress < 1) {
-                                    toast.update(toastId, {progress: message.body.progress, autoClose: false});
-                                }
-                            };
-                            const onDone = (error, message) => {
-                                console.log('transfer ' + transferId + ': backend reported ' + (message.body.success ? 'success' : 'failure'));
-                                // Release the subscriptions so repeated transfers cannot pile up.
-                                context.channel.unsubscribe(progressAddress, onProgress);
-                                context.channel.unsubscribe(doneAddress, onDone);
-                                if (message.body.success) {
-                                    toast.update(toastId, {progress: null, type: toast.TYPE.SUCCESS, render: t('toasts.device.added'), autoClose: 5000});
+                            const doneSubscription = followTransfer(transferId, context.channel, {
+                                onProgress: updateProgress(toastId),
+                                onVerdict: verdict => {
+                                    followedPacks.delete(key);
+                                    if (verdict.success) {
+                                        toast.update(toastId, {progress: null, type: toast.TYPE.SUCCESS, render: t('toasts.device.added'), autoClose: 5000});
+                                    } else if (verdict.unknown) {
+                                        toast.update(toastId, {progress: null, type: toast.TYPE.WARNING, render: t('toasts.device.trackingLost'), autoClose: false});
+                                    } else {
+                                        // The backend says why the transfer failed. Show it, as for a
+                                        // refusal at request time. Without a message there is nothing to
+                                        // show, and no detail block is asked for.
+                                        toast.update(toastId, {progress: null, type: toast.TYPE.ERROR, render: failureRender(<>{t('toasts.device.addingFailed')}</>, verdict), autoClose: false});
+                                    }
                                     // Refresh device metadata and packs list
-                                    dispatch(actionRefreshDevice(t));
-                                } else {
-                                    // The backend now says why the transfer failed. Show it, as for a
-                                    // refusal at request time: "adding failed" alone left the user guessing.
-                                    // Without a message there is nothing to show, and no detail block is asked for.
-                                    const content = <>{t('toasts.device.addingFailed')}</>;
-                                    const render = message.body.message
-                                        ? <IssueReportToast content={content} error={new Error(message.body.message)} showDetails />
-                                        : <IssueReportToast content={content} />;
-                                    toast.update(toastId, {progress: null, type: toast.TYPE.ERROR, render, autoClose: false });
+                                    if (verdict.success || verdict.unknown) {
+                                        dispatch(actionRefreshDevice(t));
+                                    }
                                 }
-                                releaseOnce();
-                            };
-
-                            context.channel.subscribe(progressAddress, onProgress);
-                            const doneSubscription = context.channel.subscribe(doneAddress, onDone);
+                            });
 
                             if (doneSubscription !== SUBSCRIBED) {
-                                // The channel is down, so the outcome cannot be observed. The transfer
-                                // is still running on the backend: say that, and do not claim a failure.
-                                // The subscription stays recorded, so if the channel comes back before
-                                // the backend publishes its verdict, onDone still resolves this toast.
-                                console.warn('transfer ' + transferId + ': monitoring channel unavailable, transfer continues on the backend');
-                                toast.update(toastId, {progress: null, type: toast.TYPE.WARNING, render: t('toasts.device.trackingLost'), autoClose: false});
-                                releaseOnce();
+                                // The channel is down, so the outcome cannot be pushed, but the
+                                // registry is polled until the verdict is known: tracking is not
+                                // lost. The "adding" toast stays as it is.
+                                console.warn('transfer ' + transferId + ': monitoring channel unavailable, following the transfer through its registry');
                             }
+                            release();
                         })
                         .catch(e => {
                             // Only a real request failure reaches this point: subscribing can no
                             // longer throw, so a dropped channel never lands here.
                             console.error('failed to add pack to device', e);
-                            // showDetails, here and nowhere else for now: an upload can be refused for
-                            // a precise reason the driver spells out — a destination folder that was
-                            // already there, and that STUdio deliberately will not touch. That text
-                            // already arrived in the Error and used to go no further than a bug report,
-                            // leaving the user with "adding failed" and no idea why.
+                            // showDetails: an upload can be refused for a precise reason the driver
+                            // spells out (e.g. a destination folder that was already there).
                             toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.device.addingFailed')}</>} error={e} showDetails />, autoClose: false });
                             // Always release the mutex
                             release();
@@ -248,7 +398,7 @@ export const actionRemoveFromDevice = (uuid, t) => {
                     })
                     .catch(e => {
                         console.error('failed to remove pack from device', e);
-                        toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.device.removingFailed')}</>} error={e} />, autoClose: false });
+                        toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.device.removingFailed')}</>} error={e} showDetails />, autoClose: false });
                     })
                     .finally(() => {
                         // Always release the mutex
@@ -262,7 +412,7 @@ export const actionRemoveFromDevice = (uuid, t) => {
 };
 
 export const actionReorderOnDevice = (uuids, t) => {
-    return dispatch => mutex.acquire()
+    return (dispatch, getState) => mutex.acquire()
         .then(
             release => {
                 let toastId = toast(t('toasts.device.reordering'), { autoClose: false });
@@ -274,11 +424,15 @@ export const actionReorderOnDevice = (uuids, t) => {
                             dispatch(actionRefreshDevice(t));
                         } else {
                             toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.device.reorderingFailed')}</>} />, autoClose: false });
+                            // The list shown was reordered optimistically: re-read the real order
+                            dispatch(actionRefreshDevice(t));
                         }
                     })
                     .catch(e => {
                         console.error('failed to reorder packs on device', e);
-                        toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.device.reorderingFailed')}</>} error={e} />, autoClose: false });
+                        toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.device.reorderingFailed')}</>} error={e} showDetails />, autoClose: false });
+                        // The list shown was reordered optimistically: re-read the real order
+                        dispatch(actionRefreshDevice(t));
                     })
                     .finally(() => {
                         // Always release the mutex
@@ -288,6 +442,12 @@ export const actionReorderOnDevice = (uuids, t) => {
             e => {
                 // Device is busy
                 toast.error(t('toasts.device.busy'));
+                // The list shown was reordered optimistically: put back the order the store holds
+                // (a new array, so that the view picks it up again).
+                const state = typeof getState === 'function' ? getState() : null;
+                if (state && state.device && Array.isArray(state.device.packs)) {
+                    dispatch(setDevicePacks([...state.device.packs]));
+                }
             });
 };
 
@@ -295,55 +455,50 @@ export const actionAddToLibrary = (uuid, driver, context, t) => {
     return dispatch => mutex.acquire()
         .then(
             release => {
+                const key = 'library:' + uuid;
+                if (followedPacks.has(key)) {
+                    console.warn('pack ' + uuid + ' is already being extracted to the library');
+                    toast.error(t('toasts.device.busy'));
+                    release();
+                    return;
+                }
                 let toastId = toast(t('toasts.library.adding'), { autoClose: false });
                 return addToLibrary(uuid, driver)
                     .then(resp => {
                         // Same contract as actionAddFromLibrary: past this point the extraction is
                         // running on the backend and the channel's health says nothing about it.
+                        // The backend queues it, so the mutex is released right away.
                         const transferId = resp.transferId;
-                        const progressAddress = 'storyteller.transfer.' + transferId + '.progress';
-                        const doneAddress = 'storyteller.transfer.' + transferId + '.done';
                         console.log('transfer ' + transferId + ': accepted by the backend (add to library)');
+                        followedPacks.add(key);
 
-                        let released = false;
-                        const releaseOnce = () => {
-                            if (!released) {
-                                released = true;
-                                release();
+                        const doneSubscription = followTransfer(transferId, context.channel, {
+                            onProgress: updateProgress(toastId),
+                            onVerdict: verdict => {
+                                followedPacks.delete(key);
+                                if (verdict.success) {
+                                    toast.update(toastId, {progress: null, type: toast.TYPE.SUCCESS, render: t('toasts.library.added'), autoClose: 5000});
+                                } else if (verdict.unknown) {
+                                    toast.update(toastId, {progress: null, type: toast.TYPE.WARNING, render: t('toasts.library.trackingLost'), autoClose: false});
+                                } else {
+                                    toast.update(toastId, {progress: null, type: toast.TYPE.ERROR, render: failureRender(<>{t('toasts.library.addingFailed')}</>, verdict), autoClose: false });
+                                }
+                                if (verdict.success || verdict.unknown) {
+                                    // Refresh library metadata and packs list
+                                    dispatch(actionRefreshLibrary(t));
+                                }
                             }
-                        };
-
-                        const onProgress = (error, message) => {
-                            if (message.body.progress < 1) {
-                                toast.update(toastId, {progress: message.body.progress, autoClose: false});
-                            }
-                        };
-                        const onDone = (error, message) => {
-                            console.log('transfer ' + transferId + ': backend reported ' + (message.body.success ? 'success' : 'failure'));
-                            context.channel.unsubscribe(progressAddress, onProgress);
-                            context.channel.unsubscribe(doneAddress, onDone);
-                            if (message.body.success) {
-                                toast.update(toastId, {progress: null, type: toast.TYPE.SUCCESS, render: t('toasts.library.added'), autoClose: 5000});
-                                // Refresh device metadata and packs list
-                                dispatch(actionRefreshLibrary(t));
-                            } else {
-                                toast.update(toastId, {progress: null, type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.addingFailed')}</>} />, autoClose: false });
-                            }
-                            releaseOnce();
-                        };
-
-                        context.channel.subscribe(progressAddress, onProgress);
-                        const doneSubscription = context.channel.subscribe(doneAddress, onDone);
+                        });
 
                         if (doneSubscription !== SUBSCRIBED) {
-                            console.warn('transfer ' + transferId + ': monitoring channel unavailable, extraction continues on the backend');
-                            toast.update(toastId, {progress: null, type: toast.TYPE.WARNING, render: t('toasts.library.trackingLost'), autoClose: false});
-                            releaseOnce();
+                            // Followed through the registry: the "adding" toast stays as it is.
+                            console.warn('transfer ' + transferId + ': monitoring channel unavailable, following the extraction through its registry');
                         }
+                        release();
                     })
                     .catch(e => {
                         console.error('failed to add pack to library', e);
-                        toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.addingFailed')}</>} error={e} />, autoClose: false });
+                        toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.addingFailed')}</>} error={e} showDetails />, autoClose: false });
                         // Always release the mutex
                         release();
                     });
@@ -375,8 +530,14 @@ export const actionDownloadFromLibrary = (uuid, path, t) => {
         let toastId = toast(t('toasts.library.downloading'), { autoClose: false });
         return downloadFromLibrary(uuid, path)
             .then(async resp => {
+                if (!resp.ok) {
+                    const text = await resp.text().catch(() => '');
+                    const error = new Error(resp.statusText + ': ' + errorMessage(text));
+                    error.status = resp.status;
+                    throw error;
+                }
                 const reader = resp.body.getReader();
-                const contentLength = +resp.headers.get('Content-Length');
+                const contentLength = +resp.headers.get('Content-Length') || 0;
                 // Read chunks and monitor progress
                 let receivedLength = 0;
                 let chunks = [];
@@ -387,9 +548,11 @@ export const actionDownloadFromLibrary = (uuid, path, t) => {
                     }
                     chunks.push(value);
                     receivedLength += value.length;
-                    let progress = (receivedLength / contentLength);
-                    console.log(`Received ${receivedLength} of ${contentLength}: ${progress}`);
-                    toast.update(toastId, {progress: progress, autoClose: false});
+                    if (contentLength > 0) {
+                        // Without a length there is no ratio to show (NaN or Infinity otherwise)
+                        let progress = Math.min(receivedLength / contentLength, 0.99);
+                        toast.update(toastId, {progress: progress, autoClose: false});
+                    }
                 }
                 let blob = new Blob(chunks);
                 toast.update(toastId, {
@@ -402,7 +565,7 @@ export const actionDownloadFromLibrary = (uuid, path, t) => {
             })
             .catch(e => {
                 console.error('failed to download pack from library', e);
-                toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.downloadingFailed')}</>} error={e} />, autoClose: false });
+                toast.update(toastId, { progress: null, type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.downloadingFailed')}</>} error={e} showDetails />, autoClose: false });
             });
     }
 };
@@ -467,12 +630,12 @@ export const actionUploadToLibrary = (uuid, path, packData, t) => {
                     // Refresh device metadata and packs list
                     dispatch(actionRefreshLibrary(t));
                 } else {
-                    toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.uploadingFailed')}</>} />, autoClose: false });
+                    toast.update(toastId, { progress: null, type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.uploadingFailed')}</>} />, autoClose: false });
                 }
             })
             .catch(e => {
                 console.error('failed to upload pack to library', e);
-                toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.uploadingFailed')}</>} error={e} />, autoClose: false });
+                toast.update(toastId, { progress: null, type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.uploadingFailed')}</>} error={e} showDetails />, autoClose: false });
             });
     }
 };
@@ -519,7 +682,7 @@ export const actionRemoveFromLibrary = (path, t) => {
             })
             .catch(e => {
                 console.error('failed to remove pack from library', e);
-                toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.removingFailed')}</>} error={e} />, autoClose: false });
+                toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.removingFailed')}</>} error={e} showDetails />, autoClose: false });
             });
     }
 };
