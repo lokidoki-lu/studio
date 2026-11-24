@@ -19,6 +19,7 @@ import {
     actionConvertInLibrary,
     actionRemoveFromLibrary,
     actionUploadToLibrary,
+    actionUploadManyToLibrary,
     actionCreatePackInEditor,
     actionLoadSampleInEditor,
     setAllowEnriched
@@ -32,6 +33,16 @@ import {chooseDropAction, applyProvenanceVerdict} from "../utils/packs";
 import {verifyConversion} from "../services/library";
 
 import './PackLibrary.css';
+
+/**
+ * A file the library can import: a ZIP archive or a binary .pack. Judged on the extension as well as
+ * the MIME type, which Windows often leaves empty or sets to something else for a .zip.
+ */
+export const isPackFile = (file) => {
+    const name = (file && file.name ? file.name : '').toLowerCase();
+    return ['application/zip', 'application/x-zip-compressed'].indexOf(file && file.type) !== -1
+        || name.endsWith('.zip') || name.endsWith('.pack');
+};
 
 
 class PackLibrary extends React.Component {
@@ -249,34 +260,24 @@ class PackLibrary extends React.Component {
         this.setState({showRemoveFromDeviceConfirmDialog: false});
     };
 
-    getDroppedFile = (event) => {
-        let file = null;
+    /** Every file dropped (non-file items, such as dragged text, are ignored). */
+    getDroppedFiles = (event) => {
         if (event.dataTransfer.items) {
-            // Use first file only
-            // If dropped items aren't files, reject them
-            if (event.dataTransfer.items[0].kind === 'file') {
-                file = event.dataTransfer.items[0].getAsFile();
-                console.log('Dropped item file name = ' + file.name);
-            } else {
-                // Ignore non-file item
-                return;
-            }
-        } else {
-            // Use first file only
-            file = event.dataTransfer.files[0];
-            console.log('Dropped file name = ' + file.name);
+            return Array.from(event.dataTransfer.items)
+                .filter(item => item.kind === 'file')
+                .map(item => item.getAsFile())
+                .filter(file => !!file);
         }
-        return file;
+        return Array.from(event.dataTransfer.files || []);
     };
 
     onDropPackIntoLibrary = (event) => {
         event.preventDefault();
         let packData = event.dataTransfer.getData("device-pack");
         if (!packData) {
-            // Handle dropped file
-            if (event.dataTransfer.items || event.dataTransfer.files) {
-                let file = this.getDroppedFile(event);
-                this.addPackToLibrary(file);
+            // Handle dropped files
+            if (event.dataTransfer.items || event.dataTransfer.files) {
+                this.addPacksToLibrary(this.getDroppedFiles(event));
             }
             // Otherwise ignore missing node data / file
             return;
@@ -292,22 +293,27 @@ class PackLibrary extends React.Component {
     };
 
     packAddFileSelected = (event) => {
-        let file = event.target.files[0];
-        console.log('Selected file name = ' + file.name);
-        this.addPackToLibrary(file);
+        const files = Array.from(event.target.files || []);
+        // Let the same files be chosen again later: onChange only fires when the value changes
+        event.target.value = '';
+        this.addPacksToLibrary(files);
     };
 
-    addPackToLibrary = (file) => {
+    /** One file goes through the single upload as before; several are imported one after the other. */
+    addPacksToLibrary = (files) => {
         const { t } = this.props;
-        if (!file) {
-            return;
+        const accepted = files.filter(isPackFile);
+        const rejected = files.filter(file => !isPackFile(file));
+        if (rejected.length > 0) {
+            toast.error(accepted.length === 0 && rejected.length === 1
+                ? t('toasts.library.packFileWrongType')
+                : t('toasts.library.packFilesWrongType', {names: rejected.map(file => file.name).join(', ')}));
         }
-        console.log(file.type);
-        if (['application/zip', 'application/x-zip-compressed'].indexOf(file.type) === -1 && !file.name.endsWith('.pack')) {
-            toast.error(t('toasts.library.packFileWrongType'));
-            return;
+        if (accepted.length === 1) {
+            this.props.uploadPackToLibrary(accepted[0].name, accepted[0]);
+        } else if (accepted.length > 1) {
+            this.props.uploadPacksToLibrary(accepted);
         }
-        this.props.uploadPackToLibrary(file.name, file);
     };
 
     onConvertLibraryPack = (pack, format) => {
@@ -541,7 +547,7 @@ class PackLibrary extends React.Component {
                         <h4>{t('library.local.title')}</h4>
                         {this.state.library.metadata && <div><strong>{t('library.local.path')}</strong> {this.state.library.metadata.path}</div>}
                         <div><strong>{t('library.local.packs.length')}</strong> { this.state.library.packs.length || '-' }</div>
-                        <input type="file" id="upload" style={{visibility: 'hidden', position: 'absolute'}} onChange={this.packAddFileSelected} />
+                        <input type="file" id="upload" multiple accept=".zip,.pack" style={{visibility: 'hidden', position: 'absolute'}} onChange={this.packAddFileSelected} />
                         <span title={t('library.local.addPack')} className="btn btn-default glyphicon glyphicon-import" onClick={this.showAddFileSelector}/>
                         <div className="editor-actions">
                             <p><button className="library-action" onClick={this.onCreateNewPackInEditor}>{t('library.local.empty.link1')}</button> <button className="library-action" onClick={this.onOpenSamplePackInEditor}>{t('library.local.empty.link2')}</button> {t('library.local.empty.suffix')}</p>
@@ -637,6 +643,7 @@ const mapDispatchToProps = (dispatch, ownProps) => ({
     convertPackInLibrary: (uuid, path, format, allowEnriched, context) => dispatch(actionConvertInLibrary(uuid, path, format, allowEnriched, context, ownProps.t)),
     removeFromLibrary: (path) => dispatch(actionRemoveFromLibrary(path, ownProps.t)),
     uploadPackToLibrary: (path, packData) => dispatch(actionUploadToLibrary(null, path, packData, ownProps.t)),
+    uploadPacksToLibrary: (files) => dispatch(actionUploadManyToLibrary(files, ownProps.t)),
     verifyConversion: (sourcePath, convertedPath) => verifyConversion(sourcePath, convertedPath),
     createPackInEditor: () => dispatch(actionCreatePackInEditor(ownProps.t)),
     loadSampleInEditor: () => dispatch(actionLoadSampleInEditor(ownProps.t)),
