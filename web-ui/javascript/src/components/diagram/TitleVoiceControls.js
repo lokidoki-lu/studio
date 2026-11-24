@@ -44,7 +44,8 @@ const TitleVoiceControls = ({getModel, onChanged}) => {
         if (busy) {
             return;
         }
-        const missing = collectMissingTitleAudio(getModel().getNodes());
+        const model = getModel();
+        const missing = collectMissingTitleAudio(model.getNodes());
         if (missing.length === 0) {
             toast.info(t('toasts.editor.titleVoiceNothingMissing'));
             return;
@@ -53,6 +54,7 @@ const TitleVoiceControls = ({getModel, onChanged}) => {
         const toastId = toast(t('toasts.editor.titleVoiceGenerating', {done: 0, total: missing.length}), {autoClose: false});
         try {
             await generateMissingTitleAudio(missing, {
+                isCurrent: () => getModel() === model,
                 onProgress: (done, total) => {
                     toast.update(toastId, {render: t('toasts.editor.titleVoiceGenerating', {done, total})});
                     onChanged();
