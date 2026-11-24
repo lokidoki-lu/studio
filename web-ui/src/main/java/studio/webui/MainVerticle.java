@@ -20,6 +20,8 @@ import io.vertx.ext.web.handler.ErrorHandler;
 import io.vertx.ext.web.handler.StaticHandler;
 import io.vertx.ext.web.handler.sockjs.BridgeOptions;
 import io.vertx.ext.web.handler.sockjs.SockJSHandler;
+import io.vertx.ext.web.handler.sockjs.SockJSHandlerOptions;
+import io.vertx.ext.web.handler.sockjs.Transport;
 import studio.metadata.DatabaseMetadataService;
 import studio.webui.api.DeviceController;
 import studio.webui.api.EvergreenController;
@@ -137,6 +139,17 @@ public class MainVerticle extends AbstractVerticle {
                 ))
         );
 
+        // No page of this application may be framed by another site: clickjacking on the UI, and
+        // SockJS's iframe page, which a framing site can drive by postMessage to read the event bus
+        // from this origin.
+        router.route().handler(ctx -> {
+            ctx.response()
+                    .putHeader("X-Frame-Options", "DENY")
+                    .putHeader("Content-Security-Policy", "frame-ancestors 'none'");
+            ctx.next();
+        });
+        router.routeWithRegex("/eventbus/iframe.*").handler(ctx -> ctx.response().setStatusCode(404).end());
+
         // Bridge event-bus to client-side app
         router.route("/eventbus/*").handler(eventBusHandler());
 
@@ -185,7 +198,13 @@ public class MainVerticle extends AbstractVerticle {
     private SockJSHandler eventBusHandler() {
         BridgeOptions options = new BridgeOptions()
                 .addOutboundPermitted(new PermittedOptions().setAddressRegex("storyteller\\.(.+)"));
-        SockJSHandler sockJSHandler = SockJSHandler.create(vertx);
+        // The client is on the same origin (or, in dev mode, CORS-allowed): WebSocket, with XHR as
+        // fallback, is all it needs. The other transports exist for cross-domain use through the
+        // iframe page or script tags, which are what a hostile page would use.
+        SockJSHandler sockJSHandler = SockJSHandler.create(vertx, new SockJSHandlerOptions()
+                .addDisabledTransport(Transport.EVENT_SOURCE.name())
+                .addDisabledTransport(Transport.HTML_FILE.name())
+                .addDisabledTransport(Transport.JSON_P.name()));
         sockJSHandler.bridge(options, event -> {
             if (event.type() == BridgeEventType.SOCKET_CREATED) {
                 LOGGER.debug("New sockjs client");
@@ -277,10 +296,10 @@ public class MainVerticle extends AbstractVerticle {
             return false;
         }
         String ct = contentType.toLowerCase(java.util.Locale.ROOT).trim();
-        if (ct.startsWith("application/json")) {
-            return true;
-        }
-        return ct.startsWith("multipart/form-data") && path != null && path.endsWith("/library/upload");
+        boolean upload = path != null && path.endsWith("/library/upload");
+        // An upload is a form and nothing else: its body limit is the large one, and a JSON body
+        // is held in memory, not streamed to disk.
+        return upload ? ct.startsWith("multipart/form-data") : ct.startsWith("application/json");
     }
 
     private boolean isDevMode() {
