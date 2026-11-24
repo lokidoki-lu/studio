@@ -11,7 +11,7 @@
  * then each asset once, as an entry served by the library, and keeps the assets as object URLs.
  */
 
-import {readFromLibrary} from "./reader";
+import {readFromLibrary, releaseLibraryAssets} from "./reader";
 
 const STAGE_UUID = '00000000-0000-0000-0000-000000000001';
 const SECOND_UUID = '00000000-0000-0000-0000-000000000002';
@@ -108,19 +108,16 @@ describe('readFromLibrary', () => {
         expect(revoked.sort()).toEqual(created.map(c => c.url).sort());
     });
 
-    it('releases the object URLs of the previous pack once another one is open', async () => {
-        const entries = {
+    it('releases the assets of the last pack read, and tells which model they belonged to', async () => {
+        const model = await readFromLibrary(libraryOf({
             'story.json': JSON.stringify(story()),
             'assets/cover.png': 'image bytes',
             'assets/shared.mp3': 'audio bytes'
-        };
-        await readFromLibrary(libraryOf(entries).loadEntry);
-        const first = created.map(c => c.url);
-        // Whatever an earlier test left open is released here too: only what follows matters
-        revoked.length = 0;
+        }).loadEntry);
 
-        await readFromLibrary(libraryOf(entries).loadEntry);
-
-        expect(revoked.sort()).toEqual(first.sort());
+        expect(revoked).toEqual([]);
+        expect(releaseLibraryAssets()).toBe(model);
+        expect(revoked.sort()).toEqual(created.map(c => c.url).sort());
+        expect(releaseLibraryAssets()).toBeNull();
     });
 });
