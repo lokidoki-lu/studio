@@ -12,12 +12,13 @@ import studio.core.v1.utils.XXTEACipher;
 import studio.driver.model.fs.FsDeviceKeyV3;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
@@ -50,17 +51,27 @@ public class CipherUtils {
     }
 
     static void addBootFileV2(Path packFolder, byte[] deviceUuid) throws IOException {
+        addBootFileV2(packFolder, deviceUuid, new OpenOption[0]);
+    }
+
+    /**
+     * Same, writing {@code bt} with the given options (none: create or replace, as
+     * {@code FileOutputStream} did). The driver passes {@code CREATE_NEW, WRITE} for a pack folder it
+     * created itself, where no {@code bt} may exist yet.
+     */
+    static void addBootFileV2(Path packFolder, byte[] deviceUuid, OpenOption... btOptions) throws IOException {
         // Compute specific key
         byte[] specificKey = computeSpecificKeyV2FromUUID(deviceUuid);
         // Read ciphered block of ri file
         // Both streams are closed by try-with-resources: a handle left open by an exception would keep the
-        // file locked on Windows, and the pack folder could then neither be completed nor removed.
+        // file locked on Windows, and the pack folder could then neither be completed nor removed. NIO
+        // streams, so that the handles also let a concurrent delete through on Windows.
         byte[] riCipheredBlock;
-        try (FileInputStream riFis = new FileInputStream(new File(packFolder.toFile(), FsStoryPackReader.IMAGE_INDEX_FILENAME))) {
+        try (InputStream riFis = Files.newInputStream(packFolder.resolve(FsStoryPackReader.IMAGE_INDEX_FILENAME))) {
             riCipheredBlock = riFis.readNBytes(CIPHER_BLOCK_SIZE_BOOT_V2);
         }
         // Add boot file: bt
-        try (FileOutputStream btFos = new FileOutputStream(new File(packFolder.toFile(), BOOT_FILENAME))) {
+        try (OutputStream btFos = Files.newOutputStream(packFolder.resolve(BOOT_FILENAME), btOptions)) {
             // The first **scrambled** 64 bytes of 'ri' file must be ciphered with the device-specific key into 'bt' file
             byte[] btCiphered = cipherFirstBlockSpecificKeyV2(riCipheredBlock, specificKey);
             btFos.write(btCiphered);
@@ -68,8 +79,13 @@ public class CipherUtils {
     }
 
     static void addBootFileV3(Path packFolder, FsDeviceKeyV3 deviceKeyV3) throws IOException {
+        addBootFileV3(packFolder, deviceKeyV3, new OpenOption[0]);
+    }
+
+    /** Same, writing {@code bt} with the given options (none: create or replace). */
+    static void addBootFileV3(Path packFolder, FsDeviceKeyV3 deviceKeyV3, OpenOption... btOptions) throws IOException {
         // Add boot file: bt
-        Files.write(new File(packFolder.toFile(), BOOT_FILENAME).toPath(), deviceKeyV3.getBt());
+        Files.write(packFolder.resolve(BOOT_FILENAME), deviceKeyV3.getBt(), btOptions);
     }
 
     static byte[] cipherFirstBlockCommonKey(byte[] data) {

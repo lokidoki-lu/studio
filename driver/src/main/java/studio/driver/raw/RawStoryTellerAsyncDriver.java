@@ -35,7 +35,8 @@ public class RawStoryTellerAsyncDriver {
     private static final int PACK_INDEX_SD_SECTOR = 100000;
     private static final int PACK_TRANSFER_CHUNK_SIZE_IN_SECTORS = 5000;    // 2.5 MB
 
-    private Device device = null;
+    // Volatile: written on the hotplug event thread, read by the threads serving requests.
+    private volatile Device device = null;
     private List<DeviceHotplugEventListener> listeners = new ArrayList<>();
 
 
@@ -52,15 +53,28 @@ public class RawStoryTellerAsyncDriver {
                     }
                     @Override
                     public void onDeviceUnplugged(Device device) {
-                        // Update device reference
-                        RawStoryTellerAsyncDriver.this.device = null;
-                        // Notify listeners
-                        RawStoryTellerAsyncDriver.this.listeners.forEach(listener -> listener.onDeviceUnplugged(device));
+                        RawStoryTellerAsyncDriver.this.handleDeviceUnplugged(device);
                     }
                 }
         );
     }
 
+
+    /**
+     * Forgets the device only if it is the current one. An unplug of any other device (or of one
+     * already forgotten) must not take down the device in use. Events arrive one at a time, in the
+     * order libusb reported them ({@code LibUsbDetectionHelper}).
+     */
+    void handleDeviceUnplugged(Device device) {
+        if (device == null || !device.equals(this.device)) {
+            LOGGER.info("Ignoring the unplug of a device that is not the current one: " + device);
+            return;
+        }
+        // Update device reference
+        this.device = null;
+        // Notify listeners
+        this.listeners.forEach(listener -> listener.onDeviceUnplugged(device));
+    }
 
     public void registerDeviceListener(DeviceHotplugEventListener listener) {
         this.listeners.add(listener);

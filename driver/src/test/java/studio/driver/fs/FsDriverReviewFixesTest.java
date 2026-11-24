@@ -451,7 +451,9 @@ class FsDriverReviewFixesTest {
             DriverTestSupport.setField(driver, "listeners", new ArrayList<>());
             DriverTestSupport.setField(driver, "partitionLocator", new DevicePartitionLocator(
                     () -> List.of(partition.toString()), path -> true, millis -> true, 0L, 1));
-            driver.handleDeviceUnplugged(null);
+            // The device currently published (an inert Device compares equal to another inert one):
+            // an unplug of any other device is ignored by the driver.
+            driver.handleDeviceUnplugged(DriverTestSupport.newInertDevice());
             driver.handleDevicePlugged(DriverTestSupport.newInertDevice());
             assertEquals(partition.toString(), driver.getPartitionMountPoint(), "B is on the same path as A");
         }

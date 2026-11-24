@@ -234,4 +234,83 @@ class FsDeviceDetectionTest {
         assertNull(driver.getPartitionMountPoint());
         assertNull(get(driver, "awaitingPartitionFor"));
     }
+
+    /** A device distinct from {@link #newDevice()} ones: usb4java compares devices by native pointer. */
+    private static Device deviceWithPointer(long pointer) {
+        Device device = newDevice();
+        set(device, "devicePointer", pointer);
+        return device;
+    }
+
+    @Test
+    @DisplayName("the unplug of another device leaves the current one, and its generation, alone")
+    void unplugOfAnotherDeviceIsIgnored() {
+        installLocator(locatorReturning("D:\\", null));
+        Device current = deviceWithPointer(0x1000L);
+        driver.handleDevicePlugged(current);
+        FsStoryTellerAsyncDriver.PartitionSession before = driver.currentPartition();
+
+        driver.handleDeviceUnplugged(deviceWithPointer(0x2000L));
+        driver.handleDeviceUnplugged(null);
+
+        assertEquals("D:\\", driver.getPartitionMountPoint());
+        assertSame(current, get(driver, "device"));
+        assertEquals(before.generation, driver.currentPartition().generation, "operations in flight must not be cancelled");
+        assertEquals(0, unpluggedEvents.size(), "listeners hear nothing");
+    }
+
+    @Test
+    @DisplayName("the unplug of another device does not cancel the partition search in flight")
+    void unplugOfAnotherDeviceDoesNotCancelTheSearch() {
+        Device awaited = deviceWithPointer(0x1000L);
+        AtomicBoolean cancellationObserved = new AtomicBoolean(false);
+        installLocator(new DevicePartitionLocator(List::of, path -> false, millis -> true, 0L, 1) {
+            @Override
+            public Optional<String> awaitPartition(java.util.function.BooleanSupplier deviceStillPlugged) {
+                driver.handleDeviceUnplugged(deviceWithPointer(0x2000L));
+                if (!deviceStillPlugged.getAsBoolean()) {
+                    cancellationObserved.set(true);
+                }
+                return Optional.of("D:\\");
+            }
+        });
+
+        driver.handleDevicePlugged(awaited);
+
+        assertEquals(false, cancellationObserved.get());
+        assertSame(awaited, get(driver, "device"));
+        assertEquals(1, pluggedEvents.size());
+        assertEquals(0, unpluggedEvents.size());
+    }
+
+    @Test
+    @DisplayName("a search superseded by a newer one for the same device does not publish")
+    void supersededSearchDoesNotPublish() {
+        Device device = deviceWithPointer(0x1000L);
+        List<String> outcomes = new ArrayList<>();
+        // First search: while it waits, the device is unplugged and plugged again, which starts a
+        // second search for the very same device. The first one must see itself cancelled.
+        installLocator(new DevicePartitionLocator(List::of, path -> false, millis -> true, 0L, 1) {
+            private boolean nested = false;
+
+            @Override
+            public Optional<String> awaitPartition(java.util.function.BooleanSupplier deviceStillPlugged) {
+                if (!nested) {
+                    nested = true;
+                    driver.handleDeviceUnplugged(device);
+                    driver.handleDevicePlugged(device);   // second search, completes and publishes E:
+                    outcomes.add("first search still wanted: " + deviceStillPlugged.getAsBoolean());
+                    return Optional.of("D:\\");
+                }
+                return Optional.of("E:\\");
+            }
+        });
+
+        driver.handleDevicePlugged(device);
+
+        assertEquals(List.of("first search still wanted: false"), outcomes);
+        assertEquals("E:\\", driver.getPartitionMountPoint(), "only the newer search published");
+        assertEquals(1, pluggedEvents.size());
+        assertNull(get(driver, "awaitingPartitionFor"));
+    }
 }

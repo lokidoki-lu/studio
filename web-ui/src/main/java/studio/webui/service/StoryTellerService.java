@@ -44,8 +44,13 @@ public class StoryTellerService implements IStoryTellerService {
 
     private RawStoryTellerAsyncDriver driver;
     private FsStoryTellerAsyncDriver fsDriver;
-    private Device device;
-    private Device fsDevice;
+    // Written by the hotplug threads, read by unordered request workers.
+    private volatile Device device;
+    private volatile Device fsDevice;
+    // Last answers read from a 1.x device, served while the queue is busy with it: a 1.x device is
+    // read over USB, inside the queue, and a long transfer would otherwise hold every refresh.
+    private volatile Optional<JsonObject> lastInfosV1 = Optional.empty();
+    private volatile JsonArray lastPacksV1;
 
     private final DeviceOperationQueue queue = new DeviceOperationQueue();
     private final TransferNotifier notifier;
@@ -162,6 +167,8 @@ public class StoryTellerService implements IStoryTellerService {
      * cannot succeed, and a frozen one would otherwise hold the queue until STUdio is restarted.
      */
     private void abandonDeviceOperations() {
+        lastInfosV1 = Optional.empty();
+        lastPacksV1 = null;
         queue.reset();
         notifier.failAllUnfinished(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE,
                 "The device was unplugged before the transfer ended"));
@@ -170,7 +177,13 @@ public class StoryTellerService implements IStoryTellerService {
     public CompletableFuture<Optional<JsonObject>> deviceInfos() {
         if (device != null) {
             // A 1.x device is read over USB, which must not overlap a transfer.
-            return queue.submit(this::deviceInfosV1);
+            if (queue.pending() > 0 && lastInfosV1.isPresent()) {
+                return CompletableFuture.completedFuture(Optional.of(lastInfosV1.get().copy().put("cached", true)));
+            }
+            return queue.submit(this::deviceInfosV1).thenApply(infos -> {
+                lastInfosV1 = infos;
+                return infos;
+            });
         } else if (fsDevice != null) {
             return deviceInfosV2();
         } else {
@@ -214,7 +227,13 @@ public class StoryTellerService implements IStoryTellerService {
 
     public CompletableFuture<JsonArray> packs() {
         if (device != null) {
-            return queue.submit(this::packsV1);
+            if (queue.pending() > 0 && lastPacksV1 != null) {
+                return CompletableFuture.completedFuture(lastPacksV1.copy());
+            }
+            return queue.submit(this::packsV1).thenApply(packs -> {
+                lastPacksV1 = packs;
+                return packs;
+            });
         } else if (fsDevice != null) {
             return packsV2();
         } else {
@@ -268,12 +287,17 @@ public class StoryTellerService implements IStoryTellerService {
             return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.LIBRARY_PACK_NOT_FOUND,
                     "Pack not found in the library: " + (packFile == null ? null : packFile.getName())));
         }
+        if (notifier.registry().hasUnfinished(uuid, "add")) {
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.PACK_ALREADY_ON_DEVICE,
+                    "The pack " + uuid + " is already being transferred to the device"));
+        }
         // On a 2.x+ device the index is a file, safe to read while a queued upload is running (it is
-        // replaced atomically). A 1.x device is read over USB, which must not overlap a transfer, so
-        // there the check waits its turn in the queue like any other device access.
+        // replaced atomically). A 1.x device is read over USB, which must not overlap a transfer:
+        // there the check is left to the transfer itself, which makes it again in its turn, so that
+        // the request is answered at once instead of waiting behind every queued operation.
         CompletableFuture<Boolean> precheck = fsDevice != null
                 ? isPackOnDevice(uuid)
-                : queue.submit(() -> isPackOnDevice(uuid));
+                : CompletableFuture.completedFuture(false);
         return precheck
                 .thenApply(present -> {
                     if (present) {
@@ -285,13 +309,25 @@ public class StoryTellerService implements IStoryTellerService {
                     queue.submit(() -> runAddPack(transferId, uuid, packFile))
                             // The queue may give up on the operation (timeout, device unplugged)
                             // before it settles: the transfer must not stay "running" for ever.
-                            .whenComplete((ignored, t) -> {
-                                if (t != null) {
-                                    notifier.failed(transferId, t);
-                                }
-                            });
+                            .whenComplete((ignored, t) -> settleQueued(transferId, t));
                     return Optional.of(transferId);
                 });
+    }
+
+    /**
+     * What the queue's answer means for a transfer. A timeout is not a verdict: the operation may
+     * still be writing and may still succeed, so the transfer stays running, marked as stalled.
+     */
+    private void settleQueued(String transferId, Throwable t) {
+        if (t == null) {
+            return;
+        }
+        Throwable c = t instanceof CompletionException && t.getCause() != null ? t.getCause() : t;
+        if (c instanceof DeviceOperationQueue.OperationTimeoutException) {
+            notifier.registry().stalled(transferId, c.getMessage());
+        } else {
+            notifier.failed(transferId, t);
+        }
     }
 
     private CompletableFuture<Void> runAddPack(String transferId, String uuid, File packFile) {
@@ -479,11 +515,7 @@ public class StoryTellerService implements IStoryTellerService {
                     notifier.succeeded(transferId);
                 }
             });
-        }).whenComplete((ignored, t) -> {
-            if (t != null) {
-                notifier.failed(transferId, t);
-            }
-        });
+        }).whenComplete((ignored, t) -> settleQueued(transferId, t));
         return CompletableFuture.completedFuture(Optional.of(transferId));
     }
 

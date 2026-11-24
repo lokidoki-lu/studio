@@ -23,11 +23,15 @@ import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -91,7 +95,7 @@ public class FsStoryTellerAsyncDriver {
         LibUsbDetectionHelper.initializeLibUsb(DeviceVersion.DEVICE_VERSION_2, new DeviceHotplugEventListener() {
                     @Override
                     public void onDevicePlugged(Device device) {
-                        FsStoryTellerAsyncDriver.this.handleDevicePlugged(device);
+                        FsStoryTellerAsyncDriver.this.onDevicePluggedEvent(device);
                     }
 
                     @Override
@@ -103,52 +107,120 @@ public class FsStoryTellerAsyncDriver {
     }
 
     /**
-     * Resolves the mounted partition, then publishes the device.
+     * Identifies one partition search. {@link #awaitingPartitionFor} alone cannot: after plug A,
+     * unplug A, plug A again, the first search would see "still waiting for A" and carry on next to
+     * the second one. Guarded by the instance lock, like the fields it is compared with.
+     */
+    private Object partitionSearch = null;
+
+    /**
+     * Entry point of the hotplug listener. Events reach it one at a time, in the order libusb
+     * reported them (see {@code LibUsbDetectionHelper}), so the search is only <em>registered</em>
+     * here and run elsewhere: waiting for the partition on the event thread would hold back the
+     * very unplug event that is supposed to cancel it.
+     */
+    private void onDevicePluggedEvent(Device device) {
+        Object search = beginPartitionSearch(device);
+        CompletableFuture.runAsync(() -> awaitPartitionAndPublish(device, search))
+                .exceptionally(e -> {
+                    LOGGER.log(Level.SEVERE, "Failed to handle device plug event", e);
+                    return null;
+                });
+    }
+
+    private synchronized Object beginPartitionSearch(Device device) {
+        Object search = new Object();
+        this.partitionSearch = search;
+        this.awaitingPartitionFor = device;
+        return search;
+    }
+
+    private synchronized boolean isSearchCurrent(Device device, Object search) {
+        return this.partitionSearch == search && this.awaitingPartitionFor == device;
+    }
+
+    /** Ends the search, unless another one (or an unplug) already replaced it. */
+    private synchronized void endPartitionSearch(Object search) {
+        if (this.partitionSearch == search) {
+            this.partitionSearch = null;
+            this.awaitingPartitionFor = null;
+        }
+    }
+
+    /**
+     * Resolves the mounted partition, then publishes the device. Runs the whole sequence on the
+     * calling thread.
      *
      * <p>Nothing is allowed to escape: this runs inside a {@code CompletableFuture} whose exceptions
      * are only logged, so throwing here used to mean "no device, no message, and no retry until the
      * next plug event" — the device stayed invisible to STUdio even though the OS had mounted it.
      */
     void handleDevicePlugged(Device device) {
+        awaitPartitionAndPublish(device, beginPartitionSearch(device));
+    }
+
+    private void awaitPartitionAndPublish(Device device, Object search) {
         LOGGER.info("Device plugged; waiting for its partition to be mounted");
-        this.awaitingPartitionFor = device;
         try {
             Optional<String> mountPoint =
-                    partitionLocator.awaitPartition(() -> this.awaitingPartitionFor == device);
+                    partitionLocator.awaitPartition(() -> isSearchCurrent(device, search));
 
-            if (this.awaitingPartitionFor != device) {
-                // Unplugged while we were waiting. handleDeviceUnplugged already cleared the state.
-                LOGGER.info("Device was unplugged before its partition became available");
-                return;
-            }
-            if (!mountPoint.isPresent()) {
-                // Already logged by the locator. Deliberately not thrown: the caller only logs.
-                this.awaitingPartitionFor = null;
-                return;
-            }
-
+            String published;
             synchronized (this) {
+                // Checked and published under the same lock an unplug takes, so an unplug can no
+                // longer slip in between "still wanted?" and "publish".
+                if (!isSearchCurrent(device, search)) {
+                    // Unplugged (or superseded) while we were waiting; the state is not ours anymore.
+                    LOGGER.info("Device was unplugged before its partition became available");
+                    return;
+                }
+                endPartitionSearch(search);
+                if (!mountPoint.isPresent()) {
+                    // Already logged by the locator. Deliberately not thrown: the caller only logs.
+                    return;
+                }
                 this.partitionGeneration++;
                 this.partitionMountPoint = mountPoint.get();
                 this.device = device;
+                published = this.partitionMountPoint;
             }
-            this.awaitingPartitionFor = null;
-            LOGGER.info("Device ready on " + this.partitionMountPoint);
+            LOGGER.info("Device ready on " + published);
             this.listeners.forEach(listener -> listener.onDevicePlugged(device));
         } catch (Exception e) {
-            this.awaitingPartitionFor = null;
+            endPartitionSearch(search);
             LOGGER.log(Level.SEVERE, "Failed to handle device plug event", e);
         }
     }
 
+    /**
+     * Forgets the device, if it is the one published or the one a partition search is waiting for.
+     *
+     * <p>Any other unplug is ignored: a {@code DEVICE_LEFT} for another (or an already forgotten)
+     * Lunii must not take down the device currently in use, nor move the generation and make the
+     * operations running on it refuse to write.
+     */
     void handleDeviceUnplugged(Device device) {
-        LOGGER.info("Device unplugged");
-        // Cancels any partition search in flight and prevents a stale mount point from surviving.
-        this.awaitingPartitionFor = null;
+        boolean wasCurrent;
+        boolean wasAwaited;
         synchronized (this) {
+            wasCurrent = device != null && device.equals(this.device);
+            wasAwaited = device != null && device.equals(this.awaitingPartitionFor);
+            if (!wasCurrent && !wasAwaited) {
+                LOGGER.info("Ignoring the unplug of a device that is neither the current one nor awaited: " + device);
+                return;
+            }
+            LOGGER.info("Device unplugged");
+            if (wasAwaited) {
+                // Cancels the partition search in flight.
+                this.awaitingPartitionFor = null;
+                this.partitionSearch = null;
+            }
+            // Prevents a stale mount point from surviving.
             this.partitionGeneration++;
-            this.device = null;
-            this.partitionMountPoint = null;
+            if (wasCurrent) {
+                this.device = null;
+                this.partitionMountPoint = null;
+            }
         }
         this.listeners.forEach(listener -> listener.onDeviceUnplugged(device));
     }
@@ -225,7 +297,10 @@ public class FsStoryTellerAsyncDriver {
         // a device with an unreadable `.md` leaked one handle per call — and getDeviceInfos runs on
         // every /infos request and at the start of every transfer. On Windows the retained handle
         // keeps `.md` locked. Parsing, version dispatch and error mapping below are unchanged.
-        try (FileInputStream deviceMetadataFis = new FileInputStream(mdFile)) {
+        // Opened through NIO, not FileInputStream: on Windows a FileInputStream handle is opened
+        // without FILE_SHARE_DELETE, so a read served outside the device operation queue (this runs
+        // on every /infos request) made a concurrent delete or rename on the card fail.
+        try (InputStream deviceMetadataFis = Files.newInputStream(Paths.get(mdFile))) {
             // MD file format version
             short mdVersion = readLittleEndianShort(deviceMetadataFis);
             LOGGER.finest("Device metadata format version: " + mdVersion);
@@ -252,7 +327,7 @@ public class FsStoryTellerAsyncDriver {
         return CompletableFuture.completedFuture(infos);
     }
 
-    private void parseDeviceInfosMeta1to3(FsDeviceInfos infos, FileInputStream deviceMetadataFis) throws IOException {
+    private void parseDeviceInfosMeta1to3(FsDeviceInfos infos, InputStream deviceMetadataFis) throws IOException {
         // Firmware version
         deviceMetadataFis.skip(4);
         short major = readLittleEndianShort(deviceMetadataFis);
@@ -279,7 +354,7 @@ public class FsStoryTellerAsyncDriver {
         LOGGER.fine("UUID: " + Hex.encodeHexString(uuid));
     }
 
-    private void parseDeviceInfosMeta6to7(FsDeviceInfos infos, short mdVersion, FileInputStream deviceMetadataFis) throws IOException {
+    private void parseDeviceInfosMeta6to7(FsDeviceInfos infos, short mdVersion, InputStream deviceMetadataFis) throws IOException {
         // Firmware version
         short major = readAsciiToShort(deviceMetadataFis, 1);
         deviceMetadataFis.skip(1);
@@ -330,7 +405,7 @@ public class FsStoryTellerAsyncDriver {
         LOGGER.fine("UUID: " + Hex.encodeHexString(uuid));
     }
 
-    private short readLittleEndianShort(FileInputStream fis) throws IOException {
+    private short readLittleEndianShort(InputStream fis) throws IOException {
         byte[] buffer = new byte[2];
         fis.read(buffer);
         ByteBuffer bb = ByteBuffer.wrap(buffer);
@@ -338,7 +413,7 @@ public class FsStoryTellerAsyncDriver {
         return bb.getShort();
     }
 
-    private long readBigEndianLong(FileInputStream fis) throws IOException {
+    private long readBigEndianLong(InputStream fis) throws IOException {
         byte[] buffer = new byte[8];
         fis.read(buffer);
         ByteBuffer bb = ByteBuffer.wrap(buffer);
@@ -346,11 +421,11 @@ public class FsStoryTellerAsyncDriver {
         return bb.getLong();
     }
 
-    private short readAsciiToShort(FileInputStream fis, int numberBytes) throws IOException {
+    private short readAsciiToShort(InputStream fis, int numberBytes) throws IOException {
         return Short.parseShort(new String(fis.readNBytes(numberBytes), StandardCharsets.UTF_8));
     }
 
-    private long readAsciiToLong(FileInputStream fis, int numberBytes) throws IOException {
+    private long readAsciiToLong(InputStream fis, int numberBytes) throws IOException {
         return Long.parseLong(new String(fis.readNBytes(numberBytes), StandardCharsets.UTF_8));
     }
 
@@ -391,9 +466,11 @@ public class FsStoryTellerAsyncDriver {
                                 continue;
                             }
                             // try-with-resources: the version read below throws on a truncated 'ni',
-                            // and the explicit closes this replaces were skipped when it did.
+                            // and the explicit closes this replaces were skipped when it did. NIO, not
+                            // FileInputStream: the listing runs outside the device operation queue, and
+                            // on Windows only an NIO handle lets a concurrent delete of the pack proceed.
                             short version;
-                            try (FileInputStream niFis = new FileInputStream(nodeIndex);
+                            try (InputStream niFis = Files.newInputStream(nodeIndex.toPath());
                                  DataInputStream niDis = new DataInputStream(niFis)) {
                                 ByteBuffer bb = ByteBuffer.wrap(niDis.readNBytes(512)).order(ByteOrder.LITTLE_ENDIAN);
                                 version = bb.getShort(2);
@@ -767,11 +844,25 @@ public class FsStoryTellerAsyncDriver {
     }
 
 
+    /** Prefix of the folder a pack is extracted under in the library; the library listing skips it. */
+    static final String LIBRARY_STAGING_PREFIX = ".staging-";
+
+    /**
+     * Extracts a pack from the device into the library folder {@code outputPath}, as
+     * {@code <outputPath>/<uuid>}.
+     *
+     * <p>The pack is assembled under a hidden {@code .staging-<uuid>.<random>} sibling and renamed to
+     * its final name only once complete, so the library never lists a partial pack: on any failure,
+     * unsupported firmware included, the staging folder is removed and {@code <uuid>} never appears.
+     * An existing {@code <uuid>} — folder, file, link or junction — is refused, never written into,
+     * replaced or followed.
+     */
     public CompletableFuture<TransferStatus> downloadPack(String uuid, String outputPath, TransferProgressListener listener) {
-        String mountPoint = this.partitionMountPoint;
-        if (this.device == null || mountPoint == null) {
+        PartitionSession session = currentPartition();
+        if (session == null) {
             return CompletableFuture.failedFuture(noDevice());
         }
+        String mountPoint = session.mountPoint;
         UUID packUUID;
         try {
             packUUID = canonicalPackUuid(uuid);
@@ -783,30 +874,110 @@ public class FsStoryTellerAsyncDriver {
                 .thenCompose(packUUIDs -> getDeviceInfos(mountPoint)
                         .thenCompose(deviceInfos -> CompletableFuture.supplyAsync(() -> {
                     // Look for UUID in packs index
-                    if (packUUIDs.contains(packUUID)) {
-                        LOGGER.fine("Found pack with uuid: " + packUUID);
-
-                        // Generate folder name
-                        String sourceFolder = mountPoint + File.separator + CONTENT_FOLDER + File.separator + folderNameOf(packUUID);
-                        LOGGER.finest("Downloading pack folder: " + sourceFolder);
-
-                        if (Files.exists(Paths.get(sourceFolder))) {
-                            try {
-                                // Create destination folder
-                                File destFolder = new File(outputPath + File.separator + packUUID);
-                                destFolder.mkdirs();
-                                // Copy folder with progress tracking
-                                return copyPackFolder(sourceFolder, destFolder, deviceInfos, false, listener);
-                            } catch (IOException e) {
-                                throw new StoryTellerException("Failed to copy pack from device", e);
-                            }
-                        } else {
-                            throw new StoryTellerException("Pack folder not found");
-                        }
-                    } else {
+                    if (!packUUIDs.contains(packUUID)) {
                         throw new StoryTellerException(StoryTellerException.Reason.PACK_NOT_ON_DEVICE, "Pack not found");
                     }
+                    LOGGER.fine("Found pack with uuid: " + packUUID);
+
+                    // Generate folder name
+                    String sourceFolder = mountPoint + File.separator + CONTENT_FOLDER + File.separator + folderNameOf(packUUID);
+                    LOGGER.finest("Downloading pack folder: " + sourceFolder);
+                    if (!Files.exists(Paths.get(sourceFolder))) {
+                        throw new StoryTellerException("Pack folder not found");
+                    }
+                    requireSupportedFirmware(deviceInfos);
+                    TransferStatus status = extractIntoLibrary(session, sourceFolder, Paths.get(outputPath), packUUID, deviceInfos, listener);
+                    if (listener != null) {
+                        listener.onComplete(status);
+                    }
+                    return status;
                 })));
+    }
+
+    /** Copies the pack under a staging name, then renames it to {@code <library>/<uuid>}. */
+    private TransferStatus extractIntoLibrary(PartitionSession session, String sourceFolder, Path library, UUID packUUID,
+                                              FsDeviceInfos deviceInfos, TransferProgressListener listener) {
+        Path destination = library.resolve(packUUID.toString());
+        refuseExistingLibraryEntry(destination);
+        Path staging;
+        try {
+            Files.createDirectories(library);
+            staging = library.resolve(LIBRARY_STAGING_PREFIX + packUUID + "." + UUID.randomUUID());
+            Files.createDirectory(staging);
+        } catch (IOException e) {
+            throw new StoryTellerException("Failed to copy pack from device", e);
+        }
+        boolean installed = false;
+        try {
+            TransferStatus status = copyPackFolder(session, sourceFolder, staging.toFile(), deviceInfos, false,
+                    progressOnly(listener));
+            // Checked again just before the rename: on some platforms a rename onto an existing empty
+            // folder replaces it, so this check is what refuses it there. Extractions are serialized
+            // by the caller, which keeps the window between the two to that of a concurrent tool.
+            refuseExistingLibraryEntry(destination);
+            try {
+                Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                // Same parent folder, so this is still a rename; without REPLACE_EXISTING it refuses
+                // an existing destination.
+                Files.move(staging, destination);
+            }
+            installed = true;
+            return status;
+        } catch (FileAlreadyExistsException e) {
+            throw libraryEntryExists(destination, e);
+        } catch (IOException e) {
+            throw new StoryTellerException("Failed to copy pack from device", e);
+        } finally {
+            if (!installed) {
+                removeStagingQuietly(staging);
+            }
+        }
+    }
+
+    private static void refuseExistingLibraryEntry(Path destination) {
+        // NOFOLLOW_LINKS: a link or junction at that name is an existing entry, whatever it points to
+        // (and even if it points nowhere). It is neither followed nor replaced.
+        if (Files.exists(destination, LinkOption.NOFOLLOW_LINKS)) {
+            throw libraryEntryExists(destination, null);
+        }
+    }
+
+    private static StoryTellerException libraryEntryExists(Path destination, Throwable cause) {
+        return new StoryTellerException(StoryTellerException.Reason.CONTENT_FOLDER_EXISTS,
+                "The pack is already in the library: " + destination + " exists. Nothing was written there.", cause);
+    }
+
+    private static void removeStagingQuietly(Path staging) {
+        try {
+            // commons-io does not follow symbolic links while deleting.
+            org.apache.commons.io.FileUtils.deleteDirectory(staging.toFile());
+        } catch (IOException | RuntimeException e) {
+            LOGGER.log(Level.WARNING, "Failed to remove the staging folder " + staging + " after a failed extraction", e);
+        }
+    }
+
+    /** Forwards progress but not completion: the operation completes once its last step is done. */
+    private static TransferProgressListener progressOnly(TransferProgressListener listener) {
+        return new TransferProgressListener() {
+            @Override
+            public void onProgress(TransferStatus status) {
+                if (listener != null) {
+                    listener.onProgress(status);
+                }
+            }
+
+            @Override
+            public void onComplete(TransferStatus status) {
+                // Not forwarded: the caller reports completion itself, once the pack is in place.
+            }
+        };
+    }
+
+    private static void requireSupportedFirmware(FsDeviceInfos deviceInfos) {
+        if (deviceInfos.getFirmwareMajor() != 2 && deviceInfos.getFirmwareMajor() != 3) {
+            throw new StoryTellerException("Failed to copy pack folder: unsupported firmware version " + deviceInfos.getFirmwareMajor());
+        }
     }
 
     public CompletableFuture<TransferStatus> uploadPack(String uuid, String inputPath, TransferProgressListener listener) {
@@ -899,19 +1070,8 @@ public class FsStoryTellerAsyncDriver {
         CompletableFuture<TransferStatus> upload = getDeviceInfos(mountPoint).thenCompose(deviceInfos ->
                 CompletableFuture.supplyAsync(() -> {
                     try {
-                        TransferStatus copied = copyPackFolder(inputPath, destFolder, deviceInfos, true, new TransferProgressListener() {
-                            @Override
-                            public void onProgress(TransferStatus status) {
-                                if (listener != null) {
-                                    listener.onProgress(status);
-                                }
-                            }
-
-                            @Override
-                            public void onComplete(TransferStatus status) {
-                                // Not calling listener because the pack must be added to the index
-                            }
-                        });
+                        // Completion is not forwarded: the pack must be added to the index first.
+                        TransferStatus copied = copyPackFolder(session, inputPath, destFolder, deviceInfos, true, progressOnly(listener));
                         // Every file was forced by copyPackFolder before it returned; the directory entries that name
                         // them are asked for too, best effort, before the index starts pointing at them.
                         FsSync.forceDirectoryTreeBestEffort(destFolderPath);
@@ -984,7 +1144,16 @@ public class FsStoryTellerAsyncDriver {
         }
     }
 
-    private TransferStatus copyPackFolder(String sourceFolder, File destFolder, FsDeviceInfos deviceInfos, boolean isUpload, TransferProgressListener listener) throws IOException {
+    /**
+     * Copies a pack folder, transcoding its assets for the direction of the transfer.
+     *
+     * <p>{@code destFolder} must have just been created, exclusively, by the calling operation: every
+     * file is written with {@code CREATE_NEW}, so nothing that already exists in it is ever
+     * truncated or replaced. Before each file, the partition the operation started on must still be
+     * the current one, so that a thread left over from a card that was unplugged never writes to (or
+     * reads from) another card mounted at the same path.
+     */
+    private TransferStatus copyPackFolder(PartitionSession session, String sourceFolder, File destFolder, FsDeviceInfos deviceInfos, boolean isUpload, TransferProgressListener listener) throws IOException {
         // Keep track of transferred bytes and elapsed time
         final long startTime = System.currentTimeMillis();
         AtomicInteger transferred = new AtomicInteger(0);
@@ -992,9 +1161,8 @@ public class FsStoryTellerAsyncDriver {
         LOGGER.finest("Pack folder size: " + folderSize);
 
         // Fail for unsupported firmware versions
-        if (deviceInfos.getFirmwareMajor() != 2 && deviceInfos.getFirmwareMajor() != 3) {
-            throw new StoryTellerException("Failed to copy pack folder: unsupported firmware version " + deviceInfos.getFirmwareMajor());
-        }
+        requireSupportedFirmware(deviceInfos);
+        String partitionChanged = isUpload ? "the pack was not copied to the device" : "the pack was not extracted";
 
         // Assets are cleartext if file '.cleartext' exists
         boolean isCleartext = (new FsStoryPackReader()).isCleartext(Paths.get(sourceFolder), isUpload);
@@ -1005,7 +1173,7 @@ public class FsStoryTellerAsyncDriver {
         // Always add .cleartext file when downloading
         if (!isUpload) {
             // Indicate that files are cleartext
-            new File(destFolder, FsStoryPackReader.CLEARTEXT_FILENAME).createNewFile();
+            Files.write(destFolder.toPath().resolve(FsStoryPackReader.CLEARTEXT_FILENAME), new byte[0], EXCLUSIVE);
         }
 
         // Copy folders and files
@@ -1013,12 +1181,14 @@ public class FsStoryTellerAsyncDriver {
         // traversal is abandoned mid-way and only try-with-resources still closes them. Leaving them
         // open makes the source pack undeletable on Windows, and on FAT32 its directory entry
         // survives in the parent even after a successful delete.
-        try (Stream<Path> sourcePaths = Files.walk(Paths.get(sourceFolder))) {
+        Path sourceRoot = Paths.get(sourceFolder);
+        try (Stream<Path> sourcePaths = Files.walk(sourceRoot)) {
             sourcePaths.forEach(s -> {
                 try {
-                    Path d = destFolder.toPath().resolve(Paths.get(sourceFolder).relativize(s));
+                    Path d = destFolder.toPath().resolve(sourceRoot.relativize(s));
                     if (Files.isDirectory(s)) {
                         if (!Files.exists(d)) {
+                            ensureSamePartition(session, partitionChanged);
                             LOGGER.finer("Creating directory " + d.toString());
                             Files.createDirectory(d);
                         }
@@ -1030,6 +1200,15 @@ public class FsStoryTellerAsyncDriver {
                         }
 
                         int fileSize = (int) FileUtils.getFileSize(s.toAbsolutePath().toString());
+                        // The boot file is device specific and regenerated below once the copy is over;
+                        // the one a pack extracted from a device carries is not copied, only accounted
+                        // for, so that the generated one can be written exclusively like every other file.
+                        if (s.getParent() != null && s.getParent().equals(sourceRoot) && isBootFile(s)) {
+                            LOGGER.finer("NOT copying boot file " + s + ": it is regenerated for the target");
+                            transferred.addAndGet(fileSize);
+                            return;
+                        }
+                        ensureSamePartition(session, partitionChanged);
                         LOGGER.finer("Copying file " + s.toString() + " to " + d.toString() + " (" + fileSize + " bytes)");
 
                         if (CipherUtils.shouldBeCiphered(s)) {
@@ -1037,13 +1216,13 @@ public class FsStoryTellerAsyncDriver {
                                 if (isUpload) {
                                     if (isCleartext) {
                                         byte[] ciphered = CipherUtils.cipherFirstBlockCommonKey(Files.readAllBytes(s));
-                                        Files.write(d, ciphered);
+                                        Files.write(d, ciphered, EXCLUSIVE);
                                     } else {
                                         Files.copy(s, d);
                                     }
                                 } else {    // Download
                                     byte[] deciphered = CipherUtils.decipherFirstBlockCommonKey(Files.readAllBytes(s));
-                                    Files.write(d, deciphered);
+                                    Files.write(d, deciphered, EXCLUSIVE);
                                 }
                             } else {    // V3
                                 if (isUpload) {
@@ -1052,10 +1231,10 @@ public class FsStoryTellerAsyncDriver {
                                         data = CipherUtils.decipherFirstBlockCommonKey(data);
                                     }
                                     byte[] ciphered = CipherUtils.cipherFirstBlockSpecificKeyV3(data, deviceInfos.getDeviceKeyV3());
-                                    Files.write(d, ciphered);
+                                    Files.write(d, ciphered, EXCLUSIVE);
                                 } else {    // Download
                                     byte[] deciphered = CipherUtils.decipherFirstBlockSpecificKeyV3(Files.readAllBytes(s), deviceInfos.getDeviceKeyV3());
-                                    Files.write(d, deciphered);
+                                    Files.write(d, deciphered, EXCLUSIVE);
                                 }
                             }
                         } else {
@@ -1081,6 +1260,10 @@ public class FsStoryTellerAsyncDriver {
                             }
                         }
                     }
+                } catch (StoryTellerException e) {
+                    // Already says what went wrong, and with which reason (a partition that changed
+                    // must still read as NO_DEVICE).
+                    throw e;
                 } catch (Exception e) {
                     throw new StoryTellerException("Failed to copy pack folder", e);
                 }
@@ -1088,11 +1271,12 @@ public class FsStoryTellerAsyncDriver {
         }
         // When transfer is complete, generate device-specific boot file
         LOGGER.fine("Generating device-specific boot file");
+        ensureSamePartition(session, partitionChanged);
         try {
             if (deviceInfos.getFirmwareMajor() == 2) {
-                CipherUtils.addBootFileV2(destFolder.toPath(), deviceInfos.getUuid());
+                CipherUtils.addBootFileV2(destFolder.toPath(), deviceInfos.getUuid(), EXCLUSIVE);
             } else {
-                CipherUtils.addBootFileV3(destFolder.toPath(), deviceInfos.getDeviceKeyV3());
+                CipherUtils.addBootFileV3(destFolder.toPath(), deviceInfos.getDeviceKeyV3(), EXCLUSIVE);
             }
         } catch (IOException e) {
             throw new StoryTellerException("Failed to generate device-specific boot file", e);
@@ -1113,6 +1297,17 @@ public class FsStoryTellerAsyncDriver {
             }
         }
         return new TransferStatus(transferred.get() == folderSize, transferred.get(), folderSize, 0.0);
+    }
+
+    /**
+     * Options for every file a copy writes: the folder was created exclusively by the operation, so
+     * a file already there is not ours and must make the copy fail rather than be truncated.
+     * ({@code Files.copy} without {@code REPLACE_EXISTING} already refuses an existing target.)
+     */
+    private static final OpenOption[] EXCLUSIVE = {StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE};
+
+    private static boolean isBootFile(Path file) {
+        return CipherUtils.BOOT_FILENAME.equalsIgnoreCase(file.getFileName().toString());
     }
 
     /**
