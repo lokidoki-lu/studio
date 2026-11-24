@@ -155,6 +155,19 @@ describe('actionAddFromLibrary', () => {
         expect(props.showDetails).toBeUndefined();
     });
 
+    it('a transfer the backend reports as failed with a reason shows that reason', async () => {
+        const channel = fakeChannel({ open: true });
+        deviceService.addFromLibrary.mockResolvedValue({ transferId: 'tid' });
+
+        await runAddFromLibrary(channel);
+        channel.emit('storyteller.transfer.tid.done', { success: false, error: 'NOT_ENOUGH_SPACE', message: 'Not enough free space on the device' });
+
+        const props = lastRenderProps();
+        expect(lastRenderKey()).toBe('toasts.device.addingFailed');
+        expect(props.error.message).toBe('Not enough free space on the device');
+        expect(props.showDetails).toBe(true);
+    });
+
     it('C6d-6c: a successful transfer leaves no error detail behind', async () => {
         const channel = fakeChannel({ open: true });
         deviceService.addFromLibrary.mockResolvedValue({ transferId: 'tid' });
