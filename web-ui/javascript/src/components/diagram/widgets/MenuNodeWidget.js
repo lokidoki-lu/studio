@@ -15,6 +15,7 @@ import MenuNodeModel from "../models/MenuNodeModel";
 import {setViewerAction, setViewerDiagram, setViewerStage, showViewer} from "../../../actions";
 import EditableText from "./composites/EditableText";
 import StudioPortWidget from "./StudioPortWidget";
+import {prepareAssetImage} from "../../../utils/images";
 
 
 class MenuNodeWidget extends React.Component {
@@ -167,29 +168,20 @@ class MenuNodeWidget extends React.Component {
         if (!file) {
             return;
         }
-        if (['image/bmp', 'image/jpeg', 'image/png'].indexOf(file.type) === -1) {
-            toast.error(t('toasts.editor.imageAssetWrongType'));
-            return;
-        }
-
-        let reader = new FileReader();
         let that = this;
-        reader.addEventListener("load", function () {
-            let image = new Image();
-            image.onload = function() {
-                // Check image dimensions
-                if(image.width !== 320 || image.height !== 240) {
-                    toast.error(t('toasts.editor.imageAssetWrongDimensions'));
-                    return;
+        prepareAssetImage(file)
+            .then(result => {
+                if (result.converted) {
+                    toast.info(t('toasts.editor.imageAssetConverted', {width: result.original.width, height: result.original.height}));
                 }
                 // Update option image
-                that.props.node.setOptionImage(idx, reader.result);
+                that.props.node.setOptionImage(idx, result.dataUrl);
                 that.props.updateCanvas();
                 that.forceUpdate();
-            };
-            image.src = reader.result;
-        }, false);
-        reader.readAsDataURL(file);
+            }, e => {
+                console.error('Failed to read image file', e);
+                toast.error(t('toasts.editor.imageAssetWrongType'));
+            });
     };
 
     resetOptionImage = (idx) => {
