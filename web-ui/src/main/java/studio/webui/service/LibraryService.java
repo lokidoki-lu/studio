@@ -57,6 +57,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Matcher;
+import java.util.Enumeration;
+import java.util.concurrent.Semaphore;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -67,7 +69,9 @@ public class LibraryService {
     public static final String TMP_DIR_PROP = "studio.tmpdir";
     public static final String TMP_DIR_PATH = "/.studio/tmp/";
     /** Largest archive entry served to the editor: far above any image or audio asset of a pack. */
-    static final int MAX_PACK_ENTRY_SIZE = 512 * 1024 * 1024;
+    static final int MAX_PACK_ENTRY_SIZE = (int) ArchiveStoryPackReader.DEFAULT_MAX_ENTRY_BYTES;
+    /** Entry reads served at once (see readArchivePackEntry). */
+    private static final Semaphore ENTRY_READS = new Semaphore(2, true);
 
     private final Logger LOGGER = LoggerFactory.getLogger(LibraryService.class);
 
@@ -248,10 +252,22 @@ public class LibraryService {
         if (pack.isEmpty()) {
             return Optional.empty();
         }
+        // Each read holds up to MAX_PACK_ENTRY_SIZE in memory, and the editor asks for many entries at
+        // once: the number of reads in flight is bounded, so a pack of large entries cannot exhaust
+        // the heap of the server (and the device transfer it may be running).
+        try {
+            ENTRY_READS.acquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while waiting to read " + entryName, e);
+        }
         try (ZipFile zip = ZipFile.builder().setPath(pack.get()).get()) {
-            ZipArchiveEntry entry = zip.getEntry(entryName);
-            if (entry == null || entry.isDirectory()) {
+            ZipArchiveEntry entry = findEntry(zip, entryName);
+            if (entry == null) {
                 return Optional.empty();
+            }
+            if (entry.getSize() > MAX_PACK_ENTRY_SIZE) {
+                throw new IOException("Archive entry too large: " + entryName + " (" + entry.getSize() + " bytes)");
             }
             try (InputStream in = zip.getInputStream(entry)) {
                 if (in == null) {
@@ -264,7 +280,32 @@ public class LibraryService {
                 }
                 return Optional.of(bytes);
             }
+        } finally {
+            ENTRY_READS.release();
         }
+    }
+
+    /**
+     * The entry by that name, matched as the pack readers match it: separators normalized ({@code \}
+     * as {@code /}), story.json and thumbnail.png ignoring case, the last of duplicate names winning.
+     * A lookup by exact name would 404 on a pack the library lists and converts without trouble.
+     */
+    static ZipArchiveEntry findEntry(ZipFile zip, String entryName) {
+        String wanted = entryName.replace('\\', '/');
+        boolean caseInsensitive = wanted.equalsIgnoreCase("story.json") || wanted.equalsIgnoreCase("thumbnail.png");
+        ZipArchiveEntry found = null;
+        Enumeration<ZipArchiveEntry> entries = zip.getEntries();
+        while (entries.hasMoreElements()) {
+            ZipArchiveEntry candidate = entries.nextElement();
+            String name = candidate.getName() == null ? "" : candidate.getName().replace('\\', '/');
+            if (candidate.isDirectory() || name.endsWith("/")) {
+                continue;
+            }
+            if (caseInsensitive ? name.equalsIgnoreCase(wanted) : name.equals(wanted)) {
+                found = candidate;
+            }
+        }
+        return found;
     }
 
     public Optional<Path> addConvertedRawPackFile(String packPath, Boolean allowEnriched) {
@@ -922,6 +963,9 @@ public class LibraryService {
             entries = paths
                     .filter(path -> !path.equals(root))
                     .filter(path -> !isStagingEntry(path))
+                    // Only what deletePack could remove: a link (or junction) followed here would be
+                    // hashed as its target and could count as the copy kept while the real file goes
+                    .filter(LibraryService::isPlainEntry)
                     .map(this::readPackFileCached)
                     .filter(Optional::isPresent)
                     .map(Optional::get)
@@ -1052,6 +1096,46 @@ public class LibraryService {
         return identityOf(entry.pack.getPath());
     }
 
+    /** A regular file or folder, not a symbolic link, junction or other reparse point. */
+    private static boolean isPlainEntry(Path path) {
+        try {
+            BasicFileAttributes attributes = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            return !attributes.isSymbolicLink() && !attributes.isOther();
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /**
+     * What a purge compares before and after checking the candidates: size and modification time of
+     * a file; for a folder, the same for every file in it. Empty if it cannot be read.
+     */
+    private static Optional<String> fingerprint(Path path) {
+        try {
+            if (!isPlainEntry(path)) {
+                return Optional.empty();
+            }
+            if (!Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+                BasicFileAttributes a = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                return Optional.of(a.size() + ":" + a.lastModifiedTime().toMillis());
+            }
+            try (Stream<Path> files = Files.walk(path)) {
+                return Optional.of(files.sorted()
+                        .map(p -> {
+                            try {
+                                BasicFileAttributes a = Files.readAttributes(p, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                                return path.relativize(p) + "=" + a.size() + ":" + a.lastModifiedTime().toMillis();
+                            } catch (IOException e) {
+                                throw new UncheckedIOException(e);
+                            }
+                        })
+                        .collect(Collectors.joining("|")));
+            }
+        } catch (IOException | UncheckedIOException e) {
+            return Optional.empty();
+        }
+    }
+
     /** Bytes on disk: the file's size, or the sum of the regular files of a folder. */
     private static long sizeOf(PurgeEntry entry) {
         Path path = entry.pack.getPath();
@@ -1125,13 +1209,27 @@ public class LibraryService {
         for (String name : paths) {
             requireLibraryEntry(name);
         }
+        // Recomputing the candidates hashes every artefact and can take seconds: an entry rewritten
+        // meanwhile (the editor saving under the same name, a conversion) would be judged on its old
+        // content. Its state before the recomputation must still be its state when it is removed.
+        Path root = Paths.get(libraryPath());
+        Map<String, Optional<String>> before = new LinkedHashMap<>();
+        for (String name : new LinkedHashSet<>(paths)) {
+            before.put(name, fingerprint(root.resolve(name)));
+        }
         Map<String, PurgeCandidate> current = purgeCandidates().stream()
                 .collect(Collectors.toMap(PurgeCandidate::getPath, c -> c, (a, b) -> a));
         List<PurgeResult> results = new ArrayList<>();
-        for (String name : new LinkedHashSet<>(paths)) {
+        for (String name : before.keySet()) {
             PurgeCandidate candidate = current.get(name);
             if (candidate == null) {
                 LOGGER.warn("Not purging `" + name + "`: it is not, or no longer, a purge candidate");
+                results.add(new PurgeResult(name, false, 0, "NOT_A_CANDIDATE"));
+                continue;
+            }
+            Optional<String> now = fingerprint(root.resolve(name));
+            if (before.get(name).isEmpty() || !before.get(name).equals(now)) {
+                LOGGER.warn("Not purging `" + name + "`: it changed while the candidates were checked");
                 results.add(new PurgeResult(name, false, 0, "NOT_A_CANDIDATE"));
                 continue;
             }
