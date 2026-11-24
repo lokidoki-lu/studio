@@ -38,19 +38,37 @@ export function readFromArchive(file) {
         });
 }
 
-// The last pack opened from the library, and the object URLs of its assets
+// The pack from the library shown in the editor, and the object URLs of its assets
 let libraryAssets = {model: null, urls: []};
+// Object URLs of packs read but not (yet) shown: adopted, or discarded if a later read won
+const pendingAssets = new WeakMap();
 
 /**
- * Releases the assets of the last pack opened from the library, before another one is read: the browser
- * caps the size of the Blobs a page holds, and a large pack fills a good part of it. Returns the model those
- * assets belonged to, which can no longer display nor save them.
+ * Releases the assets of the library pack shown in the editor. Returns the model those assets belonged
+ * to, which can no longer display nor save them.
  */
 export function releaseLibraryAssets() {
     const {model, urls} = libraryAssets;
     urls.forEach(url => URL.revokeObjectURL(url));
     libraryAssets = {model: null, urls: []};
     return model;
+}
+
+/**
+ * Makes a model read by readFromLibrary the one shown, and only then releases the assets of the pack it
+ * replaces: a read that fails leaves the pack being edited intact. Returns the replaced model.
+ */
+export function adoptLibraryAssets(model) {
+    const previous = releaseLibraryAssets();
+    libraryAssets = {model, urls: pendingAssets.get(model) || []};
+    pendingAssets.delete(model);
+    return previous;
+}
+
+/** Releases the assets of a model read by readFromLibrary that will not be shown (a later read won). */
+export function discardLibraryAssets(model) {
+    (pendingAssets.get(model) || []).forEach(url => URL.revokeObjectURL(url));
+    pendingAssets.delete(model);
 }
 
 /**
@@ -63,6 +81,8 @@ export function releaseLibraryAssets() {
 export function readFromLibrary(loadEntry) {
     let assetUrls = [];
     let assetPromises = new Map();
+    // Once the read has failed, assets still arriving are released at once rather than kept for nothing
+    let failed = false;
     return loadEntry('story.json')
         .then(storyBlob => {
             if (!storyBlob) {
@@ -82,7 +102,11 @@ export function readFromLibrary(loadEntry) {
                             throw new Error('Missing asset: ' + assetFileName);
                         }
                         let url = URL.createObjectURL(new Blob([assetBlob], {type: mimeType(assetFileName)}));
-                        assetUrls.push(url);
+                        if (failed) {
+                            URL.revokeObjectURL(url);
+                        } else {
+                            assetUrls.push(url);
+                        }
                         return url;
                     }));
                 }
@@ -90,9 +114,11 @@ export function readFromLibrary(loadEntry) {
             }
         ))
         .then(loadedModel => {
-            libraryAssets = {model: loadedModel, urls: assetUrls};
+            // Shown once adopted (adoptLibraryAssets), not before: the read may lose to a later one
+            pendingAssets.set(loadedModel, assetUrls);
             return loadedModel;
         }, e => {
+            failed = true;
             assetUrls.forEach(url => URL.revokeObjectURL(url));
             throw e;
         });

@@ -70,12 +70,21 @@ public class LibraryController {
         // unzipping it in the browser. Unordered: the browser asks for several entries at once, and
         // an ordered blocking handler would serve them one after the other.
         router.post("/entry").blockingHandler(ctx -> {
-            String packPath = ctx.getBodyAsJson().getString("path");
-            String entryName = ctx.getBodyAsJson().getString("entry");
+            JsonObject body = DeviceController.jsonBody(ctx);
+            if (body == null) {
+                return;
+            }
+            String packPath = DeviceController.stringField(body, "path");
+            String entryName = DeviceController.stringField(body, "entry");
+            if (packPath == null || entryName == null) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                        "`path` and `entry` are required strings"));
+                return;
+            }
             Optional<byte[]> entry;
             try {
                 entry = libraryService.readArchivePackEntry(packPath, entryName);
-            } catch (IOException e) {
+            } catch (IOException | RuntimeException e) {
                 LOGGER.error("Failed to read entry " + entryName + " of library pack " + packPath, e);
                 ApiErrors.respond(ctx, new StoryTellerException("Failed to read pack entry", e));
                 return;

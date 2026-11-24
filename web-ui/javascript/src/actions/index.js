@@ -15,7 +15,7 @@ import {SUBSCRIBED, CHANNEL_OPEN} from '../services/eventBusChannel';
 import {fetchLibraryInfos, fetchLibraryPacks, downloadFromLibrary, fetchLibraryPackEntry, uploadToLibrary, convertInLibrary, removeFromLibrary} from '../services/library';
 import {fetchEvergreenInfos, fetchEvergreenLatestRelease, fetchEvergreenAnnounce} from '../services/evergreen';
 import {generateFilename, sortPacks} from "../utils/packs";
-import {readFromArchive, readFromLibrary, releaseLibraryAssets} from "../utils/reader";
+import {readFromArchive, readFromLibrary, adoptLibraryAssets, discardLibraryAssets} from "../utils/reader";
 import {errorMessage} from "../utils/fetch";
 import {simplifiedSample} from "../utils/sample";
 
@@ -589,13 +589,24 @@ export const actionLoadPackInEditor = (packData, filename, t) => {
 };
 
 // A library pack is read entry by entry on the server: no download of the whole archive, no unzipping in the browser
+// Each library read gets a number: only the last one asked for is shown, whichever finishes first
+let libraryLoadSequence = 0;
+
 export const actionLoadLibraryPackInEditor = (path, t) => {
-    return (dispatch, getState) => {
+    return dispatch => {
         let toastId = toast(t('toasts.editor.loading'), { autoClose: false });
-        // The pack about to be replaced lets go of its assets first, to leave room for the new one
-        let releasedModel = releaseLibraryAssets();
+        const sequence = ++libraryLoadSequence;
+        // The pack being edited keeps its assets until the new one is read: a read that fails leaves it
+        // intact, at the cost of holding both packs' assets for the time of the read.
         return readFromLibrary(entry => fetchLibraryPackEntry(path, entry))
             .then(loadedModel => {
+                if (sequence !== libraryLoadSequence) {
+                    // Another pack was asked for since: this one is not shown, and lets go of its assets
+                    discardLibraryAssets(loadedModel);
+                    toast.dismiss(toastId);
+                    return;
+                }
+                adoptLibraryAssets(loadedModel);
                 toast.update(toastId, { type: toast.TYPE.SUCCESS, render: t('toasts.editor.loaded'), autoClose: 5000});
                 // Set loaded model in editor
                 dispatch(setEditorDiagram(loadedModel, path));
@@ -604,10 +615,6 @@ export const actionLoadLibraryPackInEditor = (path, t) => {
             })
             .catch(e => {
                 console.error('failed to load story pack from library', e);
-                if (releasedModel && getState().editor.diagram === releasedModel) {
-                    // Its assets are gone: an empty editor rather than a pack that can neither play nor save them
-                    dispatch(setEditorDiagram(new PackDiagramModel()));
-                }
                 toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.editor.loadingFailed')}</>} error={e} />, autoClose: false });
             });
     }

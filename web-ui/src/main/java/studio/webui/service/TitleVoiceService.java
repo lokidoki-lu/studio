@@ -418,7 +418,11 @@ public class TitleVoiceService {
 
     private static void deleteQuietly(Path dir) {
         try (Stream<Path> paths = Files.walk(dir)) {
-            paths.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+            paths.sorted(Comparator.reverseOrder()).forEach(p -> {
+                if (!p.toFile().delete() && p.toFile().exists()) {
+                    LOGGER.warn("Could not remove TTS temporary file " + p);
+                }
+            });
         } catch (IOException e) {
             LOGGER.debug("Could not remove " + dir);
         }
@@ -434,12 +438,32 @@ public class TitleVoiceService {
             pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
             pb.redirectError(ProcessBuilder.Redirect.DISCARD);
             Process process = pb.start();
-            if (!process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
-                process.descendants().forEach(ProcessHandle::destroyForcibly);
-                process.destroyForcibly();
-                throw new CommandTimeoutException("timeout after " + timeout.getSeconds() + " s");
+            boolean finished = false;
+            try {
+                finished = process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS);
+                if (!finished) {
+                    throw new CommandTimeoutException("timeout after " + timeout.getSeconds() + " s");
+                }
+                return process.exitValue();
+            } finally {
+                // Timed out, or interrupted while waiting: never leave the process (or what it
+                // started) running, and let it release its output files before they are removed.
+                if (!finished) {
+                    kill(process);
+                }
             }
-            return process.exitValue();
+        }
+
+        private static void kill(Process process) {
+            process.descendants().forEach(ProcessHandle::destroyForcibly);
+            process.destroyForcibly();
+            try {
+                process.onExit().get(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                LOGGER.warn("TTS process did not exit after being killed");
+            }
         }
 
         private static File nullFile() {
