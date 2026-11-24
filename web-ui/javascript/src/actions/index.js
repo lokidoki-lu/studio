@@ -185,7 +185,14 @@ export const actionAddFromLibrary = (uuid, path, format, driver, context, t) => 
                                     // Refresh device metadata and packs list
                                     dispatch(actionRefreshDevice(t));
                                 } else {
-                                    toast.update(toastId, {progress: null, type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.device.addingFailed')}</>} />, autoClose: false });
+                                    // The backend now says why the transfer failed. Show it, as for a
+                                    // refusal at request time: "adding failed" alone left the user guessing.
+                                    // Without a message there is nothing to show, and no detail block is asked for.
+                                    const content = <>{t('toasts.device.addingFailed')}</>;
+                                    const render = message.body.message
+                                        ? <IssueReportToast content={content} error={new Error(message.body.message)} showDetails />
+                                        : <IssueReportToast content={content} />;
+                                    toast.update(toastId, {progress: null, type: toast.TYPE.ERROR, render, autoClose: false });
                                 }
                                 releaseOnce();
                             };
