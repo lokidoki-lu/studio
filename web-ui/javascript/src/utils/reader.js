@@ -38,8 +38,20 @@ export function readFromArchive(file) {
         });
 }
 
-// Object URLs of the assets of the last pack opened from the library, released when another one is opened
-let libraryAssetUrls = [];
+// The last pack opened from the library, and the object URLs of its assets
+let libraryAssets = {model: null, urls: []};
+
+/**
+ * Releases the assets of the last pack opened from the library, before another one is read: the browser
+ * caps the size of the Blobs a page holds, and a large pack fills a good part of it. Returns the model those
+ * assets belonged to, which can no longer display nor save them.
+ */
+export function releaseLibraryAssets() {
+    const {model, urls} = libraryAssets;
+    urls.forEach(url => URL.revokeObjectURL(url));
+    libraryAssets = {model: null, urls: []};
+    return model;
+}
 
 /**
  * Reads a pack of the local library entry by entry, instead of downloading and unzipping the whole archive.
@@ -78,8 +90,7 @@ export function readFromLibrary(loadEntry) {
             }
         ))
         .then(loadedModel => {
-            libraryAssetUrls.forEach(url => URL.revokeObjectURL(url));
-            libraryAssetUrls = assetUrls;
+            libraryAssets = {model: loadedModel, urls: assetUrls};
             return loadedModel;
         }, e => {
             assetUrls.forEach(url => URL.revokeObjectURL(url));
