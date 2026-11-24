@@ -51,6 +51,44 @@
     "nightMode": "Night mode available"
   },
 
+  "libraryPurge": {
+    "button": "Remove old packs from the library",
+    "title": "Remove old packs",
+    "intro": "These library entries are no longer used: each is redundant with another one, which is kept.",
+    "warning": "Removal is permanent: the selected entries are deleted from the disk, not moved to the recycle bin.",
+    "columns": {
+      "entry": "Entry",
+      "reason": "Why",
+      "size": "Size",
+      "date": "Date"
+    },
+    "reasons": {
+      "SUPERSEDED": "Replaced by a more recent conversion: {{kept}}",
+      "SOURCE_CHANGED": "Made from a previous version of the archive, which has since changed: {{kept}}",
+      "DUPLICATE_SOURCE": "Identical copy of a more recent file: {{kept}}"
+    },
+    "unselectedHint": "Unchecked by default: these are files you added yourself.",
+    "total": "Space freed: {{size}} ({{count}} selected)",
+    "cancel": "Cancel",
+    "confirm": "Delete permanently",
+    "units": {
+      "kb": "{{value}} KB",
+      "mb": "{{value}} MB",
+      "gb": "{{value}} GB"
+    },
+    "toasts": {
+      "searching": "Looking for old packs...",
+      "nothing": "No old packs to remove.",
+      "searchingFailed": "Failed to look for old packs.",
+      "purging": "Removing old packs...",
+      "purged": "{{count}} entry removed, {{size}} freed.",
+      "purged_plural": "{{count}} entries removed, {{size}} freed.",
+      "partial": "{{count}} entry removed ({{size}} freed); {{failed}} not removed because it is no longer an old pack or could not be deleted.",
+      "partial_plural": "{{count}} entries removed ({{size}} freed); {{failed}} not removed because they are no longer old packs or could not be deleted.",
+      "purgingFailed": "Failed to remove old packs."
+    }
+  },
+
   "editor": {
     "titleVoice": {
       "choose": "Voice used to generate titles",

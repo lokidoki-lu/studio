@@ -51,6 +51,44 @@
     "nightMode": "Mode nuit disponible"
   },
 
+  "libraryPurge": {
+    "button": "Supprimer les vieux packs de la bibliothèque",
+    "title": "Supprimer les vieux packs",
+    "intro": "Ces entrées de la bibliothèque ne servent plus : chacune fait double emploi avec une autre, qui est conservée.",
+    "warning": "La suppression est définitive : les entrées cochées sont effacées du disque, pas déplacées dans la corbeille.",
+    "columns": {
+      "entry": "Entrée",
+      "reason": "Raison",
+      "size": "Taille",
+      "date": "Date"
+    },
+    "reasons": {
+      "SUPERSEDED": "Remplacée par une conversion plus récente : {{kept}}",
+      "SOURCE_CHANGED": "Issue d'une ancienne version de l'archive, modifiée depuis : {{kept}}",
+      "DUPLICATE_SOURCE": "Copie identique d'un fichier plus récent : {{kept}}"
+    },
+    "unselectedHint": "Décochées par défaut : ce sont des fichiers que vous avez ajoutés vous-même.",
+    "total": "Espace libéré : {{size}} ({{count}} cochée(s))",
+    "cancel": "Annuler",
+    "confirm": "Supprimer définitivement",
+    "units": {
+      "kb": "{{value}} Ko",
+      "mb": "{{value}} Mo",
+      "gb": "{{value}} Go"
+    },
+    "toasts": {
+      "searching": "Recherche des vieux packs...",
+      "nothing": "Aucun vieux pack à supprimer.",
+      "searchingFailed": "Échec de la recherche des vieux packs.",
+      "purging": "Suppression des vieux packs...",
+      "purged": "{{count}} entrée supprimée, {{size}} libérés.",
+      "purged_plural": "{{count}} entrées supprimées, {{size}} libérés.",
+      "partial": "{{count}} entrée supprimée ({{size}} libérés) ; {{failed}} non supprimée(s) : plus un vieux pack, ou suppression impossible.",
+      "partial_plural": "{{count}} entrées supprimées ({{size}} libérés) ; {{failed}} non supprimée(s) : plus des vieux packs, ou suppression impossible.",
+      "purgingFailed": "Échec de la suppression des vieux packs."
+    }
+  },
+
   "editor": {
     "titleVoice": {
       "choose": "Voix utilisée pour générer les titres",
