@@ -30,6 +30,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
@@ -41,11 +42,19 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -783,6 +792,319 @@ public class LibraryService {
                 return false;
             }
         }
+    }
+
+    // ------------------------------------------------------------------ purge of old packs
+
+    /**
+     * Names STUdio gives its own conversion outputs: {@code <uuid>.converted_<millis>}, followed by
+     * {@code .pack} or {@code .zip} when the output is a file. The same convention as
+     * {@code isConversionOutput} in {@code utils/packs.js}, with one more requirement: the UUID in
+     * the name must be the one the entry's own metadata declares.
+     */
+    private static final Pattern CONVERSION_OUTPUT_NAME =
+            Pattern.compile("^([0-9a-fA-F-]{36})\\.converted_(\\d+)(\\.pack|\\.zip)?$");
+
+    /** One parsed library entry, as the purge looks at it. */
+    private static final class PurgeEntry {
+        private final LibraryPack pack;
+        private final String name;
+        private final String format;
+        /** The millis in a conversion output's name, or -1 for anything that is not one. */
+        private final long conversionStamp;
+
+        private PurgeEntry(LibraryPack pack) {
+            this.pack = pack;
+            this.name = pack.getPath().getFileName().toString();
+            this.format = pack.getMetadata().getFormat();
+            Matcher m = CONVERSION_OUTPUT_NAME.matcher(name);
+            this.conversionStamp = m.matches() && m.group(1).equalsIgnoreCase(pack.getMetadata().getUuid())
+                    ? parseStamp(m.group(2))
+                    : -1;
+        }
+
+        private boolean isConversion() {
+            return conversionStamp >= 0;
+        }
+
+        private static long parseStamp(String digits) {
+            try {
+                return Long.parseLong(digits);
+            } catch (NumberFormatException e) {
+                return -1;
+            }
+        }
+    }
+
+    /** Most recent first: by modification time as the listing sorts, then by name stamp, then name. */
+    private static final Comparator<PurgeEntry> MOST_RECENT_FIRST = Comparator
+            .comparingLong((PurgeEntry e) -> e.pack.getTimestamp())
+            .thenComparingLong(e -> e.conversionStamp)
+            .thenComparing(e -> e.name)
+            .reversed();
+
+    /**
+     * The library entries that serve no purpose any more. Nothing is deleted here.
+     *
+     * <p>The rule, for the entries of one pack UUID:
+     * <ul>
+     * <li><b>SUPERSEDED</b> (selected): a conversion output for which another conversion output of the
+     * same format is more recent both by modification time — which is what the library listing and
+     * the drop on a device use to pick the one they send — and by the timestamp STUdio wrote in its
+     * name. When those two orders disagree nothing is proposed: which one is "the old one" is then
+     * not something this can state.</li>
+     * <li><b>SOURCE_CHANGED</b> (selected): the most recent conversion output of its format, whose
+     * provenance record still describes it exactly (its digest is recomputed) and proves it was made
+     * from content that no other entry of the pack holds any more, while at least one source (an
+     * entry that is not a conversion output) is present to make a fresh one from. A missing record,
+     * an unreadable entry or any doubt leaves it alone: unknown provenance is never a reason to
+     * purge.</li>
+     * <li><b>DUPLICATE_SOURCE</b> (not selected): a source file older than another source of the same
+     * format holding exactly the same bytes (same size, then same SHA-256).</li>
+     * </ul>
+     *
+     * <p>Never proposed: the most recent source of each format (the current archive in particular),
+     * a source whose content differs from every other (an older version the user may want), the
+     * most recent conversion of each format unless its provenance proves it stale, and any entry
+     * that would leave its pack with nothing at all. Entries that cannot be parsed are not packs as
+     * far as the library is concerned, and are never touched.
+     *
+     * <p>Establishing SOURCE_CHANGED and DUPLICATE_SOURCE reads artefacts in full, so this is only
+     * ever called on demand, never while listing.
+     */
+    public List<PurgeCandidate> purgeCandidates() {
+        List<PurgeEntry> entries;
+        Path root = Paths.get(libraryPath());
+        if (!Files.isDirectory(root)) {
+            return new ArrayList<>();
+        }
+        try (Stream<Path> paths = Files.walk(root, 1)) {
+            entries = paths
+                    .filter(path -> !path.equals(root))
+                    .filter(path -> !isStagingEntry(path))
+                    .map(this::readPackFileCached)
+                    .filter(Optional::isPresent)
+                    .map(Optional::get)
+                    .filter(p -> p.getMetadata().getUuid() != null && p.getMetadata().getFormat() != null)
+                    .map(PurgeEntry::new)
+                    .collect(Collectors.toList());
+        } catch (IOException e) {
+            LOGGER.error("Failed to read packs from local library", e);
+            throw new RuntimeException(e);
+        }
+
+        List<PurgeCandidate> candidates = new ArrayList<>();
+        Map<String, List<PurgeEntry>> byUuid = entries.stream()
+                .collect(Collectors.groupingBy(e -> e.pack.getMetadata().getUuid().toLowerCase(Locale.ROOT)));
+        for (List<PurgeEntry> group : byUuid.values()) {
+            candidates.addAll(purgeCandidatesOf(group));
+        }
+        candidates.sort(Comparator.comparing((PurgeCandidate c) -> c.getTitle() == null ? c.getUuid() : c.getTitle())
+                .thenComparing(PurgeCandidate::getPath));
+        return candidates;
+    }
+
+    private List<PurgeCandidate> purgeCandidatesOf(List<PurgeEntry> group) {
+        Map<PurgeEntry, PurgeCandidate.Reason> reasons = new LinkedHashMap<>();
+        Map<PurgeEntry, PurgeEntry> keptFor = new HashMap<>();
+        Map<PurgeEntry, Optional<String>> digests = new HashMap<>();
+
+        // Conversion outputs, by format
+        Map<String, List<PurgeEntry>> conversions = group.stream().filter(PurgeEntry::isConversion)
+                .collect(Collectors.groupingBy(e -> e.format));
+        List<PurgeEntry> latestConversions = new ArrayList<>();
+        for (List<PurgeEntry> sameFormat : conversions.values()) {
+            sameFormat.sort(MOST_RECENT_FIRST);
+            PurgeEntry latest = sameFormat.get(0);
+            latestConversions.add(latest);
+            for (PurgeEntry older : sameFormat.subList(1, sameFormat.size())) {
+                if (latest.conversionStamp > older.conversionStamp
+                        && latest.pack.getTimestamp() > older.pack.getTimestamp()) {
+                    reasons.put(older, PurgeCandidate.Reason.SUPERSEDED);
+                    keptFor.put(older, latest);
+                }
+            }
+        }
+
+        List<PurgeEntry> sources = group.stream().filter(e -> !e.isConversion()).collect(Collectors.toList());
+
+        // The most recent conversion of each format, when its provenance proves it stale
+        if (!sources.isEmpty()) {
+            for (PurgeEntry latest : latestConversions) {
+                Optional<ConversionRecord> record = provenanceStore.find(latest.name);
+                if (!record.isPresent()) {
+                    continue;
+                }
+                Optional<String> artifact = digests.computeIfAbsent(latest, this::digestOf);
+                if (!artifact.isPresent() || !artifact.get().equals(record.get().getArtifactSha256())) {
+                    // The record does not describe what is on disk now: nothing is proven.
+                    continue;
+                }
+                boolean doubt = false;
+                PurgeEntry origin = null;
+                // Sources first, most recent first: the usual origin is found after one read. Every
+                // other entry counts, superseded ones included — an origin still present anywhere
+                // means this conversion is not stale.
+                List<PurgeEntry> others = new ArrayList<>(group);
+                others.sort(Comparator.comparing(PurgeEntry::isConversion).thenComparing(MOST_RECENT_FIRST));
+                for (PurgeEntry other : others) {
+                    if (other == latest) {
+                        continue;
+                    }
+                    Optional<String> digest = digests.computeIfAbsent(other, this::digestOf);
+                    if (!digest.isPresent()) {
+                        doubt = true;
+                        break;
+                    }
+                    if (digest.get().equals(record.get().getSourceSha256())) {
+                        origin = other;
+                        break;
+                    }
+                }
+                if (!doubt && origin == null) {
+                    reasons.put(latest, PurgeCandidate.Reason.SOURCE_CHANGED);
+                    sources.stream().sorted(MOST_RECENT_FIRST).findFirst()
+                            .ifPresent(source -> keptFor.put(latest, source));
+                }
+            }
+        }
+
+        // Older sources byte-identical to a more recent one of the same format
+        Map<String, List<PurgeEntry>> sourcesByFormat = sources.stream().collect(Collectors.groupingBy(e -> e.format));
+        for (List<PurgeEntry> sameFormat : sourcesByFormat.values()) {
+            sameFormat.sort(MOST_RECENT_FIRST);
+            for (int i = 1; i < sameFormat.size(); i++) {
+                PurgeEntry older = sameFormat.get(i);
+                for (PurgeEntry newer : sameFormat.subList(0, i)) {
+                    if (reasons.containsKey(newer) || sizeOf(newer) != sizeOf(older)) {
+                        continue;
+                    }
+                    Optional<String> a = digests.computeIfAbsent(older, this::digestOf);
+                    Optional<String> b = digests.computeIfAbsent(newer, this::digestOf);
+                    if (a.isPresent() && b.isPresent() && a.get().equals(b.get())) {
+                        reasons.put(older, PurgeCandidate.Reason.DUPLICATE_SOURCE);
+                        keptFor.put(older, newer);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Never the last copy of a pack. The rules above cannot get here; this does not rely on it.
+        if (reasons.size() >= group.size()) {
+            LOGGER.warn("Purge would leave pack `" + group.get(0).pack.getMetadata().getUuid()
+                    + "` with nothing, proposing nothing for it");
+            return new ArrayList<>();
+        }
+
+        String uuid = group.get(0).pack.getMetadata().getUuid();
+        String title = databaseMetadataService.getPackMetadata(uuid)
+                .map(DatabasePackMetadata::getTitle)
+                .orElse(group.get(0).pack.getMetadata().getTitle());
+        return reasons.entrySet().stream()
+                .map(e -> new PurgeCandidate(e.getKey().name, uuid, title, e.getKey().format,
+                        sizeOf(e.getKey()), e.getKey().pack.getTimestamp(), e.getValue(),
+                        Optional.ofNullable(keptFor.get(e.getKey())).map(k -> k.name).orElse(null)))
+                .collect(Collectors.toList());
+    }
+
+    private Optional<String> digestOf(PurgeEntry entry) {
+        return identityOf(entry.pack.getPath());
+    }
+
+    /** Bytes on disk: the file's size, or the sum of the regular files of a folder. */
+    private static long sizeOf(PurgeEntry entry) {
+        Path path = entry.pack.getPath();
+        try {
+            if (!Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+                return Files.size(path);
+            }
+            try (Stream<Path> files = Files.walk(path)) {
+                return files.filter(p -> Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS))
+                        .mapToLong(p -> p.toFile().length())
+                        .sum();
+            }
+        } catch (IOException | UncheckedIOException e) {
+            return -1;
+        }
+    }
+
+    /** What a purge did with one requested name. */
+    public static final class PurgeResult {
+        private final String path;
+        private final boolean removed;
+        private final long size;
+        private final String error;
+
+        private PurgeResult(String path, boolean removed, long size, String error) {
+            this.path = path;
+            this.removed = removed;
+            this.size = size;
+            this.error = error;
+        }
+
+        public String getPath() {
+            return path;
+        }
+
+        public boolean isRemoved() {
+            return removed;
+        }
+
+        /** Bytes freed, 0 unless removed. */
+        public long getSize() {
+            return size;
+        }
+
+        /** Null when removed; otherwise {@code NOT_A_CANDIDATE} or {@code REMOVAL_FAILED}. */
+        public String getError() {
+            return error;
+        }
+
+        public JsonObject toJson() {
+            JsonObject json = new JsonObject().put("path", path).put("removed", removed).put("size", size);
+            if (error != null) {
+                json.put("error", error);
+            }
+            return json;
+        }
+    }
+
+    /**
+     * Removes the named entries, each only if it is still a purge candidate right now.
+     *
+     * <p>The list the client sends is a selection, not an authority: candidates are recomputed here,
+     * from the disk as it is, and a name that is not among them — stale list, entry since replaced,
+     * a name made up — is left alone and reported as {@code NOT_A_CANDIDATE}. Removing several
+     * candidates together is safe because none of them is what another one is redundant with.
+     *
+     * @throws IllegalArgumentException before anything is removed, if any name is not a direct entry
+     *                                  of the library
+     */
+    public List<PurgeResult> purge(List<String> paths) {
+        for (String name : paths) {
+            requireLibraryEntry(name);
+        }
+        Map<String, PurgeCandidate> current = purgeCandidates().stream()
+                .collect(Collectors.toMap(PurgeCandidate::getPath, c -> c, (a, b) -> a));
+        List<PurgeResult> results = new ArrayList<>();
+        for (String name : new LinkedHashSet<>(paths)) {
+            PurgeCandidate candidate = current.get(name);
+            if (candidate == null) {
+                LOGGER.warn("Not purging `" + name + "`: it is not, or no longer, a purge candidate");
+                results.add(new PurgeResult(name, false, 0, "NOT_A_CANDIDATE"));
+                continue;
+            }
+            boolean removed = deletePack(name);
+            // The listing is refreshed from the disk; the parse kept for this name goes too.
+            cachedPacks.asMap().keySet().removeIf(p -> p.getFileName() != null && p.getFileName().toString().equals(name));
+            if (removed) {
+                LOGGER.info("Purged `" + name + "` (" + candidate.getReason() + ")");
+            }
+            results.add(new PurgeResult(name, removed, removed ? Math.max(candidate.getSize(), 0) : 0,
+                    removed ? null : "REMOVAL_FAILED"));
+        }
+        return results;
     }
 
     public String libraryPath() {

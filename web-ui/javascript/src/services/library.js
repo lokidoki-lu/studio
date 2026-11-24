@@ -96,6 +96,28 @@ export const removeFromLibrary = (path) => {
  * artefacts in full to answer. It returns a verdict and nothing else — no digest, no record — so
  * this side has nothing to decide and nothing to get wrong.
  */
+/*
+ * Library entries that serve no purpose any more, as the backend sees them now:
+ * {candidates: [{path, uuid, title, format, size, timestamp, reason, selected, keptPath}], totalSize}.
+ */
+export const fetchPurgeCandidates = () => {
+    return fetch('/api/library/purge/candidates')
+        .then(handleJsonOrError);
+};
+
+/*
+ * Removes the named candidates. The backend checks each one again and leaves alone any that is no
+ * longer a candidate: {success, freed, results: [{path, removed, size, error?}]}.
+ */
+export const purgeLibrary = (paths) => {
+    return fetch('/api/library/purge', {
+        method: "POST",
+        headers: { "Content-Type" : "application/json" },
+        body: JSON.stringify({paths})
+    })
+        .then(handleJsonOrError);
+};
+
 export const verifyConversion = async (sourcePath, convertedPath) => {
     return await fetch('/api/library/verify-conversion', {
         method: "POST",

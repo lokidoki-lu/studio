@@ -26,6 +26,7 @@ import {
 } from "../actions";
 import {AppContext} from "../AppContext";
 import Modal from "./Modal";
+import LibraryPurge from "./LibraryPurge";
 import {
     LOCAL_STORAGE_ALLOW_ENRICHED_BINARY_FORMAT
 } from "../utils/storage";
@@ -549,6 +550,7 @@ class PackLibrary extends React.Component {
                         <div><strong>{t('library.local.packs.length')}</strong> { this.state.library.packs.length || '-' }</div>
                         <input type="file" id="upload" multiple accept=".zip,.pack" style={{visibility: 'hidden', position: 'absolute'}} onChange={this.packAddFileSelected} />
                         <span title={t('library.local.addPack')} className="btn btn-default glyphicon glyphicon-import" onClick={this.showAddFileSelector}/>
+                        <LibraryPurge />
                         <div className="editor-actions">
                             <p><button className="library-action" onClick={this.onCreateNewPackInEditor}>{t('library.local.empty.link1')}</button> <button className="library-action" onClick={this.onOpenSamplePackInEditor}>{t('library.local.empty.link2')}</button> {t('library.local.empty.suffix')}</p>
                         </div>

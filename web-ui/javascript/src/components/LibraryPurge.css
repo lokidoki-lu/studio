@@ -1,0 +1,48 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+.library-purge-button {
+    margin-left: 4px;
+}
+
+.library-purge-modal .modal-dialog {
+    width: auto;
+    max-width: 900px;
+}
+
+.library-purge-warning {
+    color: #a94442;
+}
+
+.library-purge-list {
+    max-height: 50vh;
+    overflow-y: auto;
+}
+
+.library-purge-list label {
+    font-weight: normal;
+    margin: 0;
+}
+
+.library-purge-title {
+    display: block;
+    font-weight: bold;
+}
+
+.library-purge-path {
+    display: block;
+    font-size: smaller;
+    word-break: break-all;
+}
+
+.library-purge-size {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.library-purge-hint {
+    font-style: italic;
+}
