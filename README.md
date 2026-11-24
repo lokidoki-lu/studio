@@ -1,6 +1,11 @@
 About this fork
 ===============
 
+> **studio-lunii** is a fork of [antoinevalentinHA/studio](https://github.com/antoinevalentinHA/studio)
+> that makes the local API usable by scripts such as Lunii Pack: transfer state over HTTP, typed
+> errors, server-side serialization of device operations, and removal of orphan pack folders. See
+> [API.md](API.md). Everything below describes the fork it is based on, and still applies.
+
 This is a fork of [marian-m12l/studio](https://github.com/marian-m12l/studio), maintained
 independently and focused on **robustness in real use**: making the device detect reliably, making
 failures report honestly, and progressively hardening what STUdio writes to the card. The upstream
@@ -76,12 +81,13 @@ conditions documented in `TESTING.md`. What is still open, and known to be:
 
 - an upload that fails part-way leaves an orphan `.content` folder that nothing cleans up;
 - that orphan then makes every later upload of the same pack **refuse**, which is deliberate and
-  explained in the error — but STUdio still offers no supported way to resolve the state it leaves;
+  explained in the error. studio-lunii adds an explicit way out: `GET /api/device/orphans` and
+  `POST /api/device/orphans/remove` (see [API.md](API.md)); nothing is removed automatically;
 - `deletePack` removes the index entry before the content, so a failed removal leaves the content
   behind, de-indexed;
-- the driver can list `.content` folders the index does not reference, but nothing calls it: a
-  device is not examined for partial states when it is plugged in, and the web UI never shows them.
-  Nothing acts on them either — the listing is read-only by design.
+- a device is not examined for partial states when it is plugged in, and the web UI never shows
+  unreferenced `.content` folders. In studio-lunii they are reachable through the API only, and
+  removed only when a client names them.
 
 Use the operational protocol in `FIELD-VALIDATION.md` if you are writing to a real device.
 
