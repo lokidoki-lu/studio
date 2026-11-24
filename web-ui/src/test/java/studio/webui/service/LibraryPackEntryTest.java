@@ -108,6 +108,27 @@ class LibraryPackEntryTest {
         assertFalse(service.readArchivePackEntry(root.resolve("outside.zip").toString(), "story.json").isPresent());
     }
 
+    @Test
+    @DisplayName("entry names are matched as the pack readers match them: separators, case of story.json, last duplicate")
+    void entriesMatchedLikeThePackReaders() throws IOException {
+        byte[] first = "{\"title\":\"premier\"}".getBytes(StandardCharsets.UTF_8);
+        byte[] last = "{\"title\":\"dernier\"}".getBytes(StandardCharsets.UTF_8);
+        Path pack = library.resolve("windows.zip");
+        try (org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream zip =
+                     new org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream(pack.toFile())) {
+            for (Object[] entry : new Object[][]{{"Story.JSON", first}, {"assets\\a.mp3", AUDIO}, {"story.json", last}}) {
+                zip.putArchiveEntry(new org.apache.commons.compress.archivers.zip.ZipArchiveEntry((String) entry[0]));
+                zip.write((byte[]) entry[1]);
+                zip.closeArchiveEntry();
+            }
+        }
+
+        assertArrayEquals(last, service.readArchivePackEntry("windows.zip", "story.json").orElseThrow());
+        assertArrayEquals(AUDIO, service.readArchivePackEntry("windows.zip", "assets/a.mp3").orElseThrow());
+        // Assets keep their exact name: only story.json and thumbnail.png ignore case
+        assertFalse(service.readArchivePackEntry("windows.zip", "ASSETS/A.MP3").isPresent());
+    }
+
     private static void writePack(Path path) throws IOException {
         try (OutputStream out = Files.newOutputStream(path); ZipOutputStream zip = new ZipOutputStream(out)) {
             zip.putNextEntry(new ZipEntry("story.json"));
