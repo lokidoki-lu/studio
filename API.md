@@ -102,6 +102,38 @@ A typical recovery: an upload fails with `CONTENT_FOLDER_EXISTS` for pack `…55
 folder is the last eight hex digits, upper case (`AAAABBBB`). If `GET /orphans` lists it, remove it
 and upload again.
 
+## Old packs in the library
+
+Under `http://localhost:8080/api/library` (not `/api/device`). When a pack is sent to a device,
+STUdio converts it and keeps the conversion in the library as `<uuid>.converted_<millis>` (a folder
+for V2/V3, a `.pack` for V1). Converting again after the source changed adds a new one and keeps the
+old one. These routes find and remove such leftovers.
+
+- `GET /purge/candidates` → `{"candidates": [{"path", "uuid", "title", "format", "size", "timestamp",
+  "reason", "selected", "keptPath"}], "totalSize": …}`. Read-only. `size` is in bytes (-1 if
+  unknown), `timestamp` is the modification time in ms, `keptPath` the entry kept in its place.
+  It may read packs in full (see below), so it can take a few seconds on a large library.
+- `POST /purge` `{"paths": ["<library entry>", …]}` → `{"success": true, "freed": …, "results":
+  [{"path", "removed", "size", "error"}]}`. The candidates are computed again, from the disk as it
+  is now; a name that is not among them is left alone with `"error": "NOT_A_CANDIDATE"`
+  (`"REMOVAL_FAILED"` if the deletion itself failed). `success` is true only if every name was
+  removed. A missing or empty `paths`, a non-string, or any name that is not a direct entry of the
+  library is a 400 `INVALID_REQUEST`, and **nothing** is removed. **Removal is permanent.**
+
+What is offered, per pack UUID (`reason`):
+
+| `reason` | Selected by default | Entry |
+| --- | --- | --- |
+| `SUPERSEDED` | yes | a conversion for which another conversion of the same format is more recent, both by modification time and by the timestamp in its name |
+| `SOURCE_CHANGED` | yes | the most recent conversion of its format, whose recorded provenance (re-checked against its current content) proves it was made from content no other entry holds any more, while a source to convert from is present |
+| `DUPLICATE_SOURCE` | no | a source file (not a conversion) older than another of the same format with the very same bytes |
+
+Never offered: the most recent source of each format (the current archive), an older source whose
+content differs, a conversion whose provenance is unknown or cannot be checked (no record, made
+before records existed, unreadable), a conversion when the modification time and its name disagree
+on which is older, anything that would leave a pack with no entry, and entries that are not
+readable packs.
+
 ## Spoken titles (editor)
 
 `/api/tts` speaks a node title for the editor's *Générer la voix* button. Same request rules as
