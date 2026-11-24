@@ -36,7 +36,7 @@ public class CipherUtils {
     private static final int CIPHER_BLOCK_SIZE_ASSETS_V2 = 512;
     private static final int CIPHER_BLOCK_SIZE_ASSETS_V3 = 512;
 
-    private static final String BOOT_FILENAME = "bt";
+    static final String BOOT_FILENAME = "bt";
 
     private static final List<String> CLEAR_FILES = List.of(FsStoryPackReader.NODE_INDEX_FILENAME, FsStoryPackReader.NIGHT_MODE_FILENAME, FsStoryPackReader.CLEARTEXT_FILENAME);
     private static final List<String> NO_COPY_FILES = List.of(FsStoryPackReader.CLEARTEXT_FILENAME);
@@ -73,28 +73,37 @@ public class CipherUtils {
     }
 
     static byte[] cipherFirstBlockCommonKey(byte[] data) {
-        byte[] block = Arrays.copyOfRange(data, 0, Math.min(CIPHER_BLOCK_SIZE_ASSETS_V2, data.length));
-        int[] dataInt = BytesUtils.toIntArray(block, ByteOrder.LITTLE_ENDIAN);
-        int[] encryptedInt = XXTEACipher.btea(dataInt, Math.min(CIPHER_BLOCK_SIZE_ASSETS_V2/4, data.length/4), BytesUtils.toIntArray(XXTEACipher.COMMON_KEY, ByteOrder.BIG_ENDIAN));
-        byte[] encryptedBlock = BytesUtils.toByteArray(encryptedInt, ByteOrder.LITTLE_ENDIAN);
-        ByteBuffer bb = ByteBuffer.allocate(data.length);
-        bb.put(encryptedBlock);
-        if (data.length > CIPHER_BLOCK_SIZE_ASSETS_V2) {
-            bb.put(Arrays.copyOfRange(data, CIPHER_BLOCK_SIZE_ASSETS_V2, data.length));
-        }
-        return bb.array();
+        return xxteaFirstBlock(data, CIPHER_BLOCK_SIZE_ASSETS_V2, XXTEACipher.COMMON_KEY, true);
     }
     static byte[] decipherFirstBlockCommonKey(byte[] data) {
-        byte[] block = Arrays.copyOfRange(data, 0, Math.min(CIPHER_BLOCK_SIZE_ASSETS_V2, data.length));
+        return xxteaFirstBlock(data, CIPHER_BLOCK_SIZE_ASSETS_V2, XXTEACipher.COMMON_KEY, false);
+    }
+
+    /**
+     * XXTEA over the first {@code min(blockSize, data.length) / 4} 32-bit little-endian words of
+     * {@code data}; every other byte is copied verbatim and the length is preserved.
+     *
+     * <p>Only whole words are ever ciphered: {@code btea} is called with {@code n = len / 4}, so the
+     * one to three bytes of a block shorter than {@code blockSize} that do not fill a word are not
+     * part of the cipher on either side. They used to be <em>lost</em> rather than left alone:
+     * {@code BytesUtils.toIntArray} drops them, the buffer was then allocated at the full length and
+     * only the ciphered words were put back, so they came out as zero bytes. They are now copied as
+     * they are, which is what a reader that deciphers the same {@code len / 4} words expects. Inputs
+     * whose block is a multiple of four bytes — every case the previous code got right — produce
+     * exactly the same output as before.
+     */
+    private static byte[] xxteaFirstBlock(byte[] data, int blockSize, byte[] key, boolean encrypt) {
+        int blockLength = Math.min(blockSize, data.length);
+        byte[] block = Arrays.copyOfRange(data, 0, blockLength);
         int[] dataInt = BytesUtils.toIntArray(block, ByteOrder.LITTLE_ENDIAN);
-        int[] decryptedInt = XXTEACipher.btea(dataInt, -(Math.min(CIPHER_BLOCK_SIZE_ASSETS_V2/4, data.length/4)), BytesUtils.toIntArray(XXTEACipher.COMMON_KEY, ByteOrder.BIG_ENDIAN));
-        byte[] decryptedBlock = BytesUtils.toByteArray(decryptedInt, ByteOrder.LITTLE_ENDIAN);
-        ByteBuffer bb = ByteBuffer.allocate(data.length);
-        bb.put(decryptedBlock);
-        if (data.length > CIPHER_BLOCK_SIZE_ASSETS_V2) {
-            bb.put(Arrays.copyOfRange(data, CIPHER_BLOCK_SIZE_ASSETS_V2, data.length));
-        }
-        return bb.array();
+        int words = blockLength / 4;
+        int[] resultInt = XXTEACipher.btea(dataInt, encrypt ? words : -words, BytesUtils.toIntArray(key, ByteOrder.BIG_ENDIAN));
+        byte[] resultWords = BytesUtils.toByteArray(resultInt, ByteOrder.LITTLE_ENDIAN);
+        // Start from a verbatim copy, so the unaligned tail of the block and everything past the
+        // block survive unchanged, then overwrite the words that were actually ciphered.
+        byte[] out = Arrays.copyOf(data, data.length);
+        System.arraycopy(resultWords, 0, out, 0, resultWords.length);
+        return out;
     }
     private static byte[] computeSpecificKeyV2FromUUID(byte[] uuid) {
         byte[] btKey = decipherFirstBlockCommonKey(uuid);
@@ -107,16 +116,7 @@ public class CipherUtils {
         return reorderedBtKey;
     }
     static byte[] cipherFirstBlockSpecificKeyV2(byte[] data, byte[] specificKey) {
-        byte[] block = Arrays.copyOfRange(data, 0, Math.min(CIPHER_BLOCK_SIZE_BOOT_V2, data.length));
-        int[] dataInt = BytesUtils.toIntArray(block, ByteOrder.LITTLE_ENDIAN);
-        int[] encryptedInt = XXTEACipher.btea(dataInt, Math.min(CIPHER_BLOCK_SIZE_BOOT_V2/4, data.length/4), BytesUtils.toIntArray(specificKey, ByteOrder.BIG_ENDIAN));
-        byte[] encryptedBlock = BytesUtils.toByteArray(encryptedInt, ByteOrder.LITTLE_ENDIAN);
-        ByteBuffer bb = ByteBuffer.allocate(data.length);
-        bb.put(encryptedBlock);
-        if (data.length > CIPHER_BLOCK_SIZE_BOOT_V2) {
-            bb.put(Arrays.copyOfRange(data, CIPHER_BLOCK_SIZE_BOOT_V2, data.length));
-        }
-        return bb.array();
+        return xxteaFirstBlock(data, CIPHER_BLOCK_SIZE_BOOT_V2, specificKey, true);
     }
 
     static byte[] cipherFirstBlockSpecificKeyV3(byte[] data, FsDeviceKeyV3 deviceKeyV3) {

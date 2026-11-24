@@ -443,34 +443,77 @@ public class RawStoryTellerAsyncDriver {
     private CompletableFuture<Optional<Integer>> findFirstSuitableSector(DeviceHandle handle, int packSizeInSectors) {
         return readPackIndex(handle)
                 .thenCompose(packs -> {
-                    // Measure free spaces between and packs and return first appropriate sector
-                    int previousUsedSector = 0, nextUsedSector;
-                    // Order packs by their start sector
-                    packs.sort(Comparator.comparingInt(RawStoryPackInfos::getStartSector));
-                    // Look for a large enough free space
-                    for (RawStoryPackInfos pack : packs) {
-                        nextUsedSector = pack.getStartSector();
-                        int freeSpace = nextUsedSector - previousUsedSector;
-                        if (freeSpace >= packSizeInSectors) {
-                            // Free space is large enough, use it
-                            return CompletableFuture.completedFuture(Optional.of(previousUsedSector + 1));
-                        }
-                        previousUsedSector = pack.getStartSector() + pack.getSizeInSectors() - 1;
+                    // Look for a large enough free space between packs first: the card size is only
+                    // read when none is found, exactly as before.
+                    Optional<Integer> betweenPacks = findSuitableSectorBetweenPacks(packs, packSizeInSectors);
+                    if (betweenPacks.isPresent()) {
+                        return CompletableFuture.completedFuture(betweenPacks);
                     }
                     // Check if there is enough space after the last pack
-                    final int lastUsedSector = previousUsedSector;
+                    final int lastUsedSector = lastUsedSector(packs);
                     return readDeviceInfos(handle)
-                            .thenApply(infos -> {
-                                int firstUnavailableSector = infos.getSdCardSizeInSectors() + 1;
-                                int freeSpace = firstUnavailableSector - lastUsedSector;
-                                if (freeSpace >= packSizeInSectors) {
-                                    // Free space is large enough, use it
-                                    return Optional.of(lastUsedSector + 1);
-                                }
-                                // There are no large-enough free space
-                                return Optional.empty();
-                            });
+                            .thenApply(infos -> findSuitableSectorAfter(lastUsedSector, infos.getSdCardSizeInSectors(), packSizeInSectors));
                 });
+    }
+
+    /*
+     * Sector arithmetic for pack placement. Sectors are relative to PACK_INDEX_SD_SECTOR: sector 0
+     * holds the pack index, and a pack occupies [startSector, startSector + sizeInSectors - 1].
+     *
+     * A pack is placed right after the last sector in use, at lastUsed + 1. Between a last used
+     * sector L and the next used sector N, the free sectors are L+1 .. N-1, i.e. N - L - 1 of them.
+     * The previous code counted N - L, one too many: a pack exactly one sector too large for the gap
+     * was accepted and its last sector overwrote sector 0 of the next pack. Same off-by-one before
+     * the first pack (L = 0, the index sector) and at the end of the card.
+     */
+
+    /** Visible for tests: same answer as the device search, from an index and a card size. */
+    static Optional<Integer> findFirstSuitableSector(List<RawStoryPackInfos> packs, int sdCardSizeInSectors, int packSizeInSectors) {
+        Optional<Integer> betweenPacks = findSuitableSectorBetweenPacks(packs, packSizeInSectors);
+        if (betweenPacks.isPresent()) {
+            return betweenPacks;
+        }
+        return findSuitableSectorAfter(lastUsedSector(packs), sdCardSizeInSectors, packSizeInSectors);
+    }
+
+    static Optional<Integer> findSuitableSectorBetweenPacks(List<RawStoryPackInfos> packs, int packSizeInSectors) {
+        // Order packs by their start sector (on a copy: the caller's list is left as it was given)
+        List<RawStoryPackInfos> sorted = new ArrayList<>(packs);
+        sorted.sort(Comparator.comparingInt(RawStoryPackInfos::getStartSector));
+        int previousUsedSector = 0;
+        for (RawStoryPackInfos pack : sorted) {
+            int nextUsedSector = pack.getStartSector();
+            int freeSpace = nextUsedSector - previousUsedSector - 1;
+            if (freeSpace >= packSizeInSectors) {
+                return Optional.of(previousUsedSector + 1);
+            }
+            previousUsedSector = Math.max(previousUsedSector, pack.getStartSector() + pack.getSizeInSectors() - 1);
+        }
+        return Optional.empty();
+    }
+
+    static int lastUsedSector(List<RawStoryPackInfos> packs) {
+        int lastUsedSector = 0;
+        for (RawStoryPackInfos pack : packs) {
+            lastUsedSector = Math.max(lastUsedSector, pack.getStartSector() + pack.getSizeInSectors() - 1);
+        }
+        return lastUsedSector;
+    }
+
+    /**
+     * {@code sdCardSizeInSectors} is the number of sectors from the index sector onwards, so the last
+     * usable relative sector is {@code sdCardSizeInSectors - 1}. The previous code treated
+     * {@code sdCardSizeInSectors + 1} as the first unavailable sector and counted one more on top,
+     * accepting packs up to two sectors past that bound.
+     */
+    static Optional<Integer> findSuitableSectorAfter(int lastUsedSector, int sdCardSizeInSectors, int packSizeInSectors) {
+        int firstUnavailableSector = sdCardSizeInSectors;
+        int freeSpace = firstUnavailableSector - lastUsedSector - 1;
+        if (freeSpace >= packSizeInSectors) {
+            return Optional.of(lastUsedSector + 1);
+        }
+        // There are no large-enough free space
+        return Optional.empty();
     }
 
     public CompletableFuture<Void> dump(String outputPath) {
