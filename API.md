@@ -11,7 +11,9 @@ route below is under `http://localhost:8080/api/device`. Bodies are JSON.
   `http://127.0.0.1:8080` (any local port with `-Denv=dev`).
 - Every `POST` must send `Content-Type: application/json` (`multipart/form-data` for
   `/api/library/upload` only), otherwise 415.
-- Bodies are limited to 4 GiB (`-Dstudio.maxUploadBytes`).
+- JSON bodies are limited to 1 MiB, uploads to 4 GiB (`-Dstudio.maxUploadBytes`).
+- To run `yarn start` (UI on :3000) against a real device, start STUdio with
+  `-Dstudio.devOrigin=http://localhost:3000` so the event bus accepts that origin.
 - Pack UUIDs must be written in full canonical form (`8-4-4-4-12` hex digits), otherwise 400: a
   shortened form names a different pack folder than the pack it parses to.
 - `path` in `addFromLibrary` must be a direct entry of the library (no `..`, no sub-folder, no
@@ -62,13 +64,15 @@ sent back to back without corrupting the pack index.
 last 200 finished transfers are kept; `GET /transfers` lists them all, oldest first. An unknown id
 answers 404 `TRANSFER_NOT_FOUND`.
 
-An operation that does not end within 30 minutes (`-Dstudio.device.operationTimeoutMinutes`) is
+An operation that does not end within 30 minutes of starting (time spent waiting its turn does
+not count) (`-Dstudio.device.operationTimeoutMinutes`) is
 failed with `NO_DEVICE`, and the next ones are refused at once with 503 until it settles or the
 device is unplugged: a frozen card can no longer hold the queue until STUdio is restarted.
 Unplugging the device fails every transfer still queued or running.
 
 `POST /addToLibrary` answers 409 `CONTENT_FOLDER_EXISTS` when the pack is already in the library.
-A 1.x extraction that fails removes its partial `.pack`.
+A 1.x extraction is written to a hidden `.part-…` file and renamed once complete; a failed one
+leaves nothing behind.
 
 `POST /dump` (1.x only) ignores any `outputPath` and writes into a new folder under STUdio's
 temporary directory, returned as `{"success": true, "path": "…"}`; 503 without a 1.x device.

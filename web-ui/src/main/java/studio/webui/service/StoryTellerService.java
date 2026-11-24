@@ -31,6 +31,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.stream.Collectors;
 
 public class StoryTellerService implements IStoryTellerService {
@@ -454,7 +455,12 @@ public class StoryTellerService implements IStoryTellerService {
             notifier.started(transferId);
             CompletableFuture<TransferStatus> extraction;
             try {
-                if (device != null) {
+                // Checked again in turn: another extraction of the same pack may have been queued
+                // ahead of this one since the request was accepted.
+                if (device != null ? packFile.exists() : new File(packFile, uuid).exists()) {
+                    extraction = CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.CONTENT_FOLDER_EXISTS,
+                            "The pack " + uuid + " is already in the library"));
+                } else if (device != null) {
                     extraction = extractPackV1(transferId, uuid, packFile);
                 } else if (fsDevice != null) {
                     extraction = fsDriver.downloadPack(uuid, packFile.getAbsolutePath(), notifier.listener(transferId));
@@ -482,9 +488,12 @@ public class StoryTellerService implements IStoryTellerService {
     }
 
     private CompletableFuture<TransferStatus> extractPackV1(String transferId, String uuid, File destFile) {
+        // Written beside the destination under a hidden name, then renamed: the library never lists
+        // a partial pack, and an existing file is never truncated.
+        File partFile = new File(destFile.getParentFile(), ".part-" + destFile.getName() + "." + transferId);
         FileOutputStream fos;
         try {
-            fos = new FileOutputStream(destFile);
+            fos = new FileOutputStream(partFile);
         } catch (IOException e) {
             return CompletableFuture.failedFuture(new StoryTellerException("Failed to open destination file", e));
         }
@@ -494,17 +503,30 @@ public class StoryTellerService implements IStoryTellerService {
         } catch (RuntimeException e) {
             download = CompletableFuture.failedFuture(e);
         }
-        return download.whenComplete((status, t) -> {
+        return download.handle((status, t) -> {
             try {
                 fos.close();
             } catch (IOException e) {
                 LOGGER.error("Failed to close destination file.", e);
+                if (t == null) {
+                    t = e;
+                }
             }
-            // A partial .pack would be listed in the library as a valid pack, and would block the
-            // next attempt, which refuses an existing destination.
-            if (t != null && destFile.exists() && !destFile.delete()) {
-                LOGGER.warn("Could not remove the partial pack file " + destFile);
+            if (t == null) {
+                try {
+                    java.nio.file.Files.move(partFile.toPath(), destFile.toPath());
+                } catch (IOException e) {
+                    t = new StoryTellerException(destFile.exists() ? StoryTellerException.Reason.CONTENT_FOLDER_EXISTS : StoryTellerException.Reason.UNKNOWN,
+                            "Could not install the extracted pack as " + destFile.getName(), e);
+                }
             }
+            if (t != null) {
+                if (partFile.exists() && !partFile.delete()) {
+                    LOGGER.warn("Could not remove the partial pack file " + partFile);
+                }
+                throw t instanceof CompletionException ? (CompletionException) t : new CompletionException(t);
+            }
+            return status;
         });
     }
 

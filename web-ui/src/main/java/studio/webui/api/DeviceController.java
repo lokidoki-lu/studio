@@ -84,8 +84,8 @@ public class DeviceController {
             if (body == null) {
                 return;
             }
-            String uuid = canonicalUuid(body.getString("uuid"));
-            String packPath = body.getString("path");
+            String uuid = canonicalUuid(stringField(body, "uuid"));
+            String packPath = stringField(body, "path");
             if (uuid == null || packPath == null) {
                 ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "Both 'uuid' (a pack UUID) and 'path' are required"));
                 return;
@@ -166,7 +166,7 @@ public class DeviceController {
             if (body == null) {
                 return;
             }
-            JsonArray folders = body.getJsonArray("folders");
+            JsonArray folders = body.getValue("folders") instanceof JsonArray ? body.getJsonArray("folders") : null;
             if (folders == null || folders.isEmpty()) {
                 ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "'folders' must list at least one folder name"));
                 return;
@@ -195,7 +195,7 @@ public class DeviceController {
             if (body == null) {
                 return;
             }
-            String uuid = canonicalUuid(body.getString("uuid"));
+            String uuid = canonicalUuid(stringField(body, "uuid"));
             if (uuid == null) {
                 ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "'uuid' must be a pack UUID"));
                 return;
@@ -224,7 +224,7 @@ public class DeviceController {
             if (body == null) {
                 return;
             }
-            JsonArray requested = body.getJsonArray("uuids");
+            JsonArray requested = body.getValue("uuids") instanceof JsonArray ? body.getJsonArray("uuids") : null;
             List<String> uuids = new ArrayList<>();
             if (requested != null) {
                 for (Object o : requested) {
@@ -264,8 +264,8 @@ public class DeviceController {
             if (body == null) {
                 return;
             }
-            String uuid = canonicalUuid(body.getString("uuid"));
-            String driver = body.getString("driver");
+            String uuid = canonicalUuid(stringField(body, "uuid"));
+            String driver = stringField(body, "driver");
             if (uuid == null) {
                 ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "'uuid' must be a pack UUID"));
                 return;
@@ -353,6 +353,12 @@ public class DeviceController {
             ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "A JSON body is required"));
         }
         return body;
+    }
+
+    /** A string field, or {@code null} if it is absent or of another type (a number, an object). */
+    static String stringField(JsonObject body, String key) {
+        Object value = body.getValue(key);
+        return value instanceof String ? (String) value : null;
     }
 
     /**
