@@ -14,6 +14,7 @@ import { DiagramEngine } from '@projectstorm/react-diagrams';
 import MenuNodeModel from "../models/MenuNodeModel";
 import {setViewerAction, setViewerDiagram, setViewerStage, showViewer} from "../../../actions";
 import EditableText from "./composites/EditableText";
+import TitleGenerator from "./composites/TitleGenerator";
 import StudioPortWidget from "./StudioPortWidget";
 
 
@@ -321,6 +322,7 @@ class MenuNodeWidget extends React.Component {
                                         <span className="dropzone glyphicon glyphicon-play"/>
                                     </>}
                                 </div>
+                                <TitleGenerator kind="audio" text={this.props.node.getName()} onGenerated={dataUrl => { this.props.node.setQuestionAudio(dataUrl); this.props.updateCanvas(); this.forceUpdate(); }}/>
                             </div>
                         </div>
                         <div className={`options ${this.props.viewer.stage && this.props.viewer.stage.parentNode && this.props.viewer.stage.parentNode === this.props.node && this.props.viewer.action.node === this.props.node && 'playing'}`}>
@@ -353,6 +355,7 @@ class MenuNodeWidget extends React.Component {
                                                         <img src={this.props.node.getOptionImage(idx)} alt="" className="dropzone"/>
                                                     </>}
                                                 </div>
+                                                <TitleGenerator kind="image" text={this.props.node.getOptionName(idx)} onGenerated={dataUrl => { this.props.node.setOptionImage(idx, dataUrl); this.props.updateCanvas(); this.forceUpdate(); }}/>
                                             </div>
                                             <div className="asset right">
                                                 <input type="file" id={`audio-upload-${this.props.node.getUuid()}-${idx}`} onChange={this.optionAudioFileSelected(idx)} />
@@ -367,6 +370,7 @@ class MenuNodeWidget extends React.Component {
                                                         <span className="dropzone glyphicon glyphicon-play"/>
                                                     </>}
                                                 </div>
+                                                <TitleGenerator kind="audio" text={this.props.node.getOptionName(idx)} onGenerated={dataUrl => { this.props.node.setOptionAudio(idx, dataUrl); this.props.updateCanvas(); this.forceUpdate(); }}/>
                                             </div>
                                         </div>
                                     </div>

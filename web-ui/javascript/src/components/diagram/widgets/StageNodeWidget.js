@@ -13,6 +13,7 @@ import { DiagramEngine } from '@projectstorm/react-diagrams';
 
 import StageNodeModel from "../models/StageNodeModel";
 import EditableText from "./composites/EditableText";
+import TitleGenerator from "./composites/TitleGenerator";
 import StudioPortWidget from "./StudioPortWidget";
 import {showViewer, setViewerDiagram, setViewerStage, setViewerAction} from "../../../actions";
 
@@ -254,6 +255,7 @@ class StageNodeWidget extends React.Component {
                                             <img src={this.props.node.getImage()} alt="" className="dropzone"/>
                                         </>}
                                     </div>
+                                    <TitleGenerator kind="image" text={this.props.node.getName()} onGenerated={dataUrl => { this.props.node.setImage(dataUrl); this.props.updateCanvas(); this.forceUpdate(); }}/>
                                 </div>
                                 <div className="asset right">
                                     <input type="file" id={`audio-upload-${this.props.node.getUuid()}`} onChange={this.audioFileSelected} />
@@ -268,6 +270,7 @@ class StageNodeWidget extends React.Component {
                                             <span className="dropzone glyphicon glyphicon-play"/>
                                         </>}
                                     </div>
+                                    <TitleGenerator kind="audio" text={this.props.node.getName()} onGenerated={dataUrl => { this.props.node.setAudio(dataUrl); this.props.updateCanvas(); this.forceUpdate(); }}/>
                                 </div>
                             </div>
                             <div className="options">
