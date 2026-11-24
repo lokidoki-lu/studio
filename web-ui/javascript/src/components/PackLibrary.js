@@ -31,6 +31,7 @@ import {
 } from "../utils/storage";
 import {chooseDropAction, applyProvenanceVerdict} from "../utils/packs";
 import {verifyConversion} from "../services/library";
+import {matchingGroups} from "../utils/librarySearch";
 
 import './PackLibrary.css';
 
@@ -541,8 +542,16 @@ class PackLibrary extends React.Component {
                         {this.state.library.metadata && <div><strong>{t('library.local.path')}</strong> {this.state.library.metadata.path}</div>}
                         <div><strong>{t('library.local.packs.length')}</strong> { this.state.library.packs.length || '-' }</div>
                         <input type="file" id="upload" multiple accept=".zip,.pack" style={{visibility: 'hidden', position: 'absolute'}} onChange={this.packAddFileSelected} />
-                        <span title={t('library.local.addPack')} className="btn btn-default glyphicon glyphicon-import" onClick={this.showAddFileSelector}/>
+                        <div className="library-search">
+                            <input type="search" value={this.state.search || ''} placeholder={t('library.local.search')} aria-label={t('library.local.search')} onChange={e => this.setState({search: e.target.value})} />
+                        </div>
+                        <button type="button" title={t('library.local.addPack')} className="btn btn-primary library-import" onClick={this.showAddFileSelector}><span className="glyphicon glyphicon-import"/> {t('library.local.import')}</button>
                         <LibraryPurge />
+                        <div className="format-legend">
+                            <span className="legend-archive">{t('library.format.archive')}</span>
+                            <span className="legend-raw">{t('library.format.raw')}</span>
+                            <span className="legend-fs">{t('library.format.fs')}</span>
+                        </div>
                         <div className="editor-actions">
                             <p><button className="library-action" onClick={this.onCreateNewPackInEditor}>{t('library.local.empty.link1')}</button> <button className="library-action" onClick={this.onOpenSamplePackInEditor}>{t('library.local.empty.link2')}</button> {t('library.local.empty.suffix')}</p>
                         </div>
@@ -553,8 +562,11 @@ class PackLibrary extends React.Component {
                         {this.state.library.packs.length === 0 && <div className="empty">
                             <p>{t('library.local.empty.header')}</p>
                         </div>}
+                        {this.state.library.packs.length > 0 && matchingGroups(this.state.library.packs, this.state.search).length === 0 && <div className="empty empty-search">
+                            <p>{t('library.local.noMatch')}</p>
+                        </div>}
                         {this.state.library.packs.length > 0 && <div className="pack-grid">
-                            {this.state.library.packs.map(group =>
+                            {matchingGroups(this.state.library.packs, this.state.search).map(group =>
                                 <div key={group.uuid}
                                      title={group.uuid}
                                      draggable={this.isPackDraggable(group.packs[0])}
@@ -586,6 +598,7 @@ class PackLibrary extends React.Component {
                                                     {p.format === 'fs' && <span role="img" aria-label="fs" title={t('library.format.fs')}>&#x1f4c2;</span>}
                                                     {p.path}
                                                 </div>
+                                                <div className="pack-format-badge">{t(`library.format.${p.format}`)}</div>
                                                 <div className="pack-version"><span>{`v${p.version}`}</span></div>
                                                 <div className="pack-actions">
                                                     {p.format !== 'archive' && <button className="pack-action" onClick={this.onConvertLibraryPack(p, 'archive')}>
