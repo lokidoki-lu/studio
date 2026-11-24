@@ -11,6 +11,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream;
+import org.apache.commons.compress.archivers.zip.ZipFile;
 import studio.core.v1.Constants;
 import studio.core.v1.model.*;
 import studio.core.v1.model.enriched.EnrichedNodeMetadata;
@@ -27,6 +28,8 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.logging.Logger;
 
@@ -60,7 +63,7 @@ public class ArchiveStoryPackReader {
      * Reads the current entry in full, refusing it when it exceeds the per-entry limit or makes the
      * archive exceed the cumulated limit. The declared size is not trusted: the bytes are counted.
      */
-    private byte[] readEntry(ZipArchiveInputStream zis, ZipArchiveEntry entry, ReadBudget budget) throws IOException {
+    private byte[] readEntry(InputStream zis, ZipArchiveEntry entry, ReadBudget budget) throws IOException {
         if (entry.getSize() > maxEntryBytes) {
             throw new IOException("Archive entry too large: " + entry.getName() + " (" + entry.getSize() + " bytes, max " + maxEntryBytes + ")");
         }
@@ -122,6 +125,79 @@ public class ArchiveStoryPackReader {
         return entry.isDirectory() || normalizedName.endsWith("/");
     }
 
+    /** The pack-level fields of story.json: version, title, description, night mode, first stage uuid. */
+    private static void applyStoryJson(StoryPackMetadata metadata, JsonObject root) {
+        metadata.setVersion(root.get("version").getAsShort());
+        Optional.ofNullable(root.get("title")).filter(JsonElement::isJsonPrimitive).ifPresent(title ->
+                metadata.setTitle(title.getAsString())
+        );
+        Optional.ofNullable(root.get("description")).filter(JsonElement::isJsonPrimitive).ifPresent(desc ->
+                metadata.setDescription(desc.getAsString())
+        );
+        // TODO Thumbnail?
+
+        // Night mode
+        metadata.setNightModeAvailable(Optional.ofNullable(root.get("nightModeAvailable")).map(JsonElement::getAsBoolean).orElse(false));
+
+        // Read first stage node
+        JsonObject mainStageNode = root.getAsJsonArray("stageNodes").get(0).getAsJsonObject();
+        metadata.setUuid(mainStageNode.get("uuid").getAsString());
+    }
+
+    /**
+     * Metadata of the archive at {@code path}, read through the zip central directory: only
+     * story.json and thumbnail.png are decompressed, the assets are never read. A pack of a
+     * gigabyte is thus read in milliseconds, where {@link #readMetadata(InputStream)} has to stream
+     * through the whole file to reach entries that may sit at its end.
+     *
+     * <p>Same entries, same rules as the streaming reader (names normalized, matched ignoring case,
+     * the last story.json winning, same size limits). When the central directory cannot be read —
+     * a file still being copied, a truncated or unusual archive — this falls back to the streaming
+     * reader, so such a file is handled exactly as before.
+     */
+    public StoryPackMetadata readMetadata(Path path) throws IOException {
+        ZipFile zip;
+        try {
+            zip = ZipFile.builder().setPath(path).get();
+        } catch (IOException e) {
+            LOGGER.fine("Zip central directory unreadable, streaming instead: " + path + " (" + e.getMessage() + ")");
+            try (InputStream in = Files.newInputStream(path)) {
+                return readMetadata(in);
+            }
+        }
+        try (ZipFile z = zip) {
+            StoryPackMetadata metadata = new StoryPackMetadata(Constants.PACK_FORMAT_ARCHIVE);
+            boolean hasStoryJsonEntry = false;
+            ReadBudget budget = new ReadBudget();
+            Enumeration<ZipArchiveEntry> entries = z.getEntries();
+            while (entries.hasMoreElements()) {
+                ZipArchiveEntry entry = entries.nextElement();
+                String name = normalizeEntryName(entry.getName());
+                if (isDirectory(entry, name)) {
+                    continue;
+                }
+                boolean storyJson = name.equalsIgnoreCase("story.json");
+                if (!storyJson && !name.equalsIgnoreCase("thumbnail.png")) {
+                    continue;
+                }
+                byte[] bytes;
+                try (InputStream in = z.getInputStream(entry)) {
+                    if (in == null) {
+                        throw new IOException("Unsupported archive entry: " + entry.getName());
+                    }
+                    bytes = readEntry(in, entry, budget);
+                }
+                if (storyJson) {
+                    hasStoryJsonEntry = true;
+                    applyStoryJson(metadata, parseJson(bytes));
+                } else {
+                    metadata.setThumbnail(bytes);
+                }
+            }
+            return hasStoryJsonEntry ? metadata : null;
+        }
+    }
+
     public StoryPackMetadata readMetadata(InputStream inputStream) throws IOException {
         // Zip archive contains a json file and separate assets
         ZipArchiveInputStream zis = new ZipArchiveInputStream(inputStream);
@@ -139,25 +215,7 @@ public class ArchiveStoryPackReader {
             // Story descriptor file: story.json
             if (!directory && name.equalsIgnoreCase("story.json")) {
                 hasStoryJsonEntry = true;
-
-                JsonObject root = parseJson(readEntry(zis, entry, budget));
-
-                // Read metadata
-                metadata.setVersion(root.get("version").getAsShort());
-                Optional.ofNullable(root.get("title")).filter(JsonElement::isJsonPrimitive).ifPresent(title ->
-                        metadata.setTitle(title.getAsString())
-                );
-                Optional.ofNullable(root.get("description")).filter(JsonElement::isJsonPrimitive).ifPresent(desc ->
-                        metadata.setDescription(desc.getAsString())
-                );
-                // TODO Thumbnail?
-
-                // Night mode
-                metadata.setNightModeAvailable(Optional.ofNullable(root.get("nightModeAvailable")).map(JsonElement::getAsBoolean).orElse(false));
-
-                // Read first stage node
-                JsonObject mainStageNode = root.getAsJsonArray("stageNodes").get(0).getAsJsonObject();
-                metadata.setUuid(mainStageNode.get("uuid").getAsString());
+                applyStoryJson(metadata, parseJson(readEntry(zis, entry, budget)));
             }
             // Pack thumbnail
             else if (!directory && name.equalsIgnoreCase("thumbnail.png")) {
