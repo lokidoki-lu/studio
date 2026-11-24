@@ -114,4 +114,21 @@ class TransferRegistryTest {
         assertEquals(507, ApiErrors.statusOf(StoryTellerException.Reason.NOT_ENOUGH_SPACE));
         assertEquals(400, ApiErrors.statusOf(StoryTellerException.Reason.INVALID_REQUEST));
     }
+
+    @org.junit.jupiter.api.Test
+    @org.junit.jupiter.api.DisplayName("a stalled transfer stays running and can still succeed")
+    void stalledThenSucceeds() {
+        TransferRegistry registry = new TransferRegistry();
+        String id = registry.create("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0", "add");
+        registry.started(id);
+        assertTrue(registry.hasUnfinished("0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0", "add"));
+        registry.stalled(id, "still running");
+        io.vertx.core.json.JsonObject json = registry.get(id).orElseThrow();
+        assertEquals("RUNNING", json.getString("state"));
+        assertTrue(json.getBoolean("stalled"));
+        assertEquals("still running", json.getString("message"));
+        assertTrue(registry.succeeded(id));
+        assertEquals("SUCCEEDED", registry.get(id).orElseThrow().getString("state"));
+        org.junit.jupiter.api.Assertions.assertFalse(registry.hasUnfinished("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0", "add"));
+    }
 }

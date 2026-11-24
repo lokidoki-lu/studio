@@ -52,5 +52,7 @@ class RequestOriginPolicyTest {
         assertFalse(MainVerticle.isAcceptedPostContentType("multipart/form-data; boundary=x", "/api/library/remove"));
         assertFalse(MainVerticle.isAcceptedPostContentType("text/plain", "/api/library/remove"));
         assertFalse(MainVerticle.isAcceptedPostContentType(null, "/api/library/remove"));
+        // An upload takes a form only: a JSON body would be held in memory up to the upload limit
+        assertFalse(MainVerticle.isAcceptedPostContentType("application/json", "/api/library/upload"));
     }
 }

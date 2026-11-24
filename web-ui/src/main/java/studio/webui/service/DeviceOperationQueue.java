@@ -13,6 +13,8 @@ import java.util.IdentityHashMap;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Supplier;
@@ -44,6 +46,27 @@ public class DeviceOperationQueue {
     /** Default upper bound for one operation: generous, a large pack over a slow USB link included. */
     public static final long DEFAULT_TIMEOUT_MILLIS = TimeUnit.MINUTES.toMillis(
             Long.getLong("studio.device.operationTimeoutMinutes", 30L));
+
+    /**
+     * Threads of the queue's own. The common fork-join pool is shared with every blocking read the
+     * drivers make outside the queue; a frozen card can exhaust it, and the queue would then never
+     * start an operation, arm a timeout or end a reset grace again.
+     */
+    private static final ExecutorService EXECUTOR = Executors.newCachedThreadPool(runnable -> {
+        Thread thread = new Thread(runnable, "device-operation-queue");
+        thread.setDaemon(true);
+        return thread;
+    });
+
+    /**
+     * The failure a caller gets when its operation overran the timeout. The operation itself may
+     * still be running and may still succeed.
+     */
+    public static final class OperationTimeoutException extends StoryTellerException {
+        OperationTimeoutException(String message, Throwable cause) {
+            super(Reason.NO_DEVICE, message, cause);
+        }
+    }
 
     private final long timeoutMillis;
     private CompletableFuture<?> tail = CompletableFuture.completedFuture(null);
@@ -93,7 +116,7 @@ public class DeviceOperationQueue {
                     .handle((ignored, error) -> null)
                     // Async: the supplier may block (file system, USB). It must neither run on the
                     // caller's thread, possibly a Vert.x event loop, nor under this object's monitor.
-                    .thenComposeAsync(ignored -> start(operation, submittedIn, result));
+                    .thenComposeAsync(ignored -> start(operation, submittedIn, result), EXECUTOR);
             // The queue waits for the operation's real end; the caller only up to the timeout.
             tail = underlying;
             unsettled.add(result);
@@ -153,14 +176,25 @@ public class DeviceOperationQueue {
             if (!isTimeout(error) || started.isDone()) {
                 return;
             }
+            List<CompletableFuture<?>> waiting = new ArrayList<>();
             synchronized (DeviceOperationQueue.this) {
                 if (submittedIn == generation) {
                     stuck = started;
+                    // Those queued behind it would wait as long as it does: they fail now, and are
+                    // not started even if it ends later (their callers have been answered).
+                    for (CompletableFuture<?> f : unsettled) {
+                        if (f != result) {
+                            waiting.add(f);
+                        }
+                    }
                 }
             }
-            result.completeExceptionally(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE,
-                    "The device did not answer within " + TimeUnit.MILLISECONDS.toSeconds(timeoutMillis)
-                            + " s; unplug and plug it back in", error));
+            result.completeExceptionally(new OperationTimeoutException(
+                    "The device operation is still running after " + TimeUnit.MILLISECONDS.toSeconds(timeoutMillis)
+                            + " s. If the device no longer responds, unplug it and plug it back in", error));
+            for (CompletableFuture<?> f : waiting) {
+                f.completeExceptionally(notResponding());
+            }
         });
         return started;
     }
@@ -182,7 +216,7 @@ public class DeviceOperationQueue {
                     ? CompletableFuture.completedFuture(null)
                     : CompletableFuture.anyOf(inFlight.handle((v, e) -> null),
                             CompletableFuture.runAsync(() -> { },
-                                    CompletableFuture.delayedExecutor(resetGraceMillis, TimeUnit.MILLISECONDS)));
+                                    CompletableFuture.delayedExecutor(resetGraceMillis, TimeUnit.MILLISECONDS, EXECUTOR)));
             stuck = null;
             toFail = new ArrayList<>(unsettled);
         }

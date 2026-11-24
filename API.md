@@ -9,8 +9,10 @@ route below is under `http://localhost:8080/api/device`. Bodies are JSON.
   This blocks DNS rebinding from a web page.
 - A browser request carrying an `Origin` is accepted only from `http://localhost:8080` or
   `http://127.0.0.1:8080` (any local port with `-Denv=dev`).
-- Every `POST` must send `Content-Type: application/json` (`multipart/form-data` for
-  `/api/library/upload` only), otherwise 415.
+- Every `POST` must send `Content-Type: application/json`, except `/api/library/upload`, which
+  takes `multipart/form-data` only; otherwise 415.
+- Pages are served with `X-Frame-Options: DENY`; the SockJS iframe page and its script-tag
+  transports are disabled (the event bus uses WebSocket, or XHR as fallback).
 - JSON bodies are limited to 1 MiB, uploads to 4 GiB (`-Dstudio.maxUploadBytes`).
 - To run `yarn start` (UI on :3000) against a real device, start STUdio with
   `-Dstudio.devOrigin=http://localhost:3000` so the event bus accepts that origin.
@@ -65,14 +67,18 @@ last 200 finished transfers are kept; `GET /transfers` lists them all, oldest fi
 answers 404 `TRANSFER_NOT_FOUND`.
 
 An operation that does not end within 30 minutes of starting (time spent waiting its turn does
-not count) (`-Dstudio.device.operationTimeoutMinutes`) is
-failed with `NO_DEVICE`, and the next ones are refused at once with 503 until it settles or the
-device is unplugged: a frozen card can no longer hold the queue until STUdio is restarted.
-Unplugging the device fails every transfer still queued or running.
+not count, `-Dstudio.device.operationTimeoutMinutes`) is **not** declared failed: it may still be
+writing. Its transfer stays `RUNNING` with `"stalled": true` and a `message`, and still records
+its real outcome when it ends. Meanwhile the operations queued behind it, and any new one, are
+refused with 503 `NO_DEVICE`. Unplugging the device fails every transfer still queued or running.
+
+A second `addFromLibrary` for a pack whose transfer is still queued or running is refused with 409
+`PACK_ALREADY_ON_DEVICE`. On a 1.x device, `GET /infos` and `GET /packs` answer the last values read
+(with `"cached": true` for infos) while a device operation is running.
 
 `POST /addToLibrary` answers 409 `CONTENT_FOLDER_EXISTS` when the pack is already in the library.
-A 1.x extraction is written to a hidden `.part-…` file and renamed once complete; a failed one
-leaves nothing behind.
+An extraction is written under a hidden name (`.part-…` for a 1.x `.pack`, `.staging-…` for a
+2.x+ folder) and renamed once complete; a failed one leaves nothing behind.
 
 `POST /dump` (1.x only) ignores any `outputPath` and writes into a new folder under STUdio's
 temporary directory, returned as `{"success": true, "path": "…"}`; 503 without a 1.x device.

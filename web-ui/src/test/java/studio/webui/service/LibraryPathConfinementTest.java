@@ -160,6 +160,18 @@ class LibraryPathConfinementTest {
         }
 
         @Test
+        @DisplayName("Windows device names and names Win32 rewrites are refused on every system")
+        void windowsReservedNamesAreRefused() throws IOException {
+            for (String name : new String[]{"NUL", "con.zip", "COM1.pack", "lpt9", "pack.zip.", "pack.zip "}) {
+                Path uploaded = writeTemporary("u.zip", "x");
+                assertFalse(service.addPackFile(name, uploaded.toString()), "refused: " + name);
+                assertFalse(service.deletePack(name), "refused: " + name);
+            }
+            Path uploaded = writeTemporary("u.zip", "x");
+            assertTrue(service.addPackFile("console.zip", uploaded.toString()), "an ordinary name that merely starts like one");
+        }
+
+        @Test
         @EnabledOnOs(OS.WINDOWS)
         @DisplayName("a backslash traversal is refused too, since Windows reads it as a separator")
         void backslashTraversalIsRefusedOnWindows() {
