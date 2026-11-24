@@ -30,12 +30,15 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.time.Duration;
@@ -144,6 +147,7 @@ public class LibraryService {
             try (Stream<Path> paths = Files.walk(Paths.get(libraryPath()), 1)) {
                 paths
                         .filter(Files::isRegularFile)
+                        .filter(path -> !isStagingEntry(path))
                         .filter(path -> path.toString().endsWith(".zip"))
                         .map(this::readPackFileCached)
                         .filter(Optional::isPresent)
@@ -177,6 +181,7 @@ public class LibraryService {
                 return new JsonArray(
                         paths
                                 .filter(path -> !path.equals(Paths.get(libraryPath())))
+                                .filter(path -> !isStagingEntry(path))
                                 .map(this::readPackFileCached)
                                 .filter(Optional::isPresent)
                                 .map(Optional::get)
@@ -268,13 +273,14 @@ public class LibraryService {
     private Optional<Path> convert(String packPath, String sourceLabel, String targetLabel,
                                    String extension, String provenanceKind,
                                    PackReader reader, AssetTransform transform, PackWriter writer) {
+        Path tmp = null;
         try {
             // Observed before the conversion reads it; observed again afterwards, and
             // recorded only if the two agree. See recordProvenance.
             Optional<String> sourceBefore = sourceIdentity(packPath);
 
             boolean producesFolder = extension == null;
-            Path tmp = producesFolder ? createTempDirectory(packPath) : createTempFile(packPath, extension);
+            tmp = producesFolder ? createTempDirectory(packPath) : createTempFile(packPath, extension);
             LOGGER.info("Pack is in " + sourceLabel + " format. Converting to " + targetLabel
                     + " format and storing in temporary " + (producesFolder ? "folder: " : "file: ")
                     + tmp.toAbsolutePath());
@@ -291,7 +297,7 @@ public class LibraryService {
                     + System.currentTimeMillis() + (producesFolder ? "" : extension);
             Path destinationPath = requireLibraryEntry(destinationName);
             LOGGER.info("Moving " + targetLabel + " format pack into local library: " + destinationPath);
-            Files.move(produced, destinationPath);
+            installIntoLibrary(produced, destinationPath);
             recordProvenance(packPath, sourceBefore, destinationPath, provenanceKind);
 
             return Optional.of(Paths.get(destinationName));
@@ -299,7 +305,87 @@ public class LibraryService {
             String message = "Failed to convert " + sourceLabel + " format pack to " + targetLabel + " format";
             LOGGER.error(message, e);
             throw new RuntimeException(message, e);
+        } finally {
+            // Whatever is left of the temporary (all of it after a failure, the empty folder created
+            // for an FS conversion after a success) is removed, never left to pile up.
+            deleteQuietly(tmp);
         }
+    }
+
+    /**
+     * Prefix of the entries a conversion is assembled under inside the library when it cannot be
+     * renamed there in one step. They are not packs and the listing skips them.
+     */
+    static final String STAGING_PREFIX = ".staging-";
+
+    /**
+     * Puts a produced artefact (file or folder) at {@code destination}, which must not exist yet.
+     *
+     * <p>Within one filesystem this is a single rename. Across filesystems (a library configured on
+     * another volume than the temporary folder) a folder cannot be moved, and a file would be copied
+     * in place where the listing could see it half written. Both are then copied under a hidden
+     * staging name in the library and renamed to their final name once complete.
+     */
+    void installIntoLibrary(Path produced, Path destination) throws IOException {
+        if (Files.exists(destination, LinkOption.NOFOLLOW_LINKS)) {
+            throw new FileAlreadyExistsException(destination.toString());
+        }
+        try {
+            Files.move(produced, destination, StandardCopyOption.ATOMIC_MOVE);
+            return;
+        } catch (AtomicMoveNotSupportedException e) {
+            LOGGER.info("Temporary folder and library are on different filesystems, copying: " + destination);
+        }
+        Path staging = destination.resolveSibling(STAGING_PREFIX + destination.getFileName() + "." + UUID.randomUUID());
+        try {
+            copyRecursively(produced, staging);
+            try {
+                Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(staging, destination);
+            }
+        } catch (IOException | RuntimeException e) {
+            deleteQuietly(staging);
+            throw e;
+        }
+        deleteQuietly(produced);
+    }
+
+    private static void copyRecursively(Path source, Path target) throws IOException {
+        if (!Files.isDirectory(source, LinkOption.NOFOLLOW_LINKS)) {
+            Files.copy(source, target, LinkOption.NOFOLLOW_LINKS);
+            return;
+        }
+        try (Stream<Path> paths = Files.walk(source)) {
+            for (Path path : (Iterable<Path>) paths::iterator) {
+                Path copy = target.resolve(source.relativize(path).toString());
+                if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+                    Files.createDirectories(copy);
+                } else {
+                    Files.copy(path, copy, LinkOption.NOFOLLOW_LINKS);
+                }
+            }
+        }
+    }
+
+    private void deleteQuietly(Path path) {
+        if (path == null || !Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+            return;
+        }
+        try {
+            if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+                FileUtils.deleteDirectory(path.toFile());
+            } else {
+                Files.delete(path);
+            }
+        } catch (IOException e) {
+            LOGGER.warn("Failed to remove temporary conversion output: " + path, e);
+        }
+    }
+
+    /** Entries of the library folder that are work in progress rather than packs. */
+    private static boolean isStagingEntry(Path path) {
+        return path.getFileName() != null && path.getFileName().toString().startsWith(STAGING_PREFIX);
     }
 
     @FunctionalInterface
@@ -477,7 +563,7 @@ public class LibraryService {
      * <p>An entry that does not exist yet is allowed: an upload and a conversion both have to name a
      * destination before creating it. The lexical rule still applies to it.
      */
-    Optional<Path> libraryEntry(String name) {
+    public Optional<Path> libraryEntry(String name) {
         if (name == null || name.trim().isEmpty()) {
             return Optional.empty();
         }

@@ -10,8 +10,10 @@ import com.jhlabs.image.QuantizeFilter;
 
 import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageReader;
 import javax.imageio.ImageWriteParam;
 import javax.imageio.ImageWriter;
+import javax.imageio.stream.ImageInputStream;
 import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.awt.image.IndexColorModel;
@@ -20,6 +22,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.Iterator;
 
 public class ImageConversion {
 
@@ -27,6 +30,45 @@ public class ImageConversion {
     private static final String PNG_FORMAT = "PNG";
 
     private static final String BITMAP_RLE4_COMPRESSION = "BI_RLE4";
+
+    /** Largest width or height accepted for an input image: well above the device's 320x240. */
+    public static final int MAX_DIMENSION = 4096;
+
+    /**
+     * Decodes an image, refusing it before decoding when its declared dimensions exceed
+     * {@link #MAX_DIMENSION}, and failing with an IOException rather than returning null when no
+     * reader understands it.
+     */
+    static BufferedImage decode(byte[] data) throws IOException {
+        if (data == null) {
+            throw new IOException("No image data");
+        }
+        try (ImageInputStream iis = ImageIO.createImageInputStream(new ByteArrayInputStream(data))) {
+            Iterator<ImageReader> readers = iis == null ? null : ImageIO.getImageReaders(iis);
+            if (readers == null || !readers.hasNext()) {
+                throw new IOException("Unsupported or unreadable image format");
+            }
+            ImageReader reader = readers.next();
+            try {
+                reader.setInput(iis, true, true);
+                int width = reader.getWidth(0);
+                int height = reader.getHeight(0);
+                if (width <= 0 || height <= 0 || width > MAX_DIMENSION || height > MAX_DIMENSION) {
+                    throw new IOException("Image dimensions not supported: " + width + "x" + height
+                            + " (max " + MAX_DIMENSION + "x" + MAX_DIMENSION + ")");
+                }
+                BufferedImage image = reader.read(0);
+                if (image == null) {
+                    throw new IOException("Failed to decode image");
+                }
+                return image;
+            } catch (RuntimeException e) {
+                throw new IOException("Failed to decode image: " + e.getMessage(), e);
+            } finally {
+                reader.dispose();
+            }
+        }
+    }
 
     public static byte[] anyToBitmap(byte[] data) throws IOException {
         return convertImage(data, BITMAP_FORMAT);
@@ -37,7 +79,7 @@ public class ImageConversion {
     }
 
     public static byte[] convertImage(byte[] data, String format) throws IOException {
-        BufferedImage inputImage = ImageIO.read(new ByteArrayInputStream(data));
+        BufferedImage inputImage = decode(data);
         // Redraw image to remove potential alpha channel
         BufferedImage redrawn = redrawImage(inputImage);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -59,7 +101,7 @@ public class ImageConversion {
     }
 
     public static byte[] anyToRLECompressedBitmap(byte[] data) throws IOException {
-        BufferedImage inputImage = ImageIO.read(new ByteArrayInputStream(data));
+        BufferedImage inputImage = decode(data);
         // Redraw image to remove potential alpha channel, and to used indexed colors
         BufferedImage redrawn = redrawIndexedImage(inputImage);
         ByteArrayOutputStream output = new ByteArrayOutputStream();

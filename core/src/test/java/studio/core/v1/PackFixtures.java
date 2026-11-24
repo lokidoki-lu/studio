@@ -58,11 +58,9 @@ public final class PackFixtures {
 
         // One action node, reached from both stage nodes, offering only the second of them.
         //
-        // Offering the first as well would be the more obvious fixture and it is deliberately not
-        // used here: the binary format addresses options by sector, the first stage node sits at
-        // sector 0, and the reader treats 0 as the end of the option list. An option pointing at it
-        // therefore truncates the list. That is pinned in its own case by BinaryPackRoundTripTest,
-        // and kept out of the general fixture so every other test is not silently exercising it.
+        // Offering the first as well is the subject of its own fixture, packWithOptionOnFirstNode:
+        // the binary format addresses options by sector and the first stage node sits at sector 0,
+        // which the reader once mistook for the end of the option list (BinaryPackRoundTripTest).
         ActionNode action = new ActionNode(new ArrayList<>(Arrays.asList(second)), null);
         first.setOkTransition(new Transition(action, (short) 0));
         first.setHomeTransition(new Transition(action, (short) 0));
@@ -76,8 +74,7 @@ public final class PackFixtures {
     /**
      * The same pack, with the action node offering the <em>first</em> stage node as well.
      *
-     * <p>Only for the case that pins what the binary format does with it. See
-     * {@link #twoStagePack()}.
+     * <p>For the case that pins that the binary format keeps it. See {@link #twoStagePack()}.
      */
     public static StoryPack packWithOptionOnFirstNode() {
         StoryPack pack = twoStagePack();

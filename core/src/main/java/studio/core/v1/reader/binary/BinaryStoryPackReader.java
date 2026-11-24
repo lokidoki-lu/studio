@@ -15,12 +15,25 @@ import studio.core.v1.model.enriched.EnrichedPackMetadata;
 import studio.core.v1.model.metadata.StoryPackMetadata;
 
 import java.io.DataInputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.logging.Logger;
 
 public class BinaryStoryPackReader {
+
+    private static final Logger LOGGER = Logger.getLogger(BinaryStoryPackReader.class.getName());
+
+    /** Size of the enriched metadata block of a node: name (UTF-16), group id, type, position. */
+    private static final int ENRICHED_NODE_METADATA_SIZE = Constants.BINARY_ENRICHED_METADATA_NODE_NAME_TRUNCATE*2 + 16 + 1 + 4;
+
+    /**
+     * Upper bound for a single asset, in sectors (512 MiB). Far above any real image or audio file,
+     * low enough to refuse a corrupted size before allocating it.
+     */
+    static final int MAX_ASSET_SECTORS = (512 * 1024 * 1024) / Constants.SECTOR_SIZE;
 
     public StoryPackMetadata readMetadata(InputStream inputStream) throws IOException {
         DataInputStream dis = new DataInputStream(inputStream);
@@ -29,18 +42,18 @@ public class BinaryStoryPackReader {
         StoryPackMetadata metadata = new StoryPackMetadata(Constants.PACK_FORMAT_RAW);
 
         // Read sector 1
-        dis.skipBytes(3);   // Skip to version
+        skipFully(dis, 3);   // Skip to version
         metadata.setVersion(dis.readShort());
 
         // Read (optional) enriched pack metadata
-        dis.skipBytes(Constants.BINARY_ENRICHED_METADATA_SECTOR_1_ALIGNMENT_PADDING);
+        skipFully(dis, Constants.BINARY_ENRICHED_METADATA_SECTOR_1_ALIGNMENT_PADDING);
         Optional<String> maybeTitle = readString(dis, Constants.BINARY_ENRICHED_METADATA_TITLE_TRUNCATE);
         metadata.setTitle(maybeTitle.orElse(null));
         Optional<String> maybeDescription = readString(dis, Constants.BINARY_ENRICHED_METADATA_DESCRIPTION_TRUNCATE);
         metadata.setDescription(maybeDescription.orElse(null));
         // TODO Thumbnail?
 
-        dis.skipBytes(Constants.SECTOR_SIZE - 5
+        skipFully(dis, Constants.SECTOR_SIZE - 5
                 - Constants.BINARY_ENRICHED_METADATA_SECTOR_1_ALIGNMENT_PADDING
                 - Constants.BINARY_ENRICHED_METADATA_TITLE_TRUNCATE*2
                 - Constants.BINARY_ENRICHED_METADATA_DESCRIPTION_TRUNCATE*2); // Skip to end of sector
@@ -63,10 +76,13 @@ public class BinaryStoryPackReader {
         short stages = dis.readShort();
         boolean factoryDisabled = dis.readByte() == 1;
         short version = dis.readShort();
+        if (stages <= 0) {
+            throw new IOException("Invalid binary story pack: stage node count must be positive, was " + stages);
+        }
 
         // Read (optional) enriched pack metadata
         EnrichedPackMetadata enrichedPack = null;
-        dis.skipBytes(Constants.BINARY_ENRICHED_METADATA_SECTOR_1_ALIGNMENT_PADDING);
+        skipFully(dis, Constants.BINARY_ENRICHED_METADATA_SECTOR_1_ALIGNMENT_PADDING);
         Optional<String> maybeTitle = readString(dis, Constants.BINARY_ENRICHED_METADATA_TITLE_TRUNCATE);
         Optional<String> maybeDescription = readString(dis, Constants.BINARY_ENRICHED_METADATA_DESCRIPTION_TRUNCATE);
         // TODO Thumbnail?
@@ -74,7 +90,7 @@ public class BinaryStoryPackReader {
             enrichedPack = new EnrichedPackMetadata(maybeTitle.orElse(null), maybeDescription.orElse(null));
         }
 
-        dis.skipBytes(Constants.SECTOR_SIZE - 5
+        skipFully(dis, Constants.SECTOR_SIZE - 5
                 - Constants.BINARY_ENRICHED_METADATA_SECTOR_1_ALIGNMENT_PADDING
                 - Constants.BINARY_ENRICHED_METADATA_TITLE_TRUNCATE*2
                 - Constants.BINARY_ENRICHED_METADATA_DESCRIPTION_TRUNCATE*2); // Skip to end of sector
@@ -86,6 +102,7 @@ public class BinaryStoryPackReader {
         TreeMap<SectorAddr, List<Transition>> transitionsWithAction = new TreeMap<>(); // Transitions must be updated with the actual ActionNode
         Set<SectorAddr> actionNodesToVisit = new TreeSet<>();   // Stage nodes / transitions reference action nodes, which are read after all stage nodes
         Set<AssetAddr> assetAddrsToVisit = new TreeSet<>();     // Stage nodes reference assets, which are read after all nodes
+        Map<SectorAddr, Integer> actionNodesOptionsCount = new TreeMap<>(); // Stage nodes' transitions carry the number of options of their action node
         for (int i = 0; i < stages; i++) {
             // Reading sector i+2
 
@@ -99,6 +116,7 @@ public class BinaryStoryPackReader {
             int imageSize = dis.readInt();
             AssetAddr imageAssetAddr = null;
             if (imageOffset != -1) {
+                checkAssetAddress("image", i, imageOffset, imageSize, stages);
                 // Asset must be visited
                 imageAssetAddr = new AssetAddr(imageOffset, imageSize, AssetType.IMAGE);
                 assetAddrsToVisit.add(imageAssetAddr);
@@ -109,6 +127,7 @@ public class BinaryStoryPackReader {
             int audioSize = dis.readInt();
             AssetAddr audioAssetAddr = null;
             if (audioOffset != -1) {
+                checkAssetAddress("audio", i, audioOffset, audioSize, stages);
                 // Asset must be visited
                 audioAssetAddr = new AssetAddr(audioOffset, audioSize, AssetType.AUDIO);
                 assetAddrsToVisit.add(audioAssetAddr);
@@ -120,6 +139,7 @@ public class BinaryStoryPackReader {
             short okTransitionIndex = dis.readShort();
             SectorAddr okActionNodeAddr = null;
             if (okTransitionOffset != -1) {
+                checkActionAddress("ok", i, okTransitionOffset, okTransitionCount, stages);
                 // Action node must be visited
                 okActionNodeAddr = new SectorAddr(okTransitionOffset);
                 actionNodesToVisit.add(okActionNodeAddr);
@@ -129,6 +149,7 @@ public class BinaryStoryPackReader {
             short homeTransitionIndex = dis.readShort();
             SectorAddr homeActionNodeAddr = null;
             if (homeTransitionOffset != -1) {
+                checkActionAddress("home", i, homeTransitionOffset, homeTransitionCount, stages);
                 // Action node must be visited
                 homeActionNodeAddr = new SectorAddr(homeTransitionOffset);
                 actionNodesToVisit.add(homeActionNodeAddr);
@@ -142,7 +163,7 @@ public class BinaryStoryPackReader {
             boolean autoJumpEnabled = dis.readShort() == 1;
 
             // Read (optional) enriched node metadata
-            dis.skipBytes(Constants.BINARY_ENRICHED_METADATA_STAGE_NODE_ALIGNMENT_PADDING);
+            skipFully(dis, Constants.BINARY_ENRICHED_METADATA_STAGE_NODE_ALIGNMENT_PADDING);
             EnrichedNodeMetadata enrichedNodeMetadata = readEnrichedNodeMetadata(dis);
 
             // Build stage node
@@ -173,20 +194,22 @@ public class BinaryStoryPackReader {
             }
             // Action nodes will be updated when they are read
             if (okActionNodeAddr != null) {
+                recordOptionCount(actionNodesOptionsCount, okActionNodeAddr, okTransitionCount);
                 List<Transition> twa = transitionsWithAction.getOrDefault(okActionNodeAddr, new ArrayList<>());
                 twa.add(okTransition);
                 transitionsWithAction.put(okActionNodeAddr, twa);
             }
             if (homeActionNodeAddr != null) {
+                recordOptionCount(actionNodesOptionsCount, homeActionNodeAddr, homeTransitionCount);
                 List<Transition> twa = transitionsWithAction.getOrDefault(homeActionNodeAddr, new ArrayList<>());
                 twa.add(homeTransition);
                 transitionsWithAction.put(homeActionNodeAddr, twa);
             }
 
             // Skip to end of sector
-            dis.skipBytes(Constants.SECTOR_SIZE - 54
+            skipFully(dis, Constants.SECTOR_SIZE - 54
                     - Constants.BINARY_ENRICHED_METADATA_STAGE_NODE_ALIGNMENT_PADDING
-                    - Constants.BINARY_ENRICHED_METADATA_NODE_NAME_TRUNCATE*2 - 16 - 1 - 4);
+                    - ENRICHED_NODE_METADATA_SIZE);
         }
 
         // Read action nodes
@@ -197,32 +220,47 @@ public class BinaryStoryPackReader {
             // Sector to read
             SectorAddr actionNodeAddr = actionNodesIter.next();
             // Skip to the beginning of the sector, if needed
+            if (actionNodeAddr.getOffset() < currentOffset) {
+                throw new IOException("Invalid binary story pack: action node at sector " + actionNodeAddr.getOffset()
+                        + " overlaps data already read (sector " + currentOffset + ")");
+            }
             while (actionNodeAddr.getOffset() > currentOffset) {
-                dis.skipBytes(Constants.SECTOR_SIZE);
+                skipFully(dis, Constants.SECTOR_SIZE);
                 currentOffset++;
             }
 
-            List<StageNode> options = new ArrayList<>();
-            short optionAddr = dis.readShort();
-            while (optionAddr != 0) {
-                options.add(stageNodes.get(new SectorAddr(optionAddr)));
-                optionAddr = dis.readShort();
+            // The stage nodes' transitions carry the exact number of options of the action node.
+            // Read exactly that many: a zero is a valid option (the first stage node lives at sector 0),
+            // not a terminator.
+            int count = actionNodesOptionsCount.get(actionNodeAddr);
+            List<StageNode> options = new ArrayList<>(count);
+            for (int o = 0; o < count; o++) {
+                short optionAddr = dis.readShort();
+                StageNode option = stageNodes.get(new SectorAddr(optionAddr));
+                if (option == null) {
+                    throw new IOException("Invalid binary story pack: action node at sector " + actionNodeAddr.getOffset()
+                            + " references unknown stage node " + optionAddr + " (option " + o + ")");
+                }
+                options.add(option);
             }
+            int bytesRead = 2 * count;
 
-            // Read (optional) enriched node metadata
-            int alignmentOverflow = 2*(options.size()) % Constants.BINARY_ENRICHED_METADATA_ACTION_NODE_ALIGNMENT;
+            // Read (optional) enriched node metadata, when it fits in the sector
+            int alignmentOverflow = 2*count % Constants.BINARY_ENRICHED_METADATA_ACTION_NODE_ALIGNMENT;
             int alignmentPadding = Constants.BINARY_ENRICHED_METADATA_ACTION_NODE_ALIGNMENT_PADDING + (alignmentOverflow > 0 ? Constants.BINARY_ENRICHED_METADATA_ACTION_NODE_ALIGNMENT - alignmentOverflow : 0);
-            dis.skipBytes(alignmentPadding - 2);    // No need to skip the last 2 bytes that were read in the previous loop
-            EnrichedNodeMetadata enrichedNodeMetadata = readEnrichedNodeMetadata(dis);
+            EnrichedNodeMetadata enrichedNodeMetadata = null;
+            if (bytesRead + alignmentPadding + ENRICHED_NODE_METADATA_SIZE <= Constants.SECTOR_SIZE) {
+                skipFully(dis, alignmentPadding);
+                enrichedNodeMetadata = readEnrichedNodeMetadata(dis);
+                bytesRead += alignmentPadding + ENRICHED_NODE_METADATA_SIZE;
+            }
 
             // Update action on transitions referencing this sector
             ActionNode actionNode = new ActionNode(options, enrichedNodeMetadata);
             transitionsWithAction.get(actionNodeAddr).forEach(transition -> transition.setActionNode(actionNode));
 
             // Skip to end of sector
-            dis.skipBytes(Constants.SECTOR_SIZE - (2*(options.size()+1))
-                    - (alignmentPadding - 2)
-                    - Constants.BINARY_ENRICHED_METADATA_NODE_NAME_TRUNCATE*2 - 16 - 1 - 4);
+            skipFully(dis, Constants.SECTOR_SIZE - bytesRead);
             currentOffset++;
         }
 
@@ -232,13 +270,17 @@ public class BinaryStoryPackReader {
             // First sector to read
             AssetAddr assetAddr = assetAddrsIter.next();
             // Skip to the beginning of the sector, if needed
+            if (assetAddr.getOffset() < currentOffset) {
+                throw new IOException("Invalid binary story pack: asset at sector " + assetAddr.getOffset()
+                        + " overlaps data already read (sector " + currentOffset + ")");
+            }
             while (assetAddr.getOffset() > currentOffset) {
-                dis.skipBytes(Constants.SECTOR_SIZE);
+                skipFully(dis, Constants.SECTOR_SIZE);
                 currentOffset++;
             }
             // Read all bytes
             byte[] assetBytes = new byte[Constants.SECTOR_SIZE * assetAddr.getSize()];
-            dis.read(assetBytes, 0, assetBytes.length);
+            dis.readFully(assetBytes);
 
             // Update asset on stage nodes referencing this sector
             switch (assetAddr.getType()) {
@@ -255,14 +297,79 @@ public class BinaryStoryPackReader {
             currentOffset += assetAddr.getSize();
         }
 
+        // The writer always ends a pack with the check bytes, right after the last asset. Packs from
+        // elsewhere are not known to always carry them at that position, so a mismatch is only reported.
+        checkTrailingCheckBytes(dis);
+
         dis.close();
 
         return new StoryPack(stageNodes.get(new SectorAddr(0)).getUuid(), factoryDisabled, version, List.copyOf(stageNodes.values()), enrichedPack, false);
     }
 
+    private static void checkAssetAddress(String kind, int stage, int offset, int size, int stages) throws IOException {
+        if (offset < stages) {
+            throw new IOException("Invalid binary story pack: " + kind + " asset of stage node " + stage
+                    + " has invalid sector offset " + offset);
+        }
+        if (size < 0 || size > MAX_ASSET_SECTORS) {
+            throw new IOException("Invalid binary story pack: " + kind + " asset of stage node " + stage
+                    + " has invalid size of " + size + " sectors");
+        }
+    }
+
+    private static void checkActionAddress(String kind, int stage, short offset, short count, int stages) throws IOException {
+        if (offset < stages) {
+            throw new IOException("Invalid binary story pack: " + kind + " transition of stage node " + stage
+                    + " points to invalid action node sector " + offset);
+        }
+        if (count < 0 || count > Constants.SECTOR_SIZE / 2) {
+            throw new IOException("Invalid binary story pack: " + kind + " transition of stage node " + stage
+                    + " has invalid option count " + count);
+        }
+    }
+
+    private static void recordOptionCount(Map<SectorAddr, Integer> counts, SectorAddr addr, short count) throws IOException {
+        Integer known = counts.putIfAbsent(addr, (int) count);
+        if (known != null && known != count) {
+            throw new IOException("Invalid binary story pack: transitions disagree on the option count of action node at sector "
+                    + addr.getOffset() + " (" + known + " vs " + count + ")");
+        }
+    }
+
+    private static void checkTrailingCheckBytes(DataInputStream dis) {
+        byte[] trailing = new byte[Constants.CHECK_BYTES.length];
+        try {
+            dis.readFully(trailing);
+            if (!Arrays.equals(trailing, Constants.CHECK_BYTES)) {
+                LOGGER.warning("Binary story pack does not end with the expected check bytes");
+            }
+        } catch (IOException e) {
+            LOGGER.warning("Binary story pack is missing its trailing check bytes");
+        }
+    }
+
+    /** Skips exactly {@code n} bytes, or fails: {@code skipBytes} may silently skip fewer. */
+    static void skipFully(DataInputStream dis, int n) throws IOException {
+        if (n < 0) {
+            throw new IOException("Invalid binary story pack: negative skip of " + n + " bytes");
+        }
+        int remaining = n;
+        while (remaining > 0) {
+            int skipped = dis.skipBytes(remaining);
+            if (skipped <= 0) {
+                // skipBytes may return 0 without being at end of stream: probe with a read
+                if (dis.read() == -1) {
+                    throw new EOFException("Unexpected end of binary story pack (" + remaining + " bytes left to skip)");
+                }
+                skipped = 1;
+            }
+            remaining -= skipped;
+        }
+    }
+
     private Optional<String> readString(DataInputStream dis, int maxChars) throws IOException {
         byte[] bytes = new byte[maxChars*2];
-        dis.read(bytes);
+        dis.readFully(bytes);
         String str = new String(bytes, StandardCharsets.UTF_16);
         int firstNullChar = str.indexOf("\u0000");
         return firstNullChar == 0

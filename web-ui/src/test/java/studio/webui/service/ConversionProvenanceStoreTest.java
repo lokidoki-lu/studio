@@ -207,6 +207,41 @@ class ConversionProvenanceStoreTest {
         assertFalse(Files.exists(temporary), "the temporary is consumed by the move");
     }
 
+    @Test
+    @DisplayName("concurrent records, from several instances, are all kept")
+    void concurrentRecordsAreAllKept() throws Exception {
+        int writers = 16;
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(writers);
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        java.util.List<java.util.concurrent.Future<Boolean>> results = new java.util.ArrayList<>();
+        try {
+            for (int i = 0; i < writers; i++) {
+                String name = "u.converted_" + i;
+                ConversionProvenanceStore instance = i % 2 == 0 ? store : new ConversionProvenanceStore();
+                results.add(pool.submit(() -> {
+                    start.await();
+                    return instance.record(name, record("u.zip", "digest-" + name));
+                }));
+            }
+            start.countDown();
+            for (java.util.concurrent.Future<Boolean> result : results) {
+                assertTrue(result.get(), "every record is written");
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        for (int i = 0; i < writers; i++) {
+            assertEquals("digest-u.converted_" + i, require(store.find("u.converted_" + i)).getSourceSha256(),
+                    "record " + i + " was not overwritten by a concurrent write");
+        }
+        try (java.util.stream.Stream<Path> files = Files.list(root)) {
+            assertEquals(java.util.Collections.singletonList("conversions.json"),
+                    files.map(f -> f.getFileName().toString()).collect(java.util.stream.Collectors.toList()),
+                    "no temporary left behind");
+        }
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private static ConversionRecord record(String sourceName, String sourceDigest) {
