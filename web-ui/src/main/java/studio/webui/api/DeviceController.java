@@ -18,9 +18,13 @@ import studio.webui.service.ApiErrors;
 import studio.webui.service.IStoryTellerService;
 import studio.webui.service.LibraryService;
 
+import io.vertx.ext.web.RoutingContext;
+
 import java.io.File;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 public class DeviceController {
 
@@ -41,7 +45,7 @@ public class DeviceController {
                     .whenComplete((maybeDeviceInfos, e) -> {
                         if (e != null) {
                             LOGGER.error("Failed to read device infos", e);
-                            ctx.fail(500, e);
+                            ApiErrors.respond(ctx, e);
                         } else {
                             maybeDeviceInfos.ifPresentOrElse(
                                     deviceInfos -> ctx.response()
@@ -53,7 +57,7 @@ public class DeviceController {
                             );
                         }
                     });
-        });
+        }, false);
 
         // Plugged device packs list
         router.get("/packs").blockingHandler(ctx -> {
@@ -61,14 +65,14 @@ public class DeviceController {
                     .whenComplete((devicePacks, e) -> {
                         if (e != null) {
                             LOGGER.error("Failed to read packs from device", e);
-                            ctx.fail(500, e);
+                            ApiErrors.respond(ctx, e);
                         } else {
                             ctx.response()
                                     .putHeader("content-type", "application/json")
                                     .end(Json.encode(devicePacks));
                         }
                     });
-        });
+        }, false);
 
         // Add pack from library to device.
         // Answers at once with a transfer id; the transfer itself is queued behind any other device
@@ -76,14 +80,23 @@ public class DeviceController {
         // Refusals known up front get a status and a JSON body (see ApiErrors): 409 for a pack
         // already on the device, 503 without a device, 404 for a library file that is not there.
         router.post("/addFromLibrary").blockingHandler(ctx -> {
-            JsonObject body = ctx.getBodyAsJson();
-            String uuid = body == null ? null : body.getString("uuid");
-            String packPath = body == null ? null : body.getString("path");
-            if (uuid == null || packPath == null) {
-                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "Both 'uuid' and 'path' are required"));
+            JsonObject body = jsonBody(ctx);
+            if (body == null) {
                 return;
             }
-            File packFile = new File(libraryService.libraryPath() + packPath);
+            String uuid = canonicalUuid(body.getString("uuid"));
+            String packPath = body.getString("path");
+            if (uuid == null || packPath == null) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "Both 'uuid' (a pack UUID) and 'path' are required"));
+                return;
+            }
+            // Only a direct entry of the library, never a path that climbs out of it: the file named
+            // here is read and copied onto the device, wherever it is.
+            File packFile = libraryService.libraryEntry(packPath).map(Path::toFile).orElse(null);
+            if (packFile == null) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "Not an entry of the local library: " + packPath));
+                return;
+            }
             // Start transfer to device
             storyTellerService.addPack(uuid, packFile)
                     .whenComplete((maybeTransferId, e) -> {
@@ -105,7 +118,7 @@ public class DeviceController {
                                     );
                         }
                     });
-        });
+        }, false);
 
         // State of one transfer: queued, running, succeeded or failed, with its progress and, on
         // failure, the reason. Kept after the transfer ends, so it can be read whenever the client
@@ -144,13 +157,16 @@ public class DeviceController {
                                     .end(Json.encode(new JsonObject().put("folders", folders)));
                         }
                     });
-        });
+        }, false);
 
         // Remove unreferenced pack content folders, named explicitly: {"folders": ["1A2B3C4D", ...]}.
         // A folder the index references is refused, whatever the request says.
         router.post("/orphans/remove").blockingHandler(ctx -> {
-            JsonObject body = ctx.getBodyAsJson();
-            JsonArray folders = body == null ? null : body.getJsonArray("folders");
+            JsonObject body = jsonBody(ctx);
+            if (body == null) {
+                return;
+            }
+            JsonArray folders = body.getJsonArray("folders");
             if (folders == null || folders.isEmpty()) {
                 ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "'folders' must list at least one folder name"));
                 return;
@@ -171,11 +187,19 @@ public class DeviceController {
                                     .end(Json.encode(new JsonObject().put("success", all).put("results", results)));
                         }
                     });
-        });
+        }, false);
 
         // Remove pack from device
         router.post("/removeFromDevice").blockingHandler(ctx -> {
-            String uuid = ctx.getBodyAsJson().getString("uuid");
+            JsonObject body = jsonBody(ctx);
+            if (body == null) {
+                return;
+            }
+            String uuid = canonicalUuid(body.getString("uuid"));
+            if (uuid == null) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "'uuid' must be a pack UUID"));
+                return;
+            }
             storyTellerService.deletePack(uuid)
                     .whenComplete((removed, e) -> {
                         if (e != null) {
@@ -192,11 +216,30 @@ public class DeviceController {
                             }
                         }
                     });
-        });
+        }, false);
 
         // Reorder packs on device
         router.post("/reorder").blockingHandler(ctx -> {
-            List<String> uuids = ctx.getBodyAsJson().getJsonArray("uuids").getList();
+            JsonObject body = jsonBody(ctx);
+            if (body == null) {
+                return;
+            }
+            JsonArray requested = body.getJsonArray("uuids");
+            List<String> uuids = new ArrayList<>();
+            if (requested != null) {
+                for (Object o : requested) {
+                    String u = o instanceof String ? canonicalUuid((String) o) : null;
+                    if (u == null) {
+                        requested = null;
+                        break;
+                    }
+                    uuids.add(u);
+                }
+            }
+            if (requested == null || uuids.isEmpty()) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "'uuids' must list pack UUIDs"));
+                return;
+            }
             storyTellerService.reorderPacks(uuids)
                     .whenComplete((reordered, e) -> {
                         if (e != null) {
@@ -213,23 +256,36 @@ public class DeviceController {
                             }
                         }
                     });
-        });
+        }, false);
 
         // Add pack from device to library
-        router.post("/addToLibrary").handler(ctx -> {
-            String uuid = ctx.getBodyAsJson().getString("uuid");
-            String driver = ctx.getBodyAsJson().getString("driver");
-            // Transfer pack file to library file
-            String path = null;
-            if ("raw".equalsIgnoreCase(driver)) {
-                path = libraryService.libraryPath() + uuid + ".pack";
-            } else if ("fs".equalsIgnoreCase(driver)) {
-                path = libraryService.libraryPath();
-            } else {
-                ctx.fail(400);
+        router.post("/addToLibrary").blockingHandler(ctx -> {
+            JsonObject body = jsonBody(ctx);
+            if (body == null) {
                 return;
             }
-            storyTellerService.extractPack(uuid, new File(path))
+            String uuid = canonicalUuid(body.getString("uuid"));
+            String driver = body.getString("driver");
+            if (uuid == null) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "'uuid' must be a pack UUID"));
+                return;
+            }
+            // Transfer pack file to library file. The UUID is canonical by now, so the destination is
+            // a direct entry of the library.
+            File destination;
+            if ("raw".equalsIgnoreCase(driver)) {
+                destination = libraryService.libraryEntry(uuid + ".pack").map(Path::toFile).orElse(null);
+            } else if ("fs".equalsIgnoreCase(driver)) {
+                destination = new File(libraryService.libraryPath());
+            } else {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "'driver' must be 'raw' or 'fs'"));
+                return;
+            }
+            if (destination == null) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "Not a usable library entry for " + uuid));
+                return;
+            }
+            storyTellerService.extractPack(uuid, destination)
                     .whenComplete((maybeTransferId, e) -> {
                         if (e != null) {
                             LOGGER.error("Failed to transfer pack from device", e);
@@ -244,30 +300,75 @@ public class DeviceController {
                                                             .end(Json.encode(new JsonObject().put("transferId", transferId))),
                                             () -> {
                                                 LOGGER.error("Failed to transfer pack from device");
-                                                ctx.fail(500);
+                                                ApiErrors.respond(ctx, new StoryTellerException("Failed to transfer pack from device"));
                                             }
                                     );
                         }
                     });
-        });
+        }, false);
 
-        // Dump important sectors
-        router.post("/dump").handler(ctx -> {
-            String outputPath = ctx.getBodyAsJson().getString("outputPath");
-            // Dump important sector into outputPath
+        // Dump important sectors of a 1.x device, for diagnosis. Written to a new folder under STUdio's
+        // own temporary directory, whose path is returned: the client no longer chooses where files
+        // are written on this computer.
+        router.post("/dump").blockingHandler(ctx -> {
+            String outputPath;
+            try {
+                java.nio.file.Path base = java.nio.file.Paths.get(System.getProperty("studio.tmpdir",
+                        System.getProperty("user.home") + "/.studio/tmp/"));
+                java.nio.file.Files.createDirectories(base);
+                outputPath = java.nio.file.Files.createTempDirectory(base, "dump-").toString();
+            } catch (java.io.IOException e) {
+                ApiErrors.respond(ctx, new StoryTellerException("Could not create the dump folder", e));
+                return;
+            }
             storyTellerService.dump(outputPath)
                     .whenComplete((done, e) -> {
                         if (e != null) {
                             LOGGER.error("Failed to dump important sectors from device", e);
-                            ctx.fail(500, e);
+                            ApiErrors.respond(ctx, e);
                         } else {
                             ctx.response()
                                     .putHeader("content-type", "application/json")
-                                    .end(Json.encode(new JsonObject().put("success", true)));
+                                    .end(Json.encode(new JsonObject().put("success", true).put("path", outputPath)));
                         }
                     });
-        });
+        }, false);
 
         return router;
+    }
+
+    /**
+     * The request's JSON body, or {@code null} once a 400 has been sent for a missing or malformed
+     * one: the routes used to throw on either, and answer a bare 500.
+     */
+    static JsonObject jsonBody(RoutingContext ctx) {
+        JsonObject body;
+        try {
+            body = ctx.getBodyAsJson();
+        } catch (RuntimeException e) {
+            ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "Malformed JSON body", e));
+            return null;
+        }
+        if (body == null) {
+            ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "A JSON body is required"));
+        }
+        return body;
+    }
+
+    /**
+     * The UUID in its canonical form, or {@code null} if it is not one. {@code UUID.fromString}
+     * accepts shortened groups ("0-0-0-1-2") and reads them as a different UUID than their text: a
+     * pack folder named from the text would then not be the folder of the pack the index names.
+     */
+    static String canonicalUuid(String uuid) {
+        if (uuid == null) {
+            return null;
+        }
+        try {
+            String canonical = UUID.fromString(uuid).toString();
+            return canonical.equalsIgnoreCase(uuid) ? canonical : null;
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 }
