@@ -15,6 +15,26 @@
     top: 4em;
 }
 
+/* Notifications follow the theme */
+.App .Toastify__toast {
+    border-radius: var(--ui-radius);
+    font-family: inherit;
+    font-size: 14px;
+    text-align: left;
+    box-shadow: var(--ui-shadow-hover);
+}
+
+.App .Toastify__toast--default {
+    background-color: var(--ui-surface);
+    color: var(--ui-text);
+    border: 1px solid var(--ui-border);
+}
+
+.App .Toastify__close-button--default {
+    color: var(--ui-text-muted);
+    opacity: .8;
+}
+
 .App-header {
     background-color: var(--ui-header-bg);
     display: flex;
