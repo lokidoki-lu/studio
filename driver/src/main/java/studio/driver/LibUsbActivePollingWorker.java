@@ -9,7 +9,6 @@ package studio.driver;
 import org.usb4java.*;
 import studio.driver.event.DeviceHotplugEventListener;
 
-import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -107,11 +106,15 @@ public class LibUsbActivePollingWorker implements Runnable {
             if (found != null && this.device == null) {
                 LOGGER.info("Active polling found a new device. Firing event.");
                 this.device = found;
-                CompletableFuture.runAsync(() -> this.listener.onDevicePlugged(this.device));
+                LibUsbDetectionHelper.dispatchPlugged(this.listener, found);
             } else if (found == null && this.device != null) {
                 LOGGER.info("Active polling lost the device. Firing event.");
-                CompletableFuture.runAsync(() -> this.listener.onDeviceUnplugged(this.device));
+                // The device is captured here, not read from the field inside the task: the field is
+                // cleared on the next line, and the task used to run after that, announcing the
+                // unplug of "null" — which the drivers now ignore as not being their device.
+                Device lost = this.device;
                 this.device = null;
+                LibUsbDetectionHelper.dispatchUnplugged(this.listener, lost);
             }
         } finally {
             // Ensure the allocated device list is freed

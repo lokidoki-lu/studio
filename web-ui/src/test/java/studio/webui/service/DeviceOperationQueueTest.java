@@ -195,4 +195,26 @@ class DeviceOperationQueueTest {
         old.complete("old");
         assertEquals("next", next.get(1, TimeUnit.SECONDS));
     }
+
+    @Test
+    @DisplayName("when an operation overruns, those already waiting behind it fail too, and never start")
+    void waitingOperationsFailWithTheStuckOne() throws Exception {
+        DeviceOperationQueue queue = new DeviceOperationQueue(100, 100);
+        CompletableFuture<String> never = new CompletableFuture<>();
+        CompletableFuture<String> hung = queue.submit(() -> never);
+        AtomicInteger started = new AtomicInteger();
+        CompletableFuture<String> waiting = queue.submit(() -> {
+            started.incrementAndGet();
+            return CompletableFuture.completedFuture("w");
+        });
+        java.util.concurrent.ExecutionException e = org.junit.jupiter.api.Assertions.assertThrows(
+                java.util.concurrent.ExecutionException.class, () -> hung.get(5, TimeUnit.SECONDS));
+        assertTrue(e.getCause() instanceof DeviceOperationQueue.OperationTimeoutException, String.valueOf(e.getCause()));
+        org.junit.jupiter.api.Assertions.assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> waiting.get(5, TimeUnit.SECONDS));
+        never.complete("late");
+        Thread.sleep(100);
+        assertEquals(0, started.get());
+        assertEquals(0, queue.pending());
+    }
 }

@@ -577,6 +577,14 @@ public class LibraryService {
             LOGGER.warn("Not a usable library entry name: " + name);
             return Optional.empty();
         }
+        // Windows device names (NUL, CON.zip, COM1…) and names with a trailing dot or space, which
+        // Win32 strips and so turns into an alias of another entry. Refused everywhere, so that a
+        // library behaves the same on every system.
+        String last = resolved.getFileName() == null ? "" : resolved.getFileName().toString();
+        if (last.matches("(?i)(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(\\..*)?") || last.endsWith(".") || last.endsWith(" ")) {
+            LOGGER.warn("Refused a library entry name that Windows reserves or rewrites: " + name);
+            return Optional.empty();
+        }
         if (!libraryRoot.equals(resolved.getParent())) {
             LOGGER.warn("Refused a name that is not a direct entry of the local library: " + name);
             return Optional.empty();
@@ -720,14 +728,24 @@ public class LibraryService {
                 return false;
             }
             File dest = destination.get().toFile();
-            if (dest.exists()) {
-                boolean deleted = dest.delete();
-                // Handle failure
-                if (!deleted) {
-                    return false;
-                }
+            if (dest.isDirectory()) {
+                // A pack folder of the same name: not something an upload replaces.
+                return false;
             }
-            FileUtils.moveFile(src, dest);
+            // Replaced in one step: deleting first lost the existing pack if the move then failed
+            // (full disk, process killed). Across volumes, copied beside it under a staging name.
+            try {
+                Files.move(src.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException acrossVolumes) {
+                Path staging = dest.toPath().resolveSibling(STAGING_PREFIX + dest.getName() + "." + UUID.randomUUID());
+                try {
+                    Files.copy(src.toPath(), staging);
+                    Files.move(staging, dest.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                } finally {
+                    Files.deleteIfExists(staging);
+                }
+                Files.deleteIfExists(src.toPath());
+            }
             return true;
         } catch (IOException e) {
             LOGGER.error("Failed to add pack to local library", e);

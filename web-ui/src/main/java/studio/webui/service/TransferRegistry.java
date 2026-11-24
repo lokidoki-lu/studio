@@ -49,6 +49,7 @@ public class TransferRegistry {
         String error;
         String reason;
         String message;
+        boolean stalled;
 
         Transfer(String id, String uuid, String operation) {
             this.id = id;
@@ -67,12 +68,16 @@ public class TransferRegistry {
                     .put("transferred", transferred)
                     .put("total", total)
                     .put("progress", progress())
-                    .put("createdAt", createdAt);
+                    .put("createdAt", createdAt)
+                    .put("stalled", stalled);
             if (startedAt > 0) {
                 json.put("startedAt", startedAt);
             }
             if (endedAt > 0) {
                 json.put("endedAt", endedAt);
+            }
+            if (stalled && error == null) {
+                json.put("message", message);
             }
             if (error != null) {
                 json.put("error", error).put("reason", reason).put("message", message);
@@ -160,6 +165,24 @@ public class TransferRegistry {
         }
         prune();
         return changed;
+    }
+
+    /**
+     * Notes that a running transfer overran the device timeout. It stays RUNNING: the operation may
+     * still end either way, and its verdict will be recorded then.
+     */
+    public synchronized void stalled(String id, String message) {
+        Transfer t = transfers.get(id);
+        if (t != null && (t.state == State.QUEUED || t.state == State.RUNNING)) {
+            t.stalled = true;
+            t.message = message;
+        }
+    }
+
+    /** True if a transfer of this operation for this pack is still queued or running. */
+    public synchronized boolean hasUnfinished(String uuid, String operation) {
+        return transfers.values().stream().anyMatch(t -> (t.state == State.QUEUED || t.state == State.RUNNING)
+                && t.operation.equals(operation) && t.uuid != null && t.uuid.equalsIgnoreCase(uuid));
     }
 
     /** Ids of the transfers still queued or running. */

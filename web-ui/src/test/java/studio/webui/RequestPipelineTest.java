@@ -194,4 +194,16 @@ class RequestPipelineTest {
             return false;
         }
     }
+
+    @Test
+    @DisplayName("pages cannot be framed, and the SockJS iframe page is not served")
+    void noFraming() throws Exception {
+        HttpResponse<String> root = http.send(HttpRequest.newBuilder(uri("/api/device/transfers")).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals("DENY", root.headers().firstValue("X-Frame-Options").orElse(null));
+        assertTrue(root.headers().firstValue("Content-Security-Policy").orElse("").contains("frame-ancestors 'none'"));
+        HttpResponse<String> iframe = http.send(HttpRequest.newBuilder(uri("/eventbus/iframe.html")).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(404, iframe.statusCode());
+    }
 }
