@@ -29,6 +29,7 @@ import studio.webui.service.mock.MockStoryTellerService;
 
 import java.awt.*;
 import java.net.URI;
+import java.nio.file.Paths;
 import java.util.Set;
 
 public class MainVerticle extends AbstractVerticle {
@@ -198,15 +199,9 @@ public class MainVerticle extends AbstractVerticle {
         Router router = Router.router(vertx);
 
         // Handle JSON
-        // Bounded bodies, and uploads written under STUdio's own folder and removed once the request
-        // ends (an accepted upload has been moved into the library by then). The defaults are no
-        // limit, a folder relative to the working directory, and files kept for ever.
-        router.route().handler(BodyHandler.create()
-                .setBodyLimit(MAX_BODY_BYTES)
-                .setUploadsDirectory(uploadsDirectory())
-                .setDeleteUploadedFilesOnEnd(true));
         // A POST must say it carries JSON (or, for an upload, a form). A cross-origin request with
-        // such a type cannot be sent without a CORS preflight, which the handler above refuses.
+        // such a type cannot be sent without a CORS preflight, which the CORS handler refuses.
+        // Checked before any body is read.
         router.post().handler(ctx -> {
             if (isAcceptedPostContentType(ctx.request().getHeader("Content-Type"), ctx.normalisedPath())) {
                 ctx.next();
@@ -214,6 +209,18 @@ public class MainVerticle extends AbstractVerticle {
                 ctx.response().setStatusCode(415).end();
             }
         });
+        // Bounded bodies, and uploads written under STUdio's own folder and removed once the request
+        // ends (an accepted upload has been moved into the library by then). The defaults are no
+        // limit, a folder relative to the working directory, and files kept for ever. Only an
+        // upload may be large; a JSON body is a few fields.
+        router.post("/library/upload").handler(BodyHandler.create()
+                .setBodyLimit(MAX_BODY_BYTES)
+                .setUploadsDirectory(uploadsDirectory())
+                .setDeleteUploadedFilesOnEnd(true));
+        router.routeWithRegex("^(?!/library/upload$).*").handler(BodyHandler.create()
+                .setBodyLimit(MAX_JSON_BODY_BYTES)
+                .setUploadsDirectory(uploadsDirectory())
+                .setDeleteUploadedFilesOnEnd(true));
 
 
         // Device services
@@ -231,8 +238,12 @@ public class MainVerticle extends AbstractVerticle {
     /** Largest request body accepted, an uploaded pack included. */
     static final long MAX_BODY_BYTES = Long.getLong("studio.maxUploadBytes", 4L * 1024 * 1024 * 1024);
 
+    /** Largest JSON body accepted outside an upload. */
+    static final long MAX_JSON_BODY_BYTES = 1024 * 1024;
+
     private static String uploadsDirectory() {
-        return System.getProperty("user.home") + "/.studio/tmp/file-uploads";
+        String tmp = System.getProperty("studio.tmpdir", System.getProperty("user.home") + "/.studio/tmp/");
+        return Paths.get(tmp, "file-uploads").toString();
     }
 
     static boolean isAllowedHost(String host, boolean devMode) {
@@ -251,9 +262,14 @@ public class MainVerticle extends AbstractVerticle {
     }
 
     static String allowedOriginPattern(boolean devMode) {
-        return devMode
-                ? "http://(localhost|127\\.0\\.0\\.1):\\d+"
-                : "http://(localhost|127\\.0\\.0\\.1):" + LISTEN_PORT;
+        if (devMode) {
+            return "http://(localhost|127\\.0\\.0\\.1):\\d+";
+        }
+        String own = "http://(localhost|127\\.0\\.0\\.1):" + LISTEN_PORT;
+        // `yarn start` against a real device: the UI on :3000 opens the event bus straight on :8080.
+        // Opt-in, e.g. -Dstudio.devOrigin=http://localhost:3000
+        String extra = System.getProperty("studio.devOrigin");
+        return extra == null || extra.isBlank() ? own : "(" + own + ")|(" + java.util.regex.Pattern.quote(extra.trim()) + ")";
     }
 
     static boolean isAcceptedPostContentType(String contentType, String path) {

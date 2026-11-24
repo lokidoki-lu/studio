@@ -385,7 +385,9 @@ public class LibraryService {
 
     /** Entries of the library folder that are work in progress rather than packs. */
     private static boolean isStagingEntry(Path path) {
-        return path.getFileName() != null && path.getFileName().toString().startsWith(STAGING_PREFIX);
+        // ".part-" is a 1.x pack being extracted from the device (StoryTellerService).
+        return path.getFileName() != null && (path.getFileName().toString().startsWith(STAGING_PREFIX)
+                || path.getFileName().toString().startsWith(".part-"));
     }
 
     @FunctionalInterface

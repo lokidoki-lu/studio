@@ -88,7 +88,7 @@ class DeviceOperationQueueTest {
     @Test
     @DisplayName("an operation that never ends fails its caller, and the queue refuses at once until reset")
     void timesOutAndRecoversOnReset() throws Exception {
-        DeviceOperationQueue queue = new DeviceOperationQueue(100);
+        DeviceOperationQueue queue = new DeviceOperationQueue(100, 100);
         CompletableFuture<String> never = new CompletableFuture<>();
         CompletableFuture<String> hung = queue.submit(() -> never);
         java.util.concurrent.ExecutionException e = org.junit.jupiter.api.Assertions.assertThrows(
@@ -126,7 +126,7 @@ class DeviceOperationQueueTest {
     @Test
     @DisplayName("reset fails the operations waiting behind a hung one without starting them")
     void resetAbandonsWaiting() throws Exception {
-        DeviceOperationQueue queue = new DeviceOperationQueue();
+        DeviceOperationQueue queue = new DeviceOperationQueue(DeviceOperationQueue.DEFAULT_TIMEOUT_MILLIS, 100);
         CompletableFuture<String> never = new CompletableFuture<>();
         CompletableFuture<String> running = queue.submit(() -> never);
         AtomicInteger started = new AtomicInteger();
@@ -154,5 +154,45 @@ class DeviceOperationQueueTest {
             return CompletableFuture.completedFuture(null);
         }).get(1, TimeUnit.SECONDS);
         assertFalse(caller == ran[0]);
+    }
+
+    @Test
+    @DisplayName("the timeout runs from an operation's start, not while it waits its turn")
+    void timeoutStartsWhenTheOperationStarts() throws Exception {
+        DeviceOperationQueue queue = new DeviceOperationQueue(300);
+        java.util.function.Supplier<CompletableFuture<String>> slow = () -> CompletableFuture.supplyAsync(() -> {
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return "done";
+        });
+        CompletableFuture<String> a = queue.submit(slow);
+        CompletableFuture<String> b = queue.submit(slow);
+        CompletableFuture<String> c = queue.submit(slow);
+        assertEquals("done", a.get(5, TimeUnit.SECONDS));
+        assertEquals("done", b.get(5, TimeUnit.SECONDS));
+        assertEquals("done", c.get(5, TimeUnit.SECONDS));
+        assertFalse(queue.isStuck());
+    }
+
+    @Test
+    @DisplayName("after a reset, the next operation waits a little for the abandoned one to settle")
+    void resetWaitsForTheAbandonedOperation() throws Exception {
+        DeviceOperationQueue queue = new DeviceOperationQueue(DeviceOperationQueue.DEFAULT_TIMEOUT_MILLIS, 5_000);
+        CompletableFuture<String> old = new CompletableFuture<>();
+        queue.submit(() -> old);
+        Thread.sleep(50);
+        queue.reset();
+        AtomicInteger started = new AtomicInteger();
+        CompletableFuture<String> next = queue.submit(() -> {
+            started.incrementAndGet();
+            return CompletableFuture.completedFuture("next");
+        });
+        Thread.sleep(100);
+        assertEquals(0, started.get());
+        old.complete("old");
+        assertEquals("next", next.get(1, TimeUnit.SECONDS));
     }
 }

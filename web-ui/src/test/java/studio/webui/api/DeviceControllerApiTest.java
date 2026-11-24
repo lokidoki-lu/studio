@@ -236,6 +236,11 @@ class DeviceControllerApiTest {
             assertEquals(400, broken.statusCode(), route);
             assertEquals("INVALID_REQUEST", new JsonObject(broken.body()).getString("error"), route);
         }
+        // A field of the wrong type is a 400 too, not a ClassCastException answered 500
+        assertEquals(400, post("/api/device/addFromLibrary", new JsonObject().put("uuid", 42).put("path", "p.zip")).statusCode());
+        assertEquals(400, post("/api/device/removeFromDevice", new JsonObject().put("uuid", new JsonObject())).statusCode());
+        assertEquals(400, post("/api/device/reorder", new JsonObject().put("uuids", "x")).statusCode());
+        assertEquals(400, post("/api/device/orphans/remove", new JsonObject().put("folders", 1)).statusCode());
     }
 
     @Test
