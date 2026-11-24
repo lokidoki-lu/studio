@@ -184,7 +184,11 @@
       "removing": "Retrait du pack de la bibliothèque...",
       "removed": "Pack retiré de la bibliothèque.",
       "removingFailed": "Échec du retrait du pack de la bibliothèque.",
-      "packFileWrongType": "Le fichier du pack d'histoires doit être au format archive ZIP ou au format binaire (extension .pack)."
+      "packFileWrongType": "Le fichier du pack d'histoires doit être au format archive ZIP ou au format binaire (extension .pack).",
+      "uploadingMany": "Import du pack {{current}} sur {{total}} : {{name}}",
+      "uploadedMany": "{{count}} packs importés dans la bibliothèque.",
+      "uploadedManyPartial": "{{ok}} packs importés sur {{total}}. Échec : {{failed}}",
+      "packFilesWrongType": "Ignorés (ni archive ZIP ni fichier .pack) : {{names}}"
     },
     "device": {
       "monitoring": {

@@ -640,6 +640,59 @@ export const actionUploadToLibrary = (uuid, path, packData, t) => {
     }
 };
 
+/**
+ * Several pack files into the library, one after the other. One toast follows the whole batch and
+ * the library is refreshed once, at the end. Sequential on purpose: a pack can weigh a gigabyte,
+ * and the server writes each upload in full before answering it.
+ *
+ * Resolves with {total, failed}, failed being the names of the files that were not imported.
+ */
+export const actionUploadManyToLibrary = (files, t) => {
+    return async dispatch => {
+        const total = files.length;
+        const failed = [];
+        const label = (i) => t('toasts.library.uploadingMany', {current: i + 1, total, name: files[i].name});
+        const toastId = toast(label(0), { autoClose: false });
+        for (let i = 0; i < total; i++) {
+            const file = files[i];
+            toast.update(toastId, { render: label(i), progress: 0, autoClose: false });
+            try {
+                const resp = await uploadToLibrary(null, file.name, file, progressEvent => {
+                    if (progressEvent.lengthComputable) {
+                        // Capped below 1: a controlled progress bar that reaches 1 closes its toast,
+                        // and this one has to survive until the last file.
+                        const progress = Math.min(progressEvent.loaded / progressEvent.total, 0.99);
+                        toast.update(toastId, { progress, autoClose: false });
+                    }
+                });
+                if (!resp || !resp.success) {
+                    failed.push(file.name);
+                }
+            } catch (e) {
+                console.error('failed to upload pack to library: ' + file.name, e);
+                failed.push(file.name);
+            }
+        }
+        dispatch(actionRefreshLibrary(t));
+        if (failed.length === 0) {
+            toast.update(toastId, {
+                progress: null,
+                type: toast.TYPE.SUCCESS,
+                render: t('toasts.library.uploadedMany', {count: total}),
+                autoClose: 5000
+            });
+        } else {
+            toast.update(toastId, {
+                progress: null,
+                type: toast.TYPE.ERROR,
+                render: t('toasts.library.uploadedManyPartial', {ok: total - failed.length, total, failed: failed.join(', ')}),
+                autoClose: false
+            });
+        }
+        return {total, failed};
+    }
+};
+
 export const actionConvertInLibrary = (uuid, path, format, allowEnriched, context, t) => {
     return dispatch => {
         let toastId = toast(t('toasts.library.converting'), { autoClose: false });
