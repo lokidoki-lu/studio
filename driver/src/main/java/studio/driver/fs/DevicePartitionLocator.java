@@ -7,6 +7,7 @@
 package studio.driver.fs;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.BooleanSupplier;
@@ -128,15 +129,26 @@ public class DevicePartitionLocator {
             return Optional.empty();
         }
 
+        List<String> candidates = new ArrayList<>();
         for (String mountPoint : mountPoints) {
             try {
                 if (partitionMarkerPresent.test(mountPoint)) {
-                    return Optional.of(mountPoint);
+                    candidates.add(mountPoint);
                 }
             } catch (Exception e) {
                 LOGGER.log(Level.FINE, "Failed to probe mount point " + mountPoint, e);
             }
         }
-        return Optional.empty();
+        if (candidates.size() > 1) {
+            // Two story tellers plugged at once, a card reader holding a copy of a device's
+            // partition, the same volume mounted twice... Nothing here can tell which one is the
+            // device that was just plugged, and picking the first in listing order would aim every
+            // later write — the pack index included — at whichever volume the OS happened to list
+            // first. Refuse instead; the search goes on, so removing the extra volume resolves it.
+            LOGGER.warning("Several mounted volumes look like a story teller partition " + candidates
+                    + "; refusing to choose one. Unplug or unmount all but one of them.");
+            return Optional.empty();
+        }
+        return candidates.isEmpty() ? Optional.empty() : Optional.of(candidates.get(0));
     }
 }
