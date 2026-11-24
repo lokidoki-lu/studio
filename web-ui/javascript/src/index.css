@@ -8,6 +8,50 @@ html, body, #root {
     height: 100%;
 }
 
+/* Design tokens shared by the header and the library. Light by default, dark when the system asks for it. */
+:root {
+    --ui-bg: #f4f5f7;
+    --ui-surface: #ffffff;
+    --ui-surface-muted: #f8f9fb;
+    --ui-border: #e3e6eb;
+    --ui-text: #1f2430;
+    --ui-text-muted: #6b7280;
+    --ui-accent: #3b6fd8;
+    --ui-accent-hover: #2f5bb5;
+    --ui-accent-soft: rgba(59, 111, 216, .12);
+    --ui-danger: #c2413a;
+    --ui-header-bg: #1d2230;
+    --ui-header-text: #eef0f5;
+    --ui-format-archive: #d99a1e;
+    --ui-format-raw: #1f9e94;
+    --ui-format-fs: #8a4fb8;
+    --ui-radius: 10px;
+    --ui-radius-sm: 6px;
+    --ui-shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+    --ui-shadow-hover: 0 4px 12px rgba(16, 24, 40, .12);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --ui-bg: #14171f;
+        --ui-surface: #1d212b;
+        --ui-surface-muted: #232834;
+        --ui-border: #2f3542;
+        --ui-text: #e6e8ee;
+        --ui-text-muted: #9aa1b0;
+        --ui-accent: #6c9bff;
+        --ui-accent-hover: #8fb2ff;
+        --ui-accent-soft: rgba(108, 155, 255, .16);
+        --ui-danger: #f0776f;
+        --ui-header-bg: #0e1016;
+        --ui-format-archive: #e8b04a;
+        --ui-format-raw: #3cc2b7;
+        --ui-format-fs: #b37ee0;
+        --ui-shadow: 0 1px 2px rgba(0, 0, 0, .4);
+        --ui-shadow-hover: 0 4px 14px rgba(0, 0, 0, .5);
+    }
+}
+
 body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",

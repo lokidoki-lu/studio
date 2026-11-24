@@ -16,44 +16,85 @@
 }
 
 .App-header {
-    background-color: #282c34;
+    background-color: var(--ui-header-bg);
     display: flex;
     flex-direction: row;
     flex-grow: 0;
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
-    font-size: calc(10px + 2vmin);
-    color: white;
-    height: 48px;
+    gap: 12px;
+    padding: 0 16px;
+    font-size: 15px;
+    color: var(--ui-header-text);
+    height: 52px;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, .06), 0 2px 8px rgba(0, 0, 0, .18);
+    position: relative;
+    z-index: 2;
 }
 
 .App-header .flags {
+    display: flex;
+    align-items: center;
+    gap: 2px;
 }
 
 .App-header .flags span {
     cursor: pointer;
 }
 
+.App-header .flags span[role=img] {
+    font-size: 18px;
+    opacity: .75;
+    transition: opacity .15s;
+}
+
+.App-header .flags span[role=img]:hover {
+    opacity: 1;
+}
+
 .App-header .welcome {
     flex-grow: 1;
+    font-weight: 600;
+    letter-spacing: .01em;
 }
 
 .App-header .welcome .version {
-    font-size: 50%;
-    font-weight: lighter;
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, .1);
+    font-size: 12px;
+    font-weight: 500;
+    vertical-align: middle;
+    color: rgba(255, 255, 255, .75);
 }
 
 .App-header .btn {
-    font-size: 100%;
+    font-size: 16px;
+    color: rgba(255, 255, 255, .75);
+    padding: 7px 10px;
+    border-radius: var(--ui-radius-sm);
+    border: none;
+    transition: background-color .15s, color .15s;
+}
+
+.App-header .controls {
+    display: flex;
+    gap: 4px;
 }
 
 .App-header .controls .btn.active {
-    color: #919e3d;
+    color: #fff;
+    background-color: rgba(255, 255, 255, .14);
+    box-shadow: none;
 }
 
 .App-header .btn.focus, .App-header .btn:focus, .App-header .btn:hover {
-    color: #919e3d;
+    color: #fff;
+    background-color: rgba(255, 255, 255, .1);
+    outline: none;
 }
 
 /* Announce dialog */
