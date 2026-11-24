@@ -52,7 +52,14 @@
   },
 
   "editor": {
+    "titleVoice": {
+      "choose": "Voice used to generate titles",
+      "auto": "Online voice (Denise), else the computer voice",
+      "system": "Computer voice (offline)",
+      "unavailable": "— unavailable"
+    },
     "actions": {
+      "generateTitleVoices": "Generate the voice of every title without audio (cover, menus, options, stages)",
       "save": "Save pack to library",
       "import": "Import pack",
       "export": "Export pack",
@@ -86,6 +93,12 @@
       "verify": "Verify diagram"
     },
     "diagram": {
+      "titleGenerator": {
+        "audio": "Generate the voice from the title",
+        "image": "Generate an image showing the title",
+        "askAudio": "Text to speak:",
+        "askImage": "Text to write on the image:"
+      },
       "editText": "Click to edit",
       "stage": {
         "controls": {
@@ -222,6 +235,12 @@
       "notCompatible": "The story pack is not compatible with the plugged device."
     },
     "editor": {
+      "titleVoiceFailed": "The voice could not be generated: {{message}}",
+      "titleVoiceFallback": "Online voice unavailable, the computer voice was used ({{reason}})",
+      "titleVoiceNothingMissing": "Every title already has audio",
+      "titleVoiceGenerating": "Generating voices… {{done}} / {{total}}",
+      "titleVoiceGenerated": "{{count}} voice(s) generated",
+      "titleVoiceStopped": "Generation stopped after {{done}} / {{total}}: {{message}}",
       "saving": "Saving story pack to library...",
       "saved": "Saved story pack to library.",
       "savingFailed": "Failed to save story pack to library.",
