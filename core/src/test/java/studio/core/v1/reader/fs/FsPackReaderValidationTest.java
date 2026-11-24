@@ -101,6 +101,18 @@ class FsPackReaderValidationTest {
     }
 
     @Test
+    @DisplayName("the explicit repair does not fail on an empty or short ri (a pack without images)")
+    void explicitRepairOnEmptyRi(@TempDir Path root) throws IOException {
+        for (String ri : new String[]{"", "00"}) {
+            Path pack = writePack(root.resolve("ri-" + ri.length()), ri, 0, -1);
+
+            assertFalse(new FsStoryPackReader().isCleartext(pack, true), "ri of " + ri.length() + " bytes");
+            assertFalse(Files.exists(pack.resolve(FsStoryPackReader.CLEARTEXT_FILENAME)),
+                    "no marker created on an ri that does not look cleartext");
+        }
+    }
+
+    @Test
     @DisplayName("refuses an ri entry climbing out of its folder")
     void refusesDotDotInRi(@TempDir Path root) throws IOException {
         Path pack = writePack(root, "..\\000000000", 0, 0);

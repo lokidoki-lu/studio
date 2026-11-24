@@ -238,9 +238,10 @@ public class FsStoryPackReader {
         boolean isCleartext = new File(packFolder, CLEARTEXT_FILENAME).exists();
 
         if (fixBrokenCleartext) {
-            // Fix broken story packs with missing .cleartext file
-            byte[] riRawContent = Files.readAllBytes(new File(packFolder, IMAGE_INDEX_FILENAME).toPath());
-            if (!isCleartext && Arrays.equals(riRawContent, 0, CLEARTEXT_RI_BEGINNING.length, CLEARTEXT_RI_BEGINNING, 0, CLEARTEXT_RI_BEGINNING.length)) {
+            // Fix broken story packs with missing .cleartext file. Same rule as the read path
+            // (looksCleartext): an ri shorter than the marker — empty for a pack without images —
+            // does not look cleartext, rather than reading past its end.
+            if (!isCleartext && looksCleartext(packFolder)) {
                 LOGGER.warning("Story pack contains cleartext data but is missing .cleartext file: fixing...");
 
                 // Indicate that files are cleartext

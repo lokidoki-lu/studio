@@ -74,7 +74,7 @@ final class DriverTestSupport {
         return driver;
     }
 
-    private static Device newInertDevice() {
+    static Device newInertDevice() {
         try {
             Constructor<Device> ctor = Device.class.getDeclaredConstructor();
             ctor.setAccessible(true);

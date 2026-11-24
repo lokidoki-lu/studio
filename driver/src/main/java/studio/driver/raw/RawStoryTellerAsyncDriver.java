@@ -146,6 +146,15 @@ public class RawStoryTellerAsyncDriver {
                                 final short finalMinor = minor;
 
                                 // Read card size from SD, if needed (firmware >= 1.1)
+                                // TODO Suspicious, left as inherited from upstream STUdio: byte 26 is
+                                //  read twice (as the most and the least significant byte) and byte 25
+                                //  is never read. A plain byte order would read 24..27, e.g.
+                                //  27<<24 | 26<<16 | 25<<8 | 24 (little endian) or 24<<24 | 25<<16 |
+                                //  26<<8 | 27 (big endian). Nothing in this repository (docs, tests,
+                                //  any other parse of sector 2) documents this layout, so the value is
+                                //  not changed without a dump of a real 1.x device to check it against.
+                                //  It feeds the reported card size and findSuitableSectorAfter, i.e. the
+                                //  check that a pack placed after the last one still fits on the card.
                                 int sdCardSizeInSectors = -1;
                                 if (major >= 1 && minor >= 1) {
                                     sdCardSizeInSectors = (sdDeviceInfosSector2.get(26) & 0xff) << 24
@@ -386,7 +395,19 @@ public class RawStoryTellerAsyncDriver {
                                 try {
                                     // Read next chunk from input stream
                                     LOGGER.finer("Reading " + chunkSize + " bytes from input stream");
+                                    // readNBytes loops until chunkSize bytes or end of stream; a short
+                                    // array means the stream ended before the size announced by the
+                                    // caller. Refuse it: writing a partial chunk would leave sectors
+                                    // of stale data inside the pack, and bb.put(chunk, 0, chunkSize)
+                                    // used to fail here with an unexplained IndexOutOfBoundsException.
+                                    // The index is not touched, so the sectors already written stay free.
                                     byte[] chunk = input.readNBytes(chunkSize);
+                                    if (chunk.length < chunkSize) {
+                                        throw new StoryTellerException("The pack stream ended early: expected "
+                                                + totalSize + " bytes (" + packSizeInSectors + " sectors), got "
+                                                + ((long) (sector - PACK_INDEX_SD_SECTOR - startSector.get()) * LibUsbMassStorageHelper.SECTOR_SIZE + chunk.length)
+                                                + ". The pack index was not updated.");
+                                    }
                                     bb.put(chunk, 0, chunkSize);
                                     LOGGER.finer("Writing " + chunkSize + " bytes to device");
                                     return LibUsbMassStorageHelper.asyncWriteSDSectors(handle, sector, nbSectorsToWrite, bb)

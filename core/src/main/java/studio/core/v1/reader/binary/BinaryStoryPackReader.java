@@ -328,11 +328,25 @@ public class BinaryStoryPackReader {
         }
     }
 
-    private static void recordOptionCount(Map<SectorAddr, Integer> counts, SectorAddr addr, short count) throws IOException {
+    /**
+     * Records the option count a transition announces for an action node. When two transitions
+     * disagree, the <em>first</em> one read (lowest stage node, ok before home) is kept and the
+     * disagreement is only logged, which is exactly what {@code FsStoryPackReader} does with the same
+     * information in the {@code ni} file: the same pack yields the same graph in either format.
+     *
+     * <p>The first rather than the largest, because a larger count is the unsafe direction here. The
+     * options are a bare list of shorts at the start of the action node sector, followed by alignment
+     * padding (zeros) and the enriched metadata. Reading more shorts than were written decodes that
+     * padding as option addresses, and {@code 0} is a valid one (the first stage node): the pack
+     * would silently gain options leading back to its start. A count that is too small at worst
+     * drops trailing options, and is never larger than what some transition claimed. Every count is
+     * already bounded by what fits in the sector ({@link #checkActionAddress}).
+     */
+    private static void recordOptionCount(Map<SectorAddr, Integer> counts, SectorAddr addr, short count) {
         Integer known = counts.putIfAbsent(addr, (int) count);
         if (known != null && known != count) {
-            throw new IOException("Invalid binary story pack: transitions disagree on the option count of action node at sector "
-                    + addr.getOffset() + " (" + known + " vs " + count + ")");
+            LOGGER.warning("Binary story pack: transitions disagree on the option count of action node at sector "
+                    + addr.getOffset() + " (" + known + " vs " + count + "); keeping the first one, " + known);
         }
     }
 

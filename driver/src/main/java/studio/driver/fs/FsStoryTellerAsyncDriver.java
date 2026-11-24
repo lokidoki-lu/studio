@@ -54,6 +54,17 @@ public class FsStoryTellerAsyncDriver {
     private volatile Device device = null;
     private volatile String partitionMountPoint = null;
     /**
+     * Incremented, under the instance lock, every time a device is published or unplugged. A mount
+     * point string alone does not identify a card: after card A is unplugged, card B can be mounted
+     * on the very same {@code E:\}. An operation therefore freezes the pair (mount point,
+     * generation) at its start, and refuses to write or remove anything once the generation moved,
+     * even if the mount point string reads the same again.
+     *
+     * <p>A primitive, not an {@code AtomicLong}: the tests build the driver without running its
+     * constructor or field initializers, and a {@code long} needs neither.
+     */
+    private volatile long partitionGeneration = 0L;
+    /**
      * The device whose partition is currently being waited for. Set before the search starts and
      * cleared on unplug, which is what lets an unplug cancel a search already in flight.
      */
@@ -116,8 +127,11 @@ public class FsStoryTellerAsyncDriver {
                 return;
             }
 
-            this.partitionMountPoint = mountPoint.get();
-            this.device = device;
+            synchronized (this) {
+                this.partitionGeneration++;
+                this.partitionMountPoint = mountPoint.get();
+                this.device = device;
+            }
             this.awaitingPartitionFor = null;
             LOGGER.info("Device ready on " + this.partitionMountPoint);
             this.listeners.forEach(listener -> listener.onDevicePlugged(device));
@@ -131,9 +145,51 @@ public class FsStoryTellerAsyncDriver {
         LOGGER.info("Device unplugged");
         // Cancels any partition search in flight and prevents a stale mount point from surviving.
         this.awaitingPartitionFor = null;
-        this.device = null;
-        this.partitionMountPoint = null;
+        synchronized (this) {
+            this.partitionGeneration++;
+            this.device = null;
+            this.partitionMountPoint = null;
+        }
         this.listeners.forEach(listener -> listener.onDeviceUnplugged(device));
+    }
+
+    /**
+     * The identity of the partition an operation started on: its mount point, plus the plug
+     * generation it was current in. Two sessions on the same mount point string but different
+     * generations are two different cards as far as writes and removals are concerned.
+     */
+    static final class PartitionSession {
+        final String mountPoint;
+        final long generation;
+
+        PartitionSession(String mountPoint, long generation) {
+            this.mountPoint = mountPoint;
+            this.generation = generation;
+        }
+
+        @Override
+        public String toString() {
+            return mountPoint + " (generation " + generation + ")";
+        }
+    }
+
+    /**
+     * Freezes the current partition, or returns {@code null} when no device is ready. Read under the
+     * lock that plug and unplug update it with, so the mount point and the generation always belong
+     * to the same plug event.
+     */
+    synchronized PartitionSession currentPartition() {
+        String mountPoint = this.partitionMountPoint;
+        if (this.device == null || mountPoint == null) {
+            return null;
+        }
+        return new PartitionSession(mountPoint, this.partitionGeneration);
+    }
+
+    /** Whether {@code session} is still the partition the driver considers current. */
+    private synchronized boolean isCurrent(PartitionSession session) {
+        return session.generation == this.partitionGeneration
+                && session.mountPoint.equals(this.partitionMountPoint);
     }
 
     /** Visible for tests: the mount point currently considered valid, if any. */
@@ -438,10 +494,11 @@ public class FsStoryTellerAsyncDriver {
      *         {@link StoryTellerException} whose reason says why nothing was removed.
      */
     public CompletableFuture<Boolean> removeUnreferencedPackContentFolder(String folderName) {
-        String mountPoint = this.partitionMountPoint;
-        if (this.device == null || mountPoint == null) {
+        PartitionSession session = currentPartition();
+        if (session == null) {
             return CompletableFuture.failedFuture(noDevice());
         }
+        String mountPoint = session.mountPoint;
         if (folderName == null || !folderName.matches("[0-9A-Fa-f]{8}")) {
             return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
                     "Not a pack content folder name: " + folderName));
@@ -474,7 +531,7 @@ public class FsStoryTellerAsyncDriver {
                         throw new StoryTellerException(StoryTellerException.Reason.PACK_NOT_ON_DEVICE,
                                 "No pack content folder named " + folderName + " on the device partition");
                     }
-                    ensureSamePartition(mountPoint, "the folder was not removed");
+                    ensureSamePartition(session, "the folder was not removed");
                     LOGGER.info("Removing unreferenced pack content folder: " + target);
                     try {
                         org.apache.commons.io.FileUtils.deleteDirectory(target.toFile());
@@ -528,10 +585,11 @@ public class FsStoryTellerAsyncDriver {
 
 
     public CompletableFuture<Boolean> reorderPacks(List<String> uuids) {
-        String mountPoint = this.partitionMountPoint;
-        if (this.device == null || mountPoint == null) {
+        PartitionSession session = currentPartition();
+        if (session == null) {
             return CompletableFuture.failedFuture(noDevice());
         }
+        String mountPoint = session.mountPoint;
         List<UUID> requested = new ArrayList<>();
         try {
             if (uuids == null) {
@@ -554,7 +612,7 @@ public class FsStoryTellerAsyncDriver {
                             // and leave the order unchanged while reporting success.
                             packUUIDs.sort(Comparator.comparingInt(requested::indexOf));
                             // Write pack index
-                            return writePackIndex(mountPoint, packUUIDs);
+                            return writePackIndex(session, packUUIDs);
                         } else {
                             throw new StoryTellerException("Packs on device do not match UUIDs");
                         }
@@ -565,10 +623,11 @@ public class FsStoryTellerAsyncDriver {
     }
 
     public CompletableFuture<Boolean> deletePack(String uuid) {
-        String mountPoint = this.partitionMountPoint;
-        if (this.device == null || mountPoint == null) {
+        PartitionSession session = currentPartition();
+        if (session == null) {
             return CompletableFuture.failedFuture(noDevice());
         }
+        String mountPoint = session.mountPoint;
         UUID packUUID;
         try {
             packUUID = canonicalPackUuid(uuid);
@@ -597,7 +656,7 @@ public class FsStoryTellerAsyncDriver {
                             .findFirst();
 
                     // Write pack index
-                    return writePackIndex(mountPoint, packUUIDs)
+                    return writePackIndex(session, packUUIDs)
                             .thenCompose(ok -> {
                                 if (sharingFolder.isPresent()) {
                                     LOGGER.warning("Pack " + packUUID + " was removed from the index, but its content folder "
@@ -608,7 +667,7 @@ public class FsStoryTellerAsyncDriver {
                                 // Generate folder name
                                 String folderName = mountPoint + File.separator + CONTENT_FOLDER + File.separator + packFolderName;
                                 try {
-                                    ensureSamePartition(mountPoint, "the pack folder " + folderName + " was not removed");
+                                    ensureSamePartition(session, "the pack folder " + folderName + " was not removed");
                                 } catch (StoryTellerException changed) {
                                     return CompletableFuture.failedFuture(changed);
                                 }
@@ -632,7 +691,11 @@ public class FsStoryTellerAsyncDriver {
      * <p>Kept for the tests that reach it by reflection: writes the index of the current partition.
      */
     private CompletableFuture<Boolean> writePackIndex(List<UUID> packUUIDs) {
-        return writePackIndex(this.partitionMountPoint, packUUIDs);
+        PartitionSession session = currentPartition();
+        if (session == null) {
+            return CompletableFuture.failedFuture(noDevice());
+        }
+        return writePackIndex(session, packUUIDs);
     }
 
     /**
@@ -641,14 +704,14 @@ public class FsStoryTellerAsyncDriver {
      * computed from what was read on that device; writing it anywhere else, or onto a device that
      * was unplugged and replaced in the meantime, would install another card's pack list.
      */
-    private CompletableFuture<Boolean> writePackIndex(String mountPoint, List<UUID> packUUIDs) {
+    private CompletableFuture<Boolean> writePackIndex(PartitionSession session, List<UUID> packUUIDs) {
         try {
-            ensureSamePartition(mountPoint, "the pack index was not written");
+            ensureSamePartition(session, "the pack index was not written");
         } catch (StoryTellerException changed) {
             return CompletableFuture.failedFuture(changed);
         }
         try {
-            packIndexWriter.write(mountPoint + File.separator + PACK_INDEX_FILENAME, packUUIDs);
+            packIndexWriter.write(session.mountPoint + File.separator + PACK_INDEX_FILENAME, packUUIDs);
             return CompletableFuture.completedFuture(true);
         } catch (Exception e) {
             return CompletableFuture.failedFuture(new StoryTellerException("Failed to write pack index on device partition", e));
@@ -657,13 +720,14 @@ public class FsStoryTellerAsyncDriver {
 
     /**
      * Fails if the partition an operation started on is no longer the current one: unplugged,
-     * replaced, or re-detected elsewhere while the operation was running.
+     * replaced, or re-detected elsewhere while the operation was running — including when another
+     * card was mounted on the same path meanwhile, which only the generation can tell apart.
      */
-    private void ensureSamePartition(String mountPoint, String consequence) {
-        String current = this.partitionMountPoint;
-        if (!mountPoint.equals(current)) {
+    private void ensureSamePartition(PartitionSession session, String consequence) {
+        if (!isCurrent(session)) {
+            PartitionSession current = currentPartition();
             throw new StoryTellerException(StoryTellerException.Reason.NO_DEVICE,
-                    "The device partition changed while the operation was running (was " + mountPoint
+                    "The device partition changed while the operation was running (was " + session
                             + ", now " + (current == null ? "none" : current) + "): " + consequence);
         }
     }
@@ -746,10 +810,11 @@ public class FsStoryTellerAsyncDriver {
     }
 
     public CompletableFuture<TransferStatus> uploadPack(String uuid, String inputPath, TransferProgressListener listener) {
-        String mountPoint = this.partitionMountPoint;
-        if (this.device == null || mountPoint == null) {
+        PartitionSession session = currentPartition();
+        if (session == null) {
             return CompletableFuture.failedFuture(noDevice());
         }
+        String mountPoint = session.mountPoint;
         UUID packUUID;
         try {
             packUUID = canonicalPackUuid(uuid);
@@ -847,7 +912,7 @@ public class FsStoryTellerAsyncDriver {
                                 // Not calling listener because the pack must be added to the index
                             }
                         });
-                        // Every file was forced as it was written; the directory entries that name
+                        // Every file was forced by copyPackFolder before it returned; the directory entries that name
                         // them are asked for too, best effort, before the index starts pointing at them.
                         FsSync.forceDirectoryTreeBestEffort(destFolderPath);
                         FsSync.forceDirectoryBestEffort(destFolderPath.getParent());
@@ -873,7 +938,7 @@ public class FsStoryTellerAsyncDriver {
                                 // Add UUID in packs index
                                 packUUIDs.add(packUUID);
                                 // Write pack index
-                                return writePackIndex(mountPoint, packUUIDs)
+                                return writePackIndex(session, packUUIDs)
                                         .thenApply(ok -> {
                                             indexInstalled.set(true);
                                             if (listener != null) {
@@ -890,7 +955,7 @@ public class FsStoryTellerAsyncDriver {
             }
             Throwable cause = (failure instanceof CompletionException && failure.getCause() != null) ? failure.getCause() : failure;
             if (!indexInstalled.get()) {
-                removeFolderCreatedByThisUpload(mountPoint, destFolderPath, cause);
+                removeFolderCreatedByThisUpload(session, destFolderPath, cause);
             }
             return CompletableFuture.<TransferStatus>failedFuture(cause);
         }).thenCompose(f -> f);
@@ -903,9 +968,10 @@ public class FsStoryTellerAsyncDriver {
      * <p>Skipped when the partition is no longer the one the upload started on: the same path may
      * now be another card, on which a folder of that name is not ours.
      */
-    private void removeFolderCreatedByThisUpload(String mountPoint, Path destFolderPath, Throwable primaryFailure) {
-        if (!mountPoint.equals(this.partitionMountPoint)) {
-            LOGGER.warning("Upload failed and the device partition changed meanwhile; leaving " + destFolderPath
+    private void removeFolderCreatedByThisUpload(PartitionSession session, Path destFolderPath, Throwable primaryFailure) {
+        if (!isCurrent(session)) {
+            LOGGER.warning("Upload failed and the device partition changed meanwhile (started on " + session
+                    + "); leaving " + destFolderPath
                     + " in place rather than removing a folder on a partition that may not be the one it was created on");
             return;
         }
@@ -933,6 +999,9 @@ public class FsStoryTellerAsyncDriver {
         // Assets are cleartext if file '.cleartext' exists
         boolean isCleartext = (new FsStoryPackReader()).isCleartext(Paths.get(sourceFolder), isUpload);
         
+        // Files written to the card by this upload, forced in one pass once the copy is over.
+        List<Path> writtenFiles = new ArrayList<>();
+
         // Always add .cleartext file when downloading
         if (!isUpload) {
             // Indicate that files are cleartext
@@ -993,9 +1062,7 @@ public class FsStoryTellerAsyncDriver {
                             Files.copy(s, d);
                         }
                         if (isUpload) {
-                            // The index is written only once every file is on the card: ask for
-                            // each one to be pushed there, rather than left in the OS cache.
-                            FsSync.forceFile(d);
+                            writtenFiles.add(d);
                         }
 
                         // Compute progress and speed
@@ -1027,11 +1094,23 @@ public class FsStoryTellerAsyncDriver {
             } else {
                 CipherUtils.addBootFileV3(destFolder.toPath(), deviceInfos.getDeviceKeyV3());
             }
-            if (isUpload) {
-                FsSync.forceFile(destFolder.toPath().resolve(CipherUtils.BOOT_FILENAME));
-            }
         } catch (IOException e) {
             throw new StoryTellerException("Failed to generate device-specific boot file", e);
+        }
+        if (isUpload) {
+            // The index is written only once every file is on the card. Rather than forcing each
+            // file as soon as it is written — a synchronous flush between every two copies — every
+            // file of the pack, boot file included, is pushed to the card in one pass here. This
+            // method returns only after that pass, and the index is written only after it returns,
+            // so the guarantee is the same: nothing the index points at is left in the OS cache.
+            writtenFiles.add(destFolder.toPath().resolve(CipherUtils.BOOT_FILENAME));
+            for (Path written : writtenFiles) {
+                try {
+                    FsSync.forceFile(written);
+                } catch (IOException e) {
+                    throw new StoryTellerException("Failed to flush " + written + " to the device", e);
+                }
+            }
         }
         return new TransferStatus(transferred.get() == folderSize, transferred.get(), folderSize, 0.0);
     }
