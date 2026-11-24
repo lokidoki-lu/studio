@@ -41,7 +41,6 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
-import java.time.Duration;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
@@ -73,9 +72,13 @@ public class LibraryService {
      *
      * So an entry now carries the size and modification time observed at the moment of the parse,
      * and is reused only while both still match. See readPackFileCached.
+     *
+     * Since that check is what keeps an entry honest, a time-based expiry adds nothing but a full
+     * re-read of every pack every few minutes. Entries are bounded in number instead: one per file
+     * of the library, the extra ones being paths since deleted.
      */
     private final Cache<Path, CachedPack> cachedPacks = Caffeine.newBuilder()
-            .expireAfterWrite(Duration.ofMinutes(5)).build();
+            .maximumSize(2_000).build();
 
     /**
      * A parse, and the observable state of the file it came from.
@@ -158,16 +161,17 @@ public class LibraryService {
                         .forEach(entry -> {
                             List<LibraryPack> packs = entry.getValue();
                             packs.sort((a, b) -> Long.compare(b.getTimestamp(), a.getTimestamp()));
-                            LOGGER.debug("Refreshing metadata for pack `" + entry.getKey() + "` from file `" + packs.get(0).getPath() + "`");
-                            this.readPackFile(packs.get(0).getPath()).ifPresent(
-                                    meta -> databaseMetadataService.refreshUnofficialMetadata(
-                                            new DatabasePackMetadata(
-                                                    meta.getMetadata().getUuid(),
-                                                    meta.getMetadata().getTitle(),
-                                                    meta.getMetadata().getDescription(),
-                                                    Optional.ofNullable(meta.getMetadata().getThumbnail()).map(thumb -> "data:image/png;base64," + Base64.getEncoder().encodeToString(thumb)).orElse(null),
-                                                    false
-                                            )
+                            LibraryPack meta = packs.get(0);
+                            LOGGER.debug("Refreshing metadata for pack `" + entry.getKey() + "` from file `" + meta.getPath() + "`");
+                            // The parse just made (or reused) above: reading the file a second time,
+                            // outside the cache, made every listing re-read every archive in full.
+                            databaseMetadataService.refreshUnofficialMetadata(
+                                    new DatabasePackMetadata(
+                                            meta.getMetadata().getUuid(),
+                                            meta.getMetadata().getTitle(),
+                                            meta.getMetadata().getDescription(),
+                                            Optional.ofNullable(meta.getMetadata().getThumbnail()).map(thumb -> "data:image/png;base64," + Base64.getEncoder().encodeToString(thumb)).orElse(null),
+                                            false
                                     )
                             );
                         });
@@ -836,10 +840,11 @@ public class LibraryService {
         LOGGER.debug("Reading pack file: " + path.toString());
         // Handle all file formats
         if (path.toString().endsWith(".zip")) {
-            try (FileInputStream fis = new FileInputStream(path.toFile())) {
+            try {
                 LOGGER.debug("Reading archive pack metadata.");
                 ArchiveStoryPackReader packReader = new ArchiveStoryPackReader();
-                StoryPackMetadata meta = packReader.readMetadata(fis);
+                // Through the zip central directory: the assets are not read
+                StoryPackMetadata meta = packReader.readMetadata(path);
                 if (meta != null) {
                     return Optional.of(new LibraryPack(path, Files.getLastModifiedTime(path).toMillis() , meta));
                 }
