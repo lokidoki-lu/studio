@@ -545,7 +545,7 @@ class PackLibrary extends React.Component {
                         <div className="library-search">
                             <input type="search" value={this.state.search || ''} placeholder={t('library.local.search')} aria-label={t('library.local.search')} onChange={e => this.setState({search: e.target.value})} />
                         </div>
-                        <button type="button" title={t('library.local.addPack')} className="btn btn-primary library-import" onClick={this.showAddFileSelector}><span className="glyphicon glyphicon-import"/> {t('library.local.import')}</button>
+                        <button type="button" title={t('library.local.addPack')} className="btn btn-primary ui-btn ui-btn-primary library-import" onClick={this.showAddFileSelector}><span className="glyphicon glyphicon-import"/> {t('library.local.import')}</button>
                         <LibraryPurge />
                         <div className="format-legend">
                             <span className="legend-archive">{t('library.format.archive')}</span>

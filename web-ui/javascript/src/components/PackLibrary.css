@@ -100,28 +100,6 @@
     margin-left: auto;
 }
 
-.pack-library .local-library .header .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 7px 14px;
-    border-radius: var(--ui-radius-sm);
-    font-weight: 600;
-    font-size: 13px;
-    border: none;
-    box-shadow: var(--ui-shadow);
-}
-
-.pack-library .local-library .header .btn-primary {
-    background-color: var(--ui-accent);
-    color: #fff;
-}
-
-.pack-library .local-library .header .btn-primary:hover,
-.pack-library .local-library .header .btn-primary:focus {
-    background-color: var(--ui-accent-hover);
-}
-
 .pack-library .library-search {
     flex: 1 1 220px;
     max-width: 360px;
