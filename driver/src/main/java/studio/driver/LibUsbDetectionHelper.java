@@ -7,6 +7,7 @@
 package studio.driver;
 
 import org.usb4java.Context;
+import org.usb4java.Device;
 import org.usb4java.LibUsb;
 import org.usb4java.LibUsbException;
 import studio.driver.event.DeviceHotplugEventListener;
@@ -14,6 +15,7 @@ import studio.driver.event.DeviceHotplugEventListener;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
@@ -190,6 +192,36 @@ public class LibUsbDetectionHelper {
         }
     }
 
+    /**
+     * Single thread on which every plug and unplug event is delivered to the drivers.
+     *
+     * <p>Each event used to be handed to its own {@code CompletableFuture.runAsync}, so a quick
+     * ARRIVED then LEFT could be handled as LEFT then ARRIVED, leaving a device published that was no
+     * longer there. One thread, in submission order, keeps the order libusb reported. Listeners must
+     * therefore return quickly: a driver with slow work to do on a plug (waiting for the partition)
+     * starts it elsewhere. Daemon, and never shut down: it holds nothing once its queue is empty.
+     */
+    private static final ExecutorService HOTPLUG_EVENTS =
+            Executors.newSingleThreadExecutor(daemonThreadFactory("libusb-hotplug-events"));
+
+    /** Delivers a plug event on the hotplug event thread, after every event submitted before it. */
+    static CompletableFuture<Void> dispatchPlugged(DeviceHotplugEventListener listener, Device device) {
+        return CompletableFuture.runAsync(() -> listener.onDevicePlugged(device), HOTPLUG_EVENTS)
+                .exceptionally(e -> {
+                    LOGGER.log(Level.SEVERE, "An error occurred while handling device plug event", e);
+                    return null;
+                });
+    }
+
+    /** Delivers an unplug event on the hotplug event thread, after every event submitted before it. */
+    static CompletableFuture<Void> dispatchUnplugged(DeviceHotplugEventListener listener, Device device) {
+        return CompletableFuture.runAsync(() -> listener.onDeviceUnplugged(device), HOTPLUG_EVENTS)
+                .exceptionally(e -> {
+                    LOGGER.log(Level.SEVERE, "An error occurred while handling device unplug event", e);
+                    return null;
+                });
+    }
+
     private static ThreadFactory daemonThreadFactory(String name) {
         return runnable -> {
             Thread thread = new Thread(runnable, name);
@@ -292,18 +324,10 @@ public class LibUsbDetectionHelper {
                         LOGGER.info(String.format("Hotplug event callback (%04x:%04x): " + event, vendorId, productId));
                         switch (event) {
                             case LibUsb.HOTPLUG_EVENT_DEVICE_ARRIVED:
-                                CompletableFuture.runAsync(() -> listener.onDevicePlugged(device))
-                                        .exceptionally(e -> {
-                                            LOGGER.log(Level.SEVERE, "An error occurred while handling device plug event", e);
-                                            return null;
-                                        });
+                                dispatchPlugged(listener, device);
                                 break;
                             case LibUsb.HOTPLUG_EVENT_DEVICE_LEFT:
-                                CompletableFuture.runAsync(() -> listener.onDeviceUnplugged(device))
-                                        .exceptionally(e -> {
-                                            LOGGER.log(Level.SEVERE, "An error occurred while handling device unplug event", e);
-                                            return null;
-                                        });
+                                dispatchUnplugged(listener, device);
                                 break;
                         }
                         return 0;   // Do not deregister the callback
