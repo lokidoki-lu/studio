@@ -27,7 +27,7 @@ jest.mock('react-toastify', () => ({
 const { toast } = require('react-toastify');
 const deviceService = require('../services/device');
 const libraryService = require('../services/library');
-const { actionAddFromLibrary, actionAddToLibrary, TRANSFER_RECONCILE_INTERVAL_MS } = require('./index');
+const { actionAddFromLibrary, actionAddToLibrary, actionRefreshDevice, TRANSFER_RECONCILE_INTERVAL_MS, TRANSFER_RECONCILE_MAX_FAILURES } = require('./index');
 const { SUBSCRIBED, DEFERRED, CHANNEL_OPEN } = require('../services/eventBusChannel');
 
 /** Translation stub: returns the key, so assertions pin the message identity, not its wording. */
@@ -67,7 +67,7 @@ function fakeChannel({ open = true } = {}) {
             isOpen = true;
             listeners.forEach(listener => listener(CHANNEL_OPEN));
         },
-        /** Test cleanup: ends whatever transfer is still followed, so the mutex is free again. */
+        /** Test cleanup: ends whatever transfer is still followed (its polling, its pack marked as in transfer). */
         settlePending: () => {
             handlers.forEach((handler, address) => {
                 if (address.endsWith('.done')) {
@@ -142,6 +142,14 @@ async function mutexIsFree() {
     return ran;
 }
 
+/** Whether some toast.update call rendered this key (plain string renders only). */
+function rendered(key) {
+    return toast.update.mock.calls.some(call => call[1] && call[1].render === key);
+}
+
+/** Lets a chain of already-resolved promises run, under fake timers. */
+const ticks = async () => { for (let i = 0; i < 20; i++) { await Promise.resolve(); } };
+
 /** A transfer still running, as the registry reports it. */
 const RUNNING = { transferId: 'tid', state: 'RUNNING', done: false, success: false, progress: 0.5, total: 10, transferred: 5 };
 
@@ -159,7 +167,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-    // A transfer left unsettled keeps the mutex held, which would make the next test "busy".
+    // A transfer left unsettled keeps polling, and keeps its pack marked as in transfer.
     channels.forEach(channel => channel.settlePending());
     await flush();
 });
@@ -241,15 +249,18 @@ describe('actionAddFromLibrary', () => {
         expect(props).toBeNull();
     });
 
-    it('E5: losing the channel must NOT be reported as a failed transfer', async () => {
+    it('E5: losing the channel must NOT be reported as a failed transfer, nor as lost tracking', async () => {
         // The channel is down when the action tries to subscribe. This is precisely the field
-        // scenario: the POST already succeeded, so the backend is writing the pack right now.
+        // scenario: the POST already succeeded, so the backend is writing the pack right now. The
+        // registry is still polled, so the transfer is followed: the "adding" toast stays.
         deviceService.addFromLibrary.mockResolvedValue({ transferId: 'tid' });
 
         await runAddFromLibrary(fakeChannel({ open: false }));
 
+        expect(toast).toHaveBeenCalledWith('toasts.device.adding', expect.anything());
         expect(lastRenderKey()).not.toBe('toasts.device.addingFailed');
-        expect(lastRenderKey()).toBe('toasts.device.trackingLost');
+        expect(rendered('toasts.device.trackingLost')).toBe(false);
+        expect(deviceService.fetchTransfer).toHaveBeenCalledWith('tid');
     });
 
     it('E5b: the transfer request is still issued even though monitoring is unavailable', async () => {
@@ -347,15 +358,15 @@ describe('actionAddFromLibrary: reconciliation with the transfer registry', () =
         expect(refreshes).toHaveLength(1);
     });
 
-    it('a lost channel keeps the mutex held, and the verdict read on reconnection frees it', async () => {
+    it('a lost channel does not hold the mutex, and the verdict read on reconnection settles the transfer', async () => {
         const channel = fakeChannel({ open: false });
         deviceService.addFromLibrary.mockResolvedValue({ transferId: 'tid' });
 
-        await runAddFromLibrary(channel);
-        expect(lastRenderKey()).toBe('toasts.device.trackingLost');
+        const dispatch = await runAddFromLibrary(channel);
+        expect(rendered('toasts.device.trackingLost')).toBe(false);
 
-        // Still running on the backend: the device is busy, and the UI must not pretend otherwise.
-        expect(await mutexIsFree()).toBe(false);
+        // Still running on the backend, which queues device operations itself: the UI stays usable.
+        expect(await mutexIsFree()).toBe(true);
 
         // The verdict was published while the socket was down; the registry still has it.
         deviceService.fetchTransfer.mockResolvedValue({ transferId: 'tid', state: 'SUCCEEDED', done: true, success: true });
@@ -363,12 +374,59 @@ describe('actionAddFromLibrary: reconciliation with the transfer registry', () =
         await flush();
 
         expect(lastRenderKey()).toBe('toasts.device.added');
-        expect(await mutexIsFree()).toBe(true);
+        expect(channel.listenerCount()).toBe(0);
+        // The device is re-read at the end
+        expect(dispatch.mock.calls.some(call => typeof call[0] === 'function')).toBe(true);
     }, 10000);
+
+    it('releases the mutex as soon as the backend accepts the transfer', async () => {
+        const channel = fakeChannel({ open: true });
+        deviceService.addFromLibrary.mockResolvedValue({ transferId: 'tid' });
+
+        await runAddFromLibrary(channel);
+
+        // The transfer is still being followed...
+        expect(channel.addressCount()).toBe(2);
+        // ...yet another device action is not refused as "busy".
+        expect(await mutexIsFree()).toBe(true);
+
+        // And the verdict, when it comes, is still handled.
+        channel.emit('storyteller.transfer.tid.done', { success: true });
+        expect(lastRenderKey()).toBe('toasts.device.added');
+    });
+
+    it('a device refresh during a transfer (e.g. on reconnection) is not refused as busy', async () => {
+        const channel = fakeChannel({ open: true });
+        deviceService.addFromLibrary.mockResolvedValue({ transferId: 'tid' });
+        await runAddFromLibrary(channel);
+        toast.error.mockClear();
+        deviceService.fetchDeviceInfos.mockClear();
+
+        await actionRefreshDevice(t)(jest.fn());
+
+        expect(toast.error).not.toHaveBeenCalledWith('toasts.device.busy');
+        expect(deviceService.fetchDeviceInfos).toHaveBeenCalled();
+    });
+
+    it('the same pack dropped twice while its transfer is followed is sent once', async () => {
+        const channel = fakeChannel({ open: true });
+        deviceService.addFromLibrary.mockResolvedValue({ transferId: 'tid' });
+
+        await runAddFromLibrary(channel);
+        toast.error.mockClear();
+        await runAddFromLibrary(channel);
+
+        expect(deviceService.addFromLibrary).toHaveBeenCalledTimes(1);
+        expect(toast.error).toHaveBeenCalledWith('toasts.device.busy');
+
+        // Once settled, the pack can be sent again.
+        channel.emit('storyteller.transfer.tid.done', { success: false });
+        await runAddFromLibrary(channel);
+        expect(deviceService.addFromLibrary).toHaveBeenCalledTimes(2);
+    });
 
     it('an unsettled transfer is re-read periodically until its verdict is known', async () => {
         jest.useFakeTimers();
-        const ticks = async () => { for (let i = 0; i < 20; i++) { await Promise.resolve(); } };
         try {
             const channel = fakeChannel({ open: true });
             deviceService.addFromLibrary.mockResolvedValue({ transferId: 'tid' });
@@ -391,12 +449,140 @@ describe('actionAddFromLibrary: reconciliation with the transfer registry', () =
             jest.advanceTimersByTime(TRANSFER_RECONCILE_INTERVAL_MS * 3);
             await ticks();
             expect(deviceService.fetchTransfer).toHaveBeenCalledTimes(2);
-            // Let the queued device refresh run and release the mutex
+            // Let the device refresh run and release the mutex
             jest.advanceTimersByTime(200);
             await ticks();
         } finally {
             jest.useRealTimers();
         }
+    });
+
+    it('any 404 from the registry settles the transfer as unknown, even without an error code', async () => {
+        const channel = fakeChannel({ open: true });
+        deviceService.addFromLibrary.mockResolvedValue({ transferId: 'tid' });
+        deviceService.fetchTransfer.mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 }));
+
+        const dispatch = await runAddFromLibrary(channel);
+
+        expect(lastRenderKey()).toBe('toasts.device.trackingLost');
+        expect(channel.addressCount()).toBe(0);
+        expect(dispatch.mock.calls.some(call => typeof call[0] === 'function')).toBe(true);
+    });
+
+    it('gives up after too many failed registry reads in a row, and reports the outcome as unknown', async () => {
+        jest.useFakeTimers();
+        try {
+            const channel = fakeChannel({ open: true });
+            deviceService.addFromLibrary.mockResolvedValue({ transferId: 'tid' });
+            deviceService.fetchTransfer.mockRejectedValue(Object.assign(new Error('Bad Gateway'), { status: 502 }));
+            const dispatch = jest.fn(action => (typeof action === 'function' ? action(dispatch) : action));
+
+            actionAddFromLibrary('uuid-1', 'pack.zip', 'fs', 'fs', { channel }, t)(dispatch);
+            await ticks();
+            for (let i = 1; i < TRANSFER_RECONCILE_MAX_FAILURES - 1; i++) {
+                jest.advanceTimersByTime(TRANSFER_RECONCILE_INTERVAL_MS);
+                await ticks();
+            }
+            expect(deviceService.fetchTransfer).toHaveBeenCalledTimes(TRANSFER_RECONCILE_MAX_FAILURES - 1);
+            expect(rendered('toasts.device.trackingLost')).toBe(false);
+            expect(channel.addressCount()).toBe(2);
+
+            jest.advanceTimersByTime(TRANSFER_RECONCILE_INTERVAL_MS);
+            await ticks();
+
+            expect(deviceService.fetchTransfer).toHaveBeenCalledTimes(TRANSFER_RECONCILE_MAX_FAILURES);
+            expect(lastRenderKey()).toBe('toasts.device.trackingLost');
+            expect(channel.addressCount()).toBe(0);
+            expect(channel.listenerCount()).toBe(0);
+            expect(dispatch.mock.calls.some(call => typeof call[0] === 'function')).toBe(true);
+
+            // No more polling
+            jest.advanceTimersByTime(TRANSFER_RECONCILE_INTERVAL_MS * 3);
+            await ticks();
+            expect(deviceService.fetchTransfer).toHaveBeenCalledTimes(TRANSFER_RECONCILE_MAX_FAILURES);
+            jest.advanceTimersByTime(200);
+            await ticks();
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    it('a successful registry read resets the count of failed reads', async () => {
+        jest.useFakeTimers();
+        try {
+            const channel = fakeChannel({ open: true });
+            deviceService.addFromLibrary.mockResolvedValue({ transferId: 'tid' });
+            const badGateway = Object.assign(new Error('Bad Gateway'), { status: 502 });
+            // Almost the limit, one good read, then almost the limit again
+            for (let i = 0; i < TRANSFER_RECONCILE_MAX_FAILURES - 1; i++) {
+                deviceService.fetchTransfer.mockRejectedValueOnce(badGateway);
+            }
+            deviceService.fetchTransfer.mockResolvedValueOnce(RUNNING);
+            for (let i = 0; i < TRANSFER_RECONCILE_MAX_FAILURES - 1; i++) {
+                deviceService.fetchTransfer.mockRejectedValueOnce(badGateway);
+            }
+            const dispatch = jest.fn(action => (typeof action === 'function' ? action(dispatch) : action));
+
+            actionAddFromLibrary('uuid-1', 'pack.zip', 'fs', 'fs', { channel }, t)(dispatch);
+            await ticks();
+            for (let i = 1; i < 2 * TRANSFER_RECONCILE_MAX_FAILURES - 1; i++) {
+                jest.advanceTimersByTime(TRANSFER_RECONCILE_INTERVAL_MS);
+                await ticks();
+            }
+
+            expect(deviceService.fetchTransfer).toHaveBeenCalledTimes(2 * TRANSFER_RECONCILE_MAX_FAILURES - 1);
+            expect(rendered('toasts.device.trackingLost')).toBe(false);
+            expect(channel.addressCount()).toBe(2);
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    it('does not pile registry reads up while one is still pending', async () => {
+        jest.useFakeTimers();
+        try {
+            const channel = fakeChannel({ open: true });
+            deviceService.addFromLibrary.mockResolvedValue({ transferId: 'tid' });
+            let answer;
+            deviceService.fetchTransfer.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+            const dispatch = jest.fn(action => (typeof action === 'function' ? action(dispatch) : action));
+
+            actionAddFromLibrary('uuid-1', 'pack.zip', 'fs', 'fs', { channel }, t)(dispatch);
+            await ticks();
+            expect(deviceService.fetchTransfer).toHaveBeenCalledTimes(1);
+
+            // Ticks and a reconnection while the first read hangs: no new request
+            jest.advanceTimersByTime(TRANSFER_RECONCILE_INTERVAL_MS * 5);
+            channel.reopen();
+            await ticks();
+            expect(deviceService.fetchTransfer).toHaveBeenCalledTimes(1);
+
+            // Once it answers, the next tick reads again
+            answer(RUNNING);
+            await ticks();
+            deviceService.fetchTransfer.mockResolvedValue(RUNNING);
+            jest.advanceTimersByTime(TRANSFER_RECONCILE_INTERVAL_MS);
+            await ticks();
+            expect(deviceService.fetchTransfer).toHaveBeenCalledTimes(2);
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    it('never shows the progress going backwards', async () => {
+        const channel = fakeChannel({ open: true });
+        deviceService.addFromLibrary.mockResolvedValue({ transferId: 'tid' });
+        // The registry answers 0.5 right after subscribing
+
+        await runAddFromLibrary(channel);
+        channel.emit('storyteller.transfer.tid.progress', { progress: 0.7 });
+        // A late, older value from either source
+        channel.emit('storyteller.transfer.tid.progress', { progress: 0.6 });
+
+        const shown = toast.update.mock.calls
+            .map(call => call[1] && call[1].progress)
+            .filter(progress => typeof progress === 'number');
+        expect(shown).toEqual([0.5, 0.7, 0.7]);
     });
 
     it('a transfer the backend no longer knows is not reported as failed, and frees the mutex', async () => {
@@ -465,13 +651,14 @@ describe('actionAddToLibrary', () => {
         expect(await mutexIsFree()).toBe(true);
     });
 
-    it('a lost channel keeps the mutex held until the extraction is settled', async () => {
+    it('a lost channel neither claims lost tracking nor holds the mutex during the extraction', async () => {
         const channel = fakeChannel({ open: false });
         deviceService.addToLibrary.mockResolvedValue({ transferId: 'tid' });
 
         await runAddToLibrary(channel);
 
-        expect(lastRenderKey()).toBe('toasts.library.trackingLost');
-        expect(await mutexIsFree()).toBe(false);
+        expect(rendered('toasts.library.trackingLost')).toBe(false);
+        expect(channel.addressCount()).toBe(2);
+        expect(await mutexIsFree()).toBe(true);
     }, 10000);
 });
