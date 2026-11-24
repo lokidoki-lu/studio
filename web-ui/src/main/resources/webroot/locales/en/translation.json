@@ -184,7 +184,11 @@
       "removing": "Removing pack from library...",
       "removed": "Pack removed from library.",
       "removingFailed": "Failed to remove pack from library.",
-      "packFileWrongType": "Story pack file must be in ZIP archive format or binary pack format (.pack extension)."
+      "packFileWrongType": "Story pack file must be in ZIP archive format or binary pack format (.pack extension).",
+      "uploadingMany": "Importing pack {{current}} of {{total}}: {{name}}",
+      "uploadedMany": "{{count}} packs imported to library.",
+      "uploadedManyPartial": "{{ok}} of {{total}} packs imported. Failed: {{failed}}",
+      "packFilesWrongType": "Ignored, not a ZIP archive or a .pack file: {{names}}"
     },
     "device": {
       "monitoring": {
