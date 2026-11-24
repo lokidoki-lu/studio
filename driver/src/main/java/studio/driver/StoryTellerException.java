@@ -7,15 +7,65 @@
 package studio.driver;
 
 public class StoryTellerException extends RuntimeException {
+
+    /**
+     * Why an operation was refused, for the failures a caller can act on. Everything else is
+     * {@link #UNKNOWN}: the message still says what happened, but no client should branch on it.
+     */
+    public enum Reason {
+        UNKNOWN,
+        NO_DEVICE,
+        PACK_ALREADY_ON_DEVICE,
+        PACK_NOT_ON_DEVICE,
+        NOT_ENOUGH_SPACE,
+        CONTENT_FOLDER_EXISTS,
+        FOLDER_STILL_REFERENCED,
+        INVALID_REQUEST,
+        LIBRARY_PACK_NOT_FOUND
+    }
+
+    private final Reason reason;
+
     public StoryTellerException(String message) {
-        super(message);
+        this(Reason.UNKNOWN, message, null);
     }
 
     public StoryTellerException(String message, Throwable cause) {
-        super(message, cause);
+        this(Reason.UNKNOWN, message, cause);
     }
 
     public StoryTellerException(Throwable cause) {
         super(cause);
+        this.reason = Reason.UNKNOWN;
+    }
+
+    public StoryTellerException(Reason reason, String message) {
+        this(reason, message, null);
+    }
+
+    public StoryTellerException(Reason reason, String message, Throwable cause) {
+        super(message, cause);
+        this.reason = reason == null ? Reason.UNKNOWN : reason;
+    }
+
+    public Reason getReason() {
+        return reason;
+    }
+
+    /**
+     * The first explicit reason found along the cause chain, so that a failure wrapped by a
+     * {@code CompletionException} or by a more general {@code StoryTellerException} still reports
+     * what actually refused it.
+     */
+    public static Reason reasonOf(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof StoryTellerException && ((StoryTellerException) c).reason != Reason.UNKNOWN) {
+                return ((StoryTellerException) c).reason;
+            }
+            if (c.getCause() == c) {
+                break;
+            }
+        }
+        return Reason.UNKNOWN;
     }
 }

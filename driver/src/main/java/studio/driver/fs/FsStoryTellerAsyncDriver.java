@@ -149,7 +149,7 @@ public class FsStoryTellerAsyncDriver {
 
     public CompletableFuture<FsDeviceInfos> getDeviceInfos() {
         if (this.device == null || this.partitionMountPoint == null) {
-            return CompletableFuture.failedFuture(new StoryTellerException("No device plugged"));
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
         }
         FsDeviceInfos infos = new FsDeviceInfos();
         String mdFile = this.partitionMountPoint + File.separator + DEVICE_METADATA_FILENAME;
@@ -292,7 +292,7 @@ public class FsStoryTellerAsyncDriver {
 
     public CompletableFuture<List<FsStoryPackInfos>> getPacksList() {
         if (this.device == null || this.partitionMountPoint == null) {
-            return CompletableFuture.failedFuture(new StoryTellerException("No device plugged"));
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
         }
 
         return readPackIndex()
@@ -375,7 +375,7 @@ public class FsStoryTellerAsyncDriver {
      */
     public CompletableFuture<List<String>> getUnreferencedPackContentFolders() {
         if (this.device == null || this.partitionMountPoint == null) {
-            return CompletableFuture.failedFuture(new StoryTellerException("No device plugged"));
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
         }
 
         return readPackIndex()
@@ -406,6 +406,69 @@ public class FsStoryTellerAsyncDriver {
                     unreferenced.sort(Comparator.naturalOrder());
                     LOGGER.fine("Unreferenced pack content folders: " + unreferenced.size());
                     return unreferenced;
+                });
+    }
+
+    /**
+     * Removes one {@code .content} folder that the pack index does not reference.
+     *
+     * <p>This is the operation {@link #getUnreferencedPackContentFolders()} deliberately left out,
+     * and it is only ever run on an explicit request naming the folder. The listing cannot say where
+     * such a folder came from; the caller, who knows which upload it just lost, can. So the guard
+     * here is not provenance but reference: the name must be a pack folder name (eight hex
+     * characters), and the index, re-read now, must not point at it. A referenced folder is refused,
+     * whatever the caller believes, because removing it would leave the index naming a pack with no
+     * content.
+     *
+     * <p>Callers must not run this concurrently with an upload of the same pack, which creates its
+     * folder before indexing it: the web service serializes every device operation for that reason.
+     *
+     * @return a future completed with {@code true} once the folder is gone, or failed with a
+     *         {@link StoryTellerException} whose reason says why nothing was removed.
+     */
+    public CompletableFuture<Boolean> removeUnreferencedPackContentFolder(String folderName) {
+        if (this.device == null || this.partitionMountPoint == null) {
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
+        }
+        if (folderName == null || !folderName.matches("[0-9A-Fa-f]{8}")) {
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                    "Not a pack content folder name: " + folderName));
+        }
+
+        return readPackIndex()
+                .thenApply(packUUIDs -> {
+                    String wanted = folderName.toUpperCase(Locale.ROOT);
+                    for (UUID packUUID : packUUIDs) {
+                        if (computePackFolderName(packUUID.toString()).toUpperCase(Locale.ROOT).equals(wanted)) {
+                            throw new StoryTellerException(StoryTellerException.Reason.FOLDER_STILL_REFERENCED,
+                                    "The pack content folder " + folderName + " is referenced by the pack index ("
+                                            + packUUIDs.size() + " entries): it belongs to pack " + packUUID
+                                            + " and was not removed");
+                        }
+                    }
+                    Path contentFolder = Paths.get(this.partitionMountPoint, CONTENT_FOLDER);
+                    Path target = null;
+                    if (Files.isDirectory(contentFolder)) {
+                        try (Stream<Path> entries = Files.list(contentFolder)) {
+                            target = entries.filter(Files::isDirectory)
+                                    .filter(entry -> entry.getFileName().toString().equalsIgnoreCase(folderName))
+                                    .findFirst()
+                                    .orElse(null);
+                        } catch (IOException e) {
+                            throw new StoryTellerException("Failed to list pack content folders on device partition", e);
+                        }
+                    }
+                    if (target == null) {
+                        throw new StoryTellerException(StoryTellerException.Reason.PACK_NOT_ON_DEVICE,
+                                "No pack content folder named " + folderName + " on the device partition");
+                    }
+                    LOGGER.info("Removing unreferenced pack content folder: " + target);
+                    try {
+                        org.apache.commons.io.FileUtils.deleteDirectory(target.toFile());
+                    } catch (IOException e) {
+                        throw new StoryTellerException("Failed to remove pack content folder " + target, e);
+                    }
+                    return true;
                 });
     }
 
@@ -448,7 +511,7 @@ public class FsStoryTellerAsyncDriver {
 
     public CompletableFuture<Boolean> reorderPacks(List<String> uuids) {
         if (this.device == null || this.partitionMountPoint == null) {
-            return CompletableFuture.failedFuture(new StoryTellerException("No device plugged"));
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
         }
 
         return readPackIndex()
@@ -471,7 +534,7 @@ public class FsStoryTellerAsyncDriver {
 
     public CompletableFuture<Boolean> deletePack(String uuid) {
         if (this.device == null || this.partitionMountPoint == null) {
-            return CompletableFuture.failedFuture(new StoryTellerException("No device plugged"));
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
         }
 
         return readPackIndex()
@@ -497,7 +560,7 @@ public class FsStoryTellerAsyncDriver {
                                         }
                                     });
                         } else {
-                            throw new StoryTellerException("Pack not found");
+                            throw new StoryTellerException(StoryTellerException.Reason.PACK_NOT_ON_DEVICE, "Pack not found");
                         }
                     } catch (Exception e) {
                         throw new StoryTellerException("Failed to read pack metadata on device partition", e);
@@ -523,7 +586,7 @@ public class FsStoryTellerAsyncDriver {
 
     public CompletableFuture<TransferStatus> downloadPack(String uuid, String outputPath, TransferProgressListener listener) {
         if (this.device == null || this.partitionMountPoint == null) {
-            return CompletableFuture.failedFuture(new StoryTellerException("No device plugged"));
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
         }
 
         return readPackIndex()
@@ -552,14 +615,14 @@ public class FsStoryTellerAsyncDriver {
                             throw new StoryTellerException("Pack folder not found");
                         }
                     } else {
-                        throw new StoryTellerException("Pack not found");
+                        throw new StoryTellerException(StoryTellerException.Reason.PACK_NOT_ON_DEVICE, "Pack not found");
                     }
                 })));
     }
 
     public CompletableFuture<TransferStatus> uploadPack(String uuid, String inputPath, TransferProgressListener listener) {
         if (this.device == null || this.partitionMountPoint == null) {
-            return CompletableFuture.failedFuture(new StoryTellerException("No device plugged"));
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
         }
 
         try {
@@ -572,13 +635,13 @@ public class FsStoryTellerAsyncDriver {
             } catch (ArithmeticException overflow) {
                 // An estimate too large to represent is refused rather than wrapped into a small
                 // number that would read as "plenty of room".
-                throw new StoryTellerException("Not enough free space on the device", overflow);
+                throw new StoryTellerException(StoryTellerException.Reason.NOT_ENOUGH_SPACE, "Not enough free space on the device", overflow);
             }
             LOGGER.finest("Pack transfer needs at least " + requiredBytes + " additional bytes");
             String mdFile = this.partitionMountPoint + File.separator + DEVICE_METADATA_FILENAME;
             File mdFd = new File(mdFile);
             if (!hasEnoughFreeSpace(mdFd.getFreeSpace(), requiredBytes)) {
-                throw new StoryTellerException("Not enough free space on the device");
+                throw new StoryTellerException(StoryTellerException.Reason.NOT_ENOUGH_SPACE, "Not enough free space on the device");
             }
 
             // Generate folder name
@@ -602,12 +665,14 @@ public class FsStoryTellerAsyncDriver {
                 LOGGER.warning("Refusing to upload the pack: a destination folder already exists at "
                         + folderName + ", and it was not created by this operation");
                 return CompletableFuture.failedFuture(new StoryTellerException(
+                        StoryTellerException.Reason.CONTENT_FOLDER_EXISTS,
                         "A pack content folder already exists on the device partition: " + folderName
                                 + ". It was not created by this operation, so the upload was refused rather"
                                 + " than written into it: merging the pack into an existing or partial folder,"
                                 + " or emptying it, would risk content whose origin is not known. Nothing was"
-                                + " read, written or removed. STUdio has no operation to resolve this state"
-                                + " yet.", preexisting));
+                                + " read, written or removed. If the folder is not referenced by the pack index,"
+                                + " it can be removed explicitly (GET /api/device/orphans, then"
+                                + " POST /api/device/orphans/remove).", preexisting));
             }
             File destFolder = destFolderPath.toFile();
             // Copy folder with progress tracking

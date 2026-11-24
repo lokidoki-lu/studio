@@ -72,7 +72,7 @@ public class RawStoryTellerAsyncDriver {
 
     public CompletableFuture<RawDeviceInfos> getDeviceInfos() {
         if (this.device == null) {
-            return CompletableFuture.failedFuture(new StoryTellerException("No device plugged"));
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
         }
 
         return LibUsbMassStorageHelper.executeOnDeviceHandle(this.device, (handle) -> {
@@ -185,7 +185,7 @@ public class RawStoryTellerAsyncDriver {
 
     public CompletableFuture<List<RawStoryPackInfos>> getPacksList() {
         if (this.device == null) {
-            return CompletableFuture.failedFuture(new StoryTellerException("No device plugged"));
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
         }
 
         return LibUsbMassStorageHelper.executeOnDeviceHandle(this.device, (handle) -> {
@@ -234,7 +234,7 @@ public class RawStoryTellerAsyncDriver {
 
     public CompletableFuture<Boolean> reorderPacks(List<String> uuids) {
         if (this.device == null) {
-            return CompletableFuture.failedFuture(new StoryTellerException("No device plugged"));
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
         }
 
         return LibUsbMassStorageHelper.executeOnDeviceHandle(this.device, (handle) -> {
@@ -256,7 +256,7 @@ public class RawStoryTellerAsyncDriver {
 
     public CompletableFuture<Boolean> deletePack(String uuid) {
         if (this.device == null) {
-            return CompletableFuture.failedFuture(new StoryTellerException("No device plugged"));
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
         }
 
         return LibUsbMassStorageHelper.executeOnDeviceHandle(this.device, (handle) -> {
@@ -272,7 +272,7 @@ public class RawStoryTellerAsyncDriver {
                             // Write pack index
                             return writePackIndex(handle, packs);
                         } else {
-                            throw new StoryTellerException("Pack not found");
+                            throw new StoryTellerException(StoryTellerException.Reason.PACK_NOT_ON_DEVICE, "Pack not found");
                         }
                     });
         });
@@ -295,7 +295,7 @@ public class RawStoryTellerAsyncDriver {
 
     public CompletableFuture<TransferStatus> downloadPack(String uuid, OutputStream output, TransferProgressListener listener) {
         if (this.device == null) {
-            return CompletableFuture.failedFuture(new StoryTellerException("No device plugged"));
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
         }
 
         return LibUsbMassStorageHelper.executeOnDeviceHandle(device, (handle) ->
@@ -350,7 +350,7 @@ public class RawStoryTellerAsyncDriver {
                             }
                             return promise;
                         } else {
-                            throw new StoryTellerException("Pack not found");
+                            throw new StoryTellerException(StoryTellerException.Reason.PACK_NOT_ON_DEVICE, "Pack not found");
                         }
                     })
                 );
@@ -359,7 +359,7 @@ public class RawStoryTellerAsyncDriver {
 
     public CompletableFuture<TransferStatus> uploadPack(InputStream input, int packSizeInSectors, TransferProgressListener listener) {
         if (this.device == null) {
-            return CompletableFuture.failedFuture(new StoryTellerException("No device plugged"));
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
         }
 
         return LibUsbMassStorageHelper.executeOnDeviceHandle(this.device, (handle) -> {
@@ -367,7 +367,7 @@ public class RawStoryTellerAsyncDriver {
             return findFirstSuitableSector(handle, packSizeInSectors)
                     .thenCompose(startSector -> {
                         if (startSector.isEmpty()) {
-                            throw new StoryTellerException("Not enough free space on the device");
+                            throw new StoryTellerException(StoryTellerException.Reason.NOT_ENOUGH_SPACE, "Not enough free space on the device");
                         }
                         LOGGER.fine("Adding pack at start sector: " + startSector.get());
 
@@ -475,7 +475,7 @@ public class RawStoryTellerAsyncDriver {
 
     public CompletableFuture<Void> dump(String outputPath) {
         if (this.device == null) {
-            return CompletableFuture.failedFuture(new StoryTellerException("No device plugged"));
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.NO_DEVICE, "No device plugged"));
         }
 
         return LibUsbMassStorageHelper.executeOnDeviceHandle(this.device, (handle) -> {
