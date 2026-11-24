@@ -119,6 +119,24 @@ class ArchivePackReaderValidationTest {
         assertEquals(legacyTitle, read(zip(entries)).getEnriched().getTitle());
     }
 
+    // ---------------------------------------------------------------- entry names
+
+    @Test
+    @DisplayName("reads assets stored with Windows separators (assets\\x.png), as some tools re-zip them")
+    void readsBackslashSeparatedAssets() throws IOException {
+        byte[] image = {1, 2, 3, 4};
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put("assets\\", new byte[0]);
+        entries.put("story.json", story("a1", "\"11111111-1111-1111-1111-111111111111\"", 0, "x.png")
+                .getBytes(StandardCharsets.UTF_8));
+        entries.put("assets\\x.png", image);
+
+        StoryPack read = read(zip(entries));
+
+        assertArrayEquals(image, read.getStageNodes().get(0).getImage().getRawData());
+        assertEquals("x.png", read.getStageNodes().get(0).getImage().getName());
+    }
+
     // ---------------------------------------------------------------- references
 
     @Test

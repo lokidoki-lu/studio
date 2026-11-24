@@ -108,6 +108,20 @@ public class ArchiveStoryPackReader {
         }
     }
 
+    /**
+     * The entry name with every {@code \} turned into {@code /}. The zip format mandates forward
+     * slashes, but archives re-zipped on Windows by some tools store {@code assets\x.mp3}: the
+     * asset is there, and must not be reported missing because of the separator.
+     */
+    static String normalizeEntryName(String name) {
+        return name == null ? "" : name.replace('\\', '/');
+    }
+
+    /** A directory entry, including one whose name only ends with a Windows separator. */
+    private static boolean isDirectory(ZipArchiveEntry entry, String normalizedName) {
+        return entry.isDirectory() || normalizedName.endsWith("/");
+    }
+
     public StoryPackMetadata readMetadata(InputStream inputStream) throws IOException {
         // Zip archive contains a json file and separate assets
         ZipArchiveInputStream zis = new ZipArchiveInputStream(inputStream);
@@ -120,8 +134,10 @@ public class ArchiveStoryPackReader {
 
         ZipArchiveEntry entry;
         while((entry = zis.getNextEntry()) != null) {
+            String name = normalizeEntryName(entry.getName());
+            boolean directory = isDirectory(entry, name);
             // Story descriptor file: story.json
-            if (!entry.isDirectory() && entry.getName().equalsIgnoreCase("story.json")) {
+            if (!directory && name.equalsIgnoreCase("story.json")) {
                 hasStoryJsonEntry = true;
 
                 JsonObject root = parseJson(readEntry(zis, entry, budget));
@@ -144,11 +160,11 @@ public class ArchiveStoryPackReader {
                 metadata.setUuid(mainStageNode.get("uuid").getAsString());
             }
             // Pack thumbnail
-            else if (!entry.isDirectory() && entry.getName().equalsIgnoreCase("thumbnail.png")) {
+            else if (!directory && name.equalsIgnoreCase("thumbnail.png")) {
                 metadata.setThumbnail(readEntry(zis, entry, budget));
             }
             // Ignore asset files
-            else if (!entry.isDirectory() && entry.getName().startsWith("assets/")) {
+            else if (!directory && name.startsWith("assets/")) {
                 // no-op
             }
         }
@@ -186,8 +202,10 @@ public class ArchiveStoryPackReader {
 
         ZipArchiveEntry entry;
         while((entry = zis.getNextEntry()) != null) {
+            String name = normalizeEntryName(entry.getName());
+            boolean directory = isDirectory(entry, name);
             // Story descriptor file: story.json
-            if (!entry.isDirectory() && entry.getName().equalsIgnoreCase("story.json")) {
+            if (!directory && name.equalsIgnoreCase("story.json")) {
                 hasStoryJsonEntry = true;
                 JsonObject root = parseJson(readEntry(zis, entry, budget));
 
@@ -291,8 +309,14 @@ public class ArchiveStoryPackReader {
 
             }
             // Separate asset files
-            else if (!entry.isDirectory() && entry.getName().startsWith("assets/")) {
-                assets.put(entry.getName().substring("assets/".length()), readEntry(zis, entry, budget));
+            else if (!directory && name.startsWith("assets/")) {
+                String assetName = name.substring("assets/".length());
+                if (assets.containsKey(assetName)) {
+                    // Same name twice, possibly once with each separator. The last entry wins, as it
+                    // always did for exact duplicates; it is no longer silent.
+                    LOGGER.warning("Duplicate asset entry in archive, the last one is kept: " + entry.getName());
+                }
+                assets.put(assetName, readEntry(zis, entry, budget));
             }
         }
 

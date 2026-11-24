@@ -150,6 +150,27 @@ class BinaryPackReaderValidationTest {
     }
 
     @Test
+    @DisplayName("transitions disagreeing on an option count: the first one read is kept, like the FS reader")
+    void disagreeingOptionCountsKeepTheFirst() throws IOException {
+        // Options: first, second. Every transition (ok and home of both stage nodes) announces 2.
+        byte[] bytes = write(PackFixtures.packWithOptionOnFirstNode());
+        // Stage node 1 is at byte 512 * 2; its ok option count at +34, its home option count at +40.
+        ByteBuffer patched = ByteBuffer.wrap(bytes);
+        patched.putShort(2 * SECTOR + 34, (short) 3);   // larger: would read padding as an option
+        patched.putShort(2 * SECTOR + 40, (short) 1);   // smaller
+
+        StoryPack read = read(bytes);
+
+        assertEquals(2, read.getStageNodes().get(0).getOkTransition().getActionNode().getOptions().size(),
+                "the count of stage node 0's ok transition, read first, wins");
+        assertEquals(read.getStageNodes().get(1),
+                read.getStageNodes().get(1).getOkTransition().getActionNode().getOptions().get(1));
+        assertEquals(read.getStageNodes().get(0).getOkTransition().getActionNode(),
+                read.getStageNodes().get(1).getHomeTransition().getActionNode(),
+                "all four transitions still share one action node");
+    }
+
+    @Test
     @DisplayName("the writer refuses an option that is not a stage node of the pack")
     void writerRefusesForeignOption() {
         StoryPack pack = PackFixtures.twoStagePack();

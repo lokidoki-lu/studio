@@ -381,16 +381,10 @@ class FsDriverReviewFixesTest {
             AtomicInteger writes = new AtomicInteger();
             PackIndexWriter counting = (path, uuids) -> writes.incrementAndGet();
             FsStoryTellerAsyncDriver driver = DriverTestSupport.pluggedDriverMountedOn(partition, counting);
+            FsStoryTellerAsyncDriver.PartitionSession started = driver.currentPartition();
             DriverTestSupport.setField(driver, "partitionMountPoint", otherPartition.toString());
 
-            Method write = FsStoryTellerAsyncDriver.class.getDeclaredMethod("writePackIndex", String.class, List.class);
-            write.setAccessible(true);
-            CompletableFuture<?> result;
-            try {
-                result = (CompletableFuture<?>) write.invoke(driver, partition.toString(), List.of(PACK_A, PACK_B));
-            } catch (InvocationTargetException e) {
-                throw e.getCause();
-            }
+            CompletableFuture<?> result = invokeWritePackIndex(driver, started, List.of(PACK_A, PACK_B));
 
             CompletionException raised = assertThrows(CompletionException.class, result::join);
             assertEquals(StoryTellerException.Reason.NO_DEVICE, reasonOf(raised));
@@ -421,6 +415,140 @@ class FsDriverReviewFixesTest {
             assertTrue(Files.isDirectory(contentFolderFor(PACK_B)),
                     "nor on the original one, which is no longer known to be the device");
         }
+    }
+
+    /* ================================================================== pack without images */
+
+    @Test
+    @DisplayName("a pack without images (empty ri) and without .cleartext uploads instead of failing on the ri check")
+    void uploadWithEmptyRiAndNoCleartextMarker() throws Exception {
+        writeIndexFile(PACK_A);
+        Path pack = sourcePack();
+        Files.delete(pack.resolve(".cleartext"));
+        Files.write(pack.resolve("ri"), new byte[0]);
+        FsStoryTellerAsyncDriver driver = driver();
+
+        driver.uploadPack(PACK_B.toString(), pack.toString(), null).join();
+
+        assertEquals(List.of(PACK_A, PACK_B), readPackIndex(driver));
+        assertEquals(0L, Files.size(contentFolderFor(PACK_B).resolve("ri")));
+        assertFalse(Files.exists(pack.resolve(".cleartext")), "an empty ri is not taken for a cleartext one");
+    }
+
+    /* ================================================================== same path, other card */
+
+    /**
+     * Card A is unplugged and card B is mounted on the very same path while an operation started on
+     * A is still running. The mount point string is identical, so only the plug generation can tell
+     * the two apart.
+     */
+    @Nested
+    @DisplayName("an operation does not carry over to another card mounted on the same path")
+    class SamePathOtherCard {
+
+        /** Simulates unplugging the current card and plugging another one on the same path. */
+        private void replugOnSamePath(FsStoryTellerAsyncDriver driver) {
+            DriverTestSupport.setField(driver, "listeners", new ArrayList<>());
+            DriverTestSupport.setField(driver, "partitionLocator", new DevicePartitionLocator(
+                    () -> List.of(partition.toString()), path -> true, millis -> true, 0L, 1));
+            driver.handleDeviceUnplugged(null);
+            driver.handleDevicePlugged(DriverTestSupport.newInertDevice());
+            assertEquals(partition.toString(), driver.getPartitionMountPoint(), "B is on the same path as A");
+        }
+
+        @Test
+        @DisplayName("every plug and unplug moves the generation, even when the path is unchanged")
+        void generationMovesOnReplug() {
+            FsStoryTellerAsyncDriver driver = driver();
+            FsStoryTellerAsyncDriver.PartitionSession before = driver.currentPartition();
+
+            replugOnSamePath(driver);
+            FsStoryTellerAsyncDriver.PartitionSession after = driver.currentPartition();
+
+            assertEquals(before.mountPoint, after.mountPoint);
+            assertEquals(before.generation + 2, after.generation, "one for the unplug, one for the plug");
+        }
+
+        @Test
+        @DisplayName("the index is not written on card B with a session frozen on card A")
+        void indexWriteRefusedAfterReplugOnSamePath() throws Throwable {
+            writeIndexFile(PACK_A);
+            AtomicInteger writes = new AtomicInteger();
+            PackIndexWriter counting = (path, uuids) -> writes.incrementAndGet();
+            FsStoryTellerAsyncDriver driver = DriverTestSupport.pluggedDriverMountedOn(partition, counting);
+            FsStoryTellerAsyncDriver.PartitionSession onCardA = driver.currentPartition();
+
+            replugOnSamePath(driver);
+
+            CompletionException raised = assertThrows(CompletionException.class,
+                    () -> invokeWritePackIndex(driver, onCardA, List.of(PACK_A, PACK_B)).join());
+            assertEquals(StoryTellerException.Reason.NO_DEVICE, reasonOf(raised));
+            assertEquals(0, writes.get());
+            assertArrayEquals(indexBytesOf(PACK_A), indexBytes());
+        }
+
+        @Test
+        @DisplayName("a failed upload does not remove its folder name on card B")
+        void failedUploadCleanupSkippedAfterReplugOnSamePath() throws Exception {
+            writeIndexFile(PACK_A);
+            List<FsStoryTellerAsyncDriver> self = new ArrayList<>();
+            PackIndexWriter replugThenFail = (path, uuids) -> {
+                // Card A goes away during the upload and card B shows up on the same path, holding
+                // a folder of the same name that this upload did not create.
+                replugOnSamePath(self.get(0));
+                throw new IOException("card removed during the index write");
+            };
+            FsStoryTellerAsyncDriver driver = DriverTestSupport.pluggedDriverMountedOn(partition, replugThenFail);
+            self.add(driver);
+
+            assertThrows(CompletionException.class,
+                    () -> driver.uploadPack(PACK_B.toString(), sourcePack().toString(), null).join());
+
+            assertTrue(Files.isDirectory(contentFolderFor(PACK_B)),
+                    "the folder is left in place: on this card, it is not known to be ours");
+        }
+
+        @Test
+        @DisplayName("a delete does not remove a folder on card B after its index write on card A")
+        void deleteDoesNotRemoveOnReplugOnSamePath() throws Exception {
+            writeIndexFile(PACK_A, PACK_B);
+            Files.createDirectories(contentFolderFor(PACK_B));
+            List<FsStoryTellerAsyncDriver> self = new ArrayList<>();
+            PackIndexWriter replugAfterWrite = (path, uuids) -> {
+                new TemporaryFilePackIndexWriter().write(path, uuids);
+                replugOnSamePath(self.get(0));
+            };
+            FsStoryTellerAsyncDriver driver = DriverTestSupport.pluggedDriverMountedOn(partition, replugAfterWrite);
+            self.add(driver);
+
+            CompletionException raised = assertThrows(CompletionException.class,
+                    () -> driver.deletePack(PACK_B.toString()).join());
+
+            assertEquals(StoryTellerException.Reason.NO_DEVICE, reasonOf(raised));
+            assertTrue(Files.isDirectory(contentFolderFor(PACK_B)), "nothing is removed on card B");
+        }
+    }
+
+    private static CompletableFuture<?> invokeWritePackIndex(FsStoryTellerAsyncDriver driver,
+                                                             FsStoryTellerAsyncDriver.PartitionSession session,
+                                                             List<UUID> uuids) throws Throwable {
+        Method write = FsStoryTellerAsyncDriver.class.getDeclaredMethod("writePackIndex",
+                FsStoryTellerAsyncDriver.PartitionSession.class, List.class);
+        write.setAccessible(true);
+        try {
+            return (CompletableFuture<?>) write.invoke(driver, session, uuids);
+        } catch (InvocationTargetException e) {
+            throw e.getCause();
+        }
+    }
+
+    private static byte[] indexBytesOf(UUID... uuids) {
+        ByteBuffer buffer = ByteBuffer.allocate(uuids.length * 16);
+        for (UUID uuid : uuids) {
+            buffer.putLong(uuid.getMostSignificantBits());
+            buffer.putLong(uuid.getLeastSignificantBits());
+        }
+        return buffer.array();
     }
 
     /* ================================================================== 2: syncing */
@@ -471,6 +599,34 @@ class FsDriverReviewFixesTest {
                     path -> true, millis -> true, 0L, 10);
 
             assertEquals(Optional.of("E:\\"), locator.awaitPartition(() -> true));
+        }
+
+        @Test
+        @DisplayName("one volume listed under two names (symlink, path spelled twice) counts once")
+        void sameVolumeUnderTwoNamesIsOneCandidate() throws IOException {
+            Path alias = library.resolve("alias");
+            try {
+                Files.createSymbolicLink(alias, partition);
+            } catch (UnsupportedOperationException | IOException noSymlinks) {
+                org.junit.jupiter.api.Assumptions.assumeTrue(false, "symbolic links not available here");
+            }
+            String spelledTwice = partition.resolve(".").toString();
+            DevicePartitionLocator locator = new DevicePartitionLocator(
+                    () -> Arrays.asList(partition.toString(), alias.toString(), spelledTwice),
+                    path -> true, millis -> true, 0L, 1);
+
+            assertEquals(Optional.of(partition.toString()), locator.awaitPartition(() -> true),
+                    "the first name listed is kept");
+        }
+
+        @Test
+        @DisplayName("two distinct real volumes are still refused")
+        void twoRealVolumesStillRefused() {
+            DevicePartitionLocator locator = new DevicePartitionLocator(
+                    () -> Arrays.asList(partition.toString(), library.toString()),
+                    path -> true, millis -> true, 0L, 1);
+
+            assertEquals(Optional.empty(), locator.awaitPartition(() -> true));
         }
     }
 
