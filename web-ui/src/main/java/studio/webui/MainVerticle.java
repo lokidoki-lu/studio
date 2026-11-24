@@ -105,8 +105,22 @@ public class MainVerticle extends AbstractVerticle {
 
         Router router = Router.router(vertx);
 
-        // Handle cross-origin calls
-        router.route().handler(CorsHandler.create("http://localhost:.*")
+        // Refuse requests addressed to any other host name. The server only listens on the loopback,
+        // but a page from any web site can still reach it by DNS rebinding: its own domain made to
+        // resolve to 127.0.0.1 is "same origin" for the browser, and a GET carries no Origin header
+        // for the CORS check below to refuse. The Host header still names the attacker's domain.
+        router.route().handler(ctx -> {
+            if (isAllowedHost(ctx.request().host(), isDevMode())) {
+                ctx.next();
+            } else {
+                LOGGER.warn("Refusing a request addressed to an unexpected host: " + ctx.request().host());
+                ctx.response().setStatusCode(403).end();
+            }
+        });
+
+        // Handle cross-origin calls. Only the application's own origin, under either loopback name,
+        // is trusted; in dev mode any local port, for the `yarn start` server on :3000.
+        router.route().handler(CorsHandler.create(allowedOriginPattern(isDevMode()))
                 .allowedMethods(Set.of(
                         HttpMethod.GET,
                         HttpMethod.POST
@@ -144,7 +158,7 @@ public class MainVerticle extends AbstractVerticle {
         router.route().handler(StaticHandler.create().setCachingEnabled(false));
 
         // Error handler
-        ErrorHandler errorHandler = ErrorHandler.create(true);
+        ErrorHandler errorHandler = ErrorHandler.create(isDevMode());
         router.route().failureHandler(ctx -> {
             Throwable failure = ctx.failure();
             LOGGER.error("Exception thrown", failure);
@@ -184,9 +198,22 @@ public class MainVerticle extends AbstractVerticle {
         Router router = Router.router(vertx);
 
         // Handle JSON
-        router.route().handler(BodyHandler.create());
-        router.route().consumes("application/json");
-        router.route().produces("application/json");
+        // Bounded bodies, and uploads written under STUdio's own folder and removed once the request
+        // ends (an accepted upload has been moved into the library by then). The defaults are no
+        // limit, a folder relative to the working directory, and files kept for ever.
+        router.route().handler(BodyHandler.create()
+                .setBodyLimit(MAX_BODY_BYTES)
+                .setUploadsDirectory(uploadsDirectory())
+                .setDeleteUploadedFilesOnEnd(true));
+        // A POST must say it carries JSON (or, for an upload, a form). A cross-origin request with
+        // such a type cannot be sent without a CORS preflight, which the handler above refuses.
+        router.post().handler(ctx -> {
+            if (isAcceptedPostContentType(ctx.request().getHeader("Content-Type"), ctx.normalisedPath())) {
+                ctx.next();
+            } else {
+                ctx.response().setStatusCode(415).end();
+            }
+        });
 
 
         // Device services
@@ -199,6 +226,45 @@ public class MainVerticle extends AbstractVerticle {
         router.mountSubRouter("/evergreen", EvergreenController.apiRouter(vertx, evergreenService));
 
         return router;
+    }
+
+    /** Largest request body accepted, an uploaded pack included. */
+    static final long MAX_BODY_BYTES = Long.getLong("studio.maxUploadBytes", 4L * 1024 * 1024 * 1024);
+
+    private static String uploadsDirectory() {
+        return System.getProperty("user.home") + "/.studio/tmp/file-uploads";
+    }
+
+    static boolean isAllowedHost(String host, boolean devMode) {
+        if (host == null) {
+            return false;
+        }
+        String h = host.toLowerCase(java.util.Locale.ROOT);
+        // Without a port only a non-browser client sends it: a browser always names the port it
+        // connected to unless it is 80, and this server is not on 80.
+        if (h.equals("localhost") || h.equals("127.0.0.1")
+                || h.equals("localhost:" + LISTEN_PORT) || h.equals("127.0.0.1:" + LISTEN_PORT)) {
+            return true;
+        }
+        // The CRA dev server proxies /api with its own Host.
+        return devMode && h.matches("(localhost|127\\.0\\.0\\.1)(:\\d+)?");
+    }
+
+    static String allowedOriginPattern(boolean devMode) {
+        return devMode
+                ? "http://(localhost|127\\.0\\.0\\.1):\\d+"
+                : "http://(localhost|127\\.0\\.0\\.1):" + LISTEN_PORT;
+    }
+
+    static boolean isAcceptedPostContentType(String contentType, String path) {
+        if (contentType == null) {
+            return false;
+        }
+        String ct = contentType.toLowerCase(java.util.Locale.ROOT).trim();
+        if (ct.startsWith("application/json")) {
+            return true;
+        }
+        return ct.startsWith("multipart/form-data") && path != null && path.endsWith("/library/upload");
     }
 
     private boolean isDevMode() {
