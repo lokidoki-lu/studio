@@ -30,4 +30,13 @@ public interface IStoryTellerService {
     CompletableFuture<Optional<String>> extractPack(String uuid, File destFile);
 
     CompletableFuture<Void> dump(String outputPath);
+
+    /** The state of recent transfers, readable over HTTP. */
+    TransferRegistry transfers();
+
+    /** Names of the pack content folders on the device that the pack index does not reference. */
+    CompletableFuture<JsonArray> orphanFolders();
+
+    /** Removes the named unreferenced pack content folders, and reports what happened to each. */
+    CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames);
 }
