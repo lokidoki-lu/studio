@@ -47,7 +47,7 @@
     background-color: var(--ui-surface);
 }
 
-.header h4 {
+.header > h4 {
     flex-basis: 100%;
     margin: 0 0 4px;
     font-size: 12px;
@@ -56,7 +56,7 @@
     color: var(--ui-text-muted);
 }
 
-.header strong {
+.header > div > strong {
     font-weight: 600;
     color: var(--ui-text);
 }
@@ -73,13 +73,13 @@
     line-height: 1.7;
 }
 
-.pack-library .plugged-device .header h4 {
+.pack-library .plugged-device .header > h4 {
     display: flex;
     align-items: center;
     gap: 8px;
 }
 
-.pack-library .plugged-device .header h4::before {
+.pack-library .plugged-device .header > h4::before {
     content: "";
     width: 8px;
     height: 8px;
@@ -89,7 +89,7 @@
 }
 
 /* Library header: path and count on one line, the import button pushed to the right. */
-.pack-library .local-library .header > div:not(.editor-actions):not(.format-legend):not(.library-search) {
+.pack-library .local-library .header > div:not([class]) {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

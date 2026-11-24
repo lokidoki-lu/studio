@@ -68,10 +68,12 @@ code {
 
 /*
  * Generic buttons. Use `ui-btn` (optionally with `ui-btn-primary`, `ui-btn-danger` or `ui-btn-icon`)
- * for any new button. Bootstrap `.btn` buttons placed in the library headers get the same look.
+ * for any new button. Bootstrap `.btn` buttons placed in the library headers or in dialog footers get
+ * the same look.
  */
 .ui-btn,
-.pack-library .header .btn {
+.pack-library .header .btn,
+.modal-footer .btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -94,7 +96,8 @@ code {
     padding: 8px 10px;
 }
 .ui-btn:hover, .ui-btn:focus,
-.pack-library .header .btn:hover, .pack-library .header .btn:focus {
+.pack-library .header .btn:hover, .pack-library .header .btn:focus,
+.modal-footer .btn:hover, .modal-footer .btn:focus {
     border-color: var(--ui-accent);
     color: var(--ui-accent);
     background-color: var(--ui-surface);
@@ -124,4 +127,34 @@ code {
     opacity: .5;
     pointer-events: none;
     box-shadow: none;
+}
+
+/*
+ * Dialogs follow the theme. Some are rendered inside the library header, so their text must not
+ * inherit the header's muted colour and small size.
+ */
+.modal-content {
+    background-color: var(--ui-surface);
+    color: var(--ui-text);
+    font-size: 14px;
+    text-align: left;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .25);
+}
+.modal-header,
+.modal-footer,
+.modal-body .table > thead > tr > th,
+.modal-body .table > tbody > tr > td {
+    border-color: var(--ui-border);
+}
+.modal-title {
+    font-weight: 600;
+}
+.modal-content .close {
+    color: var(--ui-text);
+    text-shadow: none;
+}
+.modal-body table td {
+    overflow-wrap: anywhere;
 }
