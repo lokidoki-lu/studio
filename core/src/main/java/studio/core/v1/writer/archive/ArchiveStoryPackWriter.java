@@ -19,6 +19,7 @@ import studio.core.v1.model.enriched.EnrichedNodeType;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -39,7 +40,7 @@ public class ArchiveStoryPackWriter {
         zos.putNextEntry(zipEntry);
 
         // Start json document
-        JsonWriter writer = new JsonWriter(new OutputStreamWriter(zos));
+        JsonWriter writer = new JsonWriter(new OutputStreamWriter(zos, StandardCharsets.UTF_8));
         writer.setIndent("    ");
         writer.beginObject();
 

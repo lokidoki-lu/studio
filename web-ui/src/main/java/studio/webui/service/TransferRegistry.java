@@ -113,10 +113,10 @@ public class TransferRegistry {
      * Records progress. Progress callbacks may arrive out of order, so a report never moves the
      * counter backwards, and a finished transfer is left as it is.
      */
-    public synchronized void progress(String id, long transferred, long total) {
+    public synchronized boolean progress(String id, long transferred, long total) {
         Transfer t = transfers.get(id);
         if (t == null || t.state == State.SUCCEEDED || t.state == State.FAILED) {
-            return;
+            return false;
         }
         if (t.state == State.QUEUED) {
             t.state = State.RUNNING;
@@ -126,22 +126,29 @@ public class TransferRegistry {
             t.total = total;
         }
         t.transferred = Math.max(t.transferred, transferred);
+        return true;
     }
 
-    public synchronized void succeeded(String id) {
+    /** Marks a transfer succeeded; false if it was unknown or had already ended. */
+    public synchronized boolean succeeded(String id) {
         Transfer t = transfers.get(id);
+        boolean changed = false;
         if (t != null && t.state != State.FAILED && t.state != State.SUCCEEDED) {
             t.state = State.SUCCEEDED;
             t.endedAt = System.currentTimeMillis();
             if (t.total > 0) {
                 t.transferred = t.total;
             }
+            changed = true;
         }
         prune();
+        return changed;
     }
 
-    public synchronized void failed(String id, Throwable cause) {
+    /** Marks a transfer failed; false if it was unknown or had already ended. */
+    public synchronized boolean failed(String id, Throwable cause) {
         Transfer t = transfers.get(id);
+        boolean changed = false;
         if (t != null && t.state != State.FAILED && t.state != State.SUCCEEDED) {
             t.state = State.FAILED;
             t.endedAt = System.currentTimeMillis();
@@ -149,8 +156,19 @@ public class TransferRegistry {
             t.reason = reason.name();
             t.error = ApiErrors.codeOf(reason);
             t.message = messageOf(cause);
+            changed = true;
         }
         prune();
+        return changed;
+    }
+
+    /** Ids of the transfers still queued or running. */
+    public synchronized java.util.List<String> unfinished() {
+        java.util.List<String> ids = new java.util.ArrayList<>();
+        transfers.values().stream()
+                .filter(t -> t.state == State.QUEUED || t.state == State.RUNNING)
+                .forEach(t -> ids.add(t.id));
+        return ids;
     }
 
     public synchronized Optional<JsonObject> get(String id) {

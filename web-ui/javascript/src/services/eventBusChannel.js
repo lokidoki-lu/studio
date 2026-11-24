@@ -48,7 +48,21 @@ export function createEventBusChannel(url, options = {}) {
 
     // address -> Set of callbacks the application wants registered whenever the socket is open.
     const desired = new Map();
+    // Extra state listeners, for code that must act on a reconnection (e.g. re-reading a transfer
+    // whose verdict may have been published while the socket was down).
+    const stateListeners = new Set();
     let state = CHANNEL_CONNECTING;
+
+    function notifyState(newState) {
+        onStateChange(newState);
+        stateListeners.forEach(listener => {
+            try {
+                listener(newState);
+            } catch (e) {
+                console.warn('channel state listener failed', e);
+            }
+        });
+    }
 
     const bus = new EventBus(url, {
         vertxbus_reconnect_attempts_max: maxReconnectAttempts,
@@ -63,7 +77,7 @@ export function createEventBusChannel(url, options = {}) {
         state = CHANNEL_OPEN;
         console.log('event bus channel open');
         replayDesiredSubscriptions();
-        onStateChange(CHANNEL_OPEN);
+        notifyState(CHANNEL_OPEN);
     };
 
     bus.onclose = () => {
@@ -72,7 +86,7 @@ export function createEventBusChannel(url, options = {}) {
         if (wasOpen) {
             console.warn('event bus channel closed; transfers in progress are unaffected');
         }
-        onStateChange(CHANNEL_CLOSED);
+        notifyState(CHANNEL_CLOSED);
     };
 
     bus.enableReconnect(true);
@@ -147,12 +161,20 @@ export function createEventBusChannel(url, options = {}) {
         }
         state = CHANNEL_CLOSED;
         desired.clear();
+        stateListeners.clear();
+    }
+
+    /** Calls listener(state) on every open and close. Returns a function that removes it. */
+    function addStateListener(listener) {
+        stateListeners.add(listener);
+        return () => stateListeners.delete(listener);
     }
 
     return {
         subscribe,
         unsubscribe,
         close,
+        addStateListener,
         getState: () => state,
         isOpen: () => state === CHANNEL_OPEN,
         /** Exposed for diagnostics only; application code should not touch the raw client. */

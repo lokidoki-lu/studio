@@ -3,6 +3,22 @@
 This fork (studio-lunii) makes the local API usable by a program, not only by the web UI. Every
 route below is under `http://localhost:8080/api/device`. Bodies are JSON.
 
+## Requests the server accepts
+
+- The `Host` header must be `localhost` or `127.0.0.1` (port 8080 or none); anything else is a 403.
+  This blocks DNS rebinding from a web page.
+- A browser request carrying an `Origin` is accepted only from `http://localhost:8080` or
+  `http://127.0.0.1:8080` (any local port with `-Denv=dev`).
+- Every `POST` must send `Content-Type: application/json` (`multipart/form-data` for
+  `/api/library/upload` only), otherwise 415.
+- JSON bodies are limited to 1 MiB, uploads to 4 GiB (`-Dstudio.maxUploadBytes`).
+- To run `yarn start` (UI on :3000) against a real device, start STUdio with
+  `-Dstudio.devOrigin=http://localhost:3000` so the event bus accepts that origin.
+- Pack UUIDs must be written in full canonical form (`8-4-4-4-12` hex digits), otherwise 400: a
+  shortened form names a different pack folder than the pack it parses to.
+- `path` in `addFromLibrary` must be a direct entry of the library (no `..`, no sub-folder, no
+  absolute path), otherwise 400.
+
 ## Errors
 
 A refused request answers with a status that says what kind of problem it is, and this body:
@@ -19,7 +35,7 @@ A refused request answers with a status that says what kind of problem it is, an
 | 409 | `PACK_ALREADY_ON_DEVICE` | remove it first, or skip it |
 | 409 | `CONTENT_FOLDER_EXISTS` | a residual folder blocks the upload; see *Orphan folders* |
 | 409 | `FOLDER_STILL_REFERENCED` | the folder belongs to an indexed pack and was not removed |
-| 503 | `NO_DEVICE` | no device plugged |
+| 503 | `NO_DEVICE` | no device plugged, or a device operation stopped answering (see below) |
 | 507 | `NOT_ENOUGH_SPACE` | not enough free space on the device |
 | 500 | `INTERNAL_ERROR` | anything else; `message` says what |
 
@@ -48,7 +64,20 @@ sent back to back without corrupting the pack index.
 last 200 finished transfers are kept; `GET /transfers` lists them all, oldest first. An unknown id
 answers 404 `TRANSFER_NOT_FOUND`.
 
-The web UI keeps using the event bus: `storyteller.transfer.<id>.done` now also carries `error`
+An operation that does not end within 30 minutes of starting (time spent waiting its turn does
+not count) (`-Dstudio.device.operationTimeoutMinutes`) is
+failed with `NO_DEVICE`, and the next ones are refused at once with 503 until it settles or the
+device is unplugged: a frozen card can no longer hold the queue until STUdio is restarted.
+Unplugging the device fails every transfer still queued or running.
+
+`POST /addToLibrary` answers 409 `CONTENT_FOLDER_EXISTS` when the pack is already in the library.
+A 1.x extraction is written to a hidden `.part-…` file and renamed once complete; a failed one
+leaves nothing behind.
+
+`POST /dump` (1.x only) ignores any `outputPath` and writes into a new folder under STUdio's
+temporary directory, returned as `{"success": true, "path": "…"}`; 503 without a 1.x device.
+
+The web UI keeps using the event bus (events are now published to every connected tab): `storyteller.transfer.<id>.done` now also carries `error`
 and `message` on failure.
 
 ## Orphan folders

@@ -38,9 +38,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>The cases are marked as they are found. Where the format keeps something faithfully that is a
  * <strong>specification</strong> and stays that way. Where it does not, the case is
  * <strong>characterization</strong>: it records what the code does today, including where that is
- * arguably wrong, so that changing it is a decision someone makes rather than an accident. Four are
+ * arguably wrong, so that changing it is a decision someone makes rather than an accident. Three are
  * below, and they are not all of the same weight: two are consequences of a sector-based format that
- * the model does not express, one substitutes a pack's identity, and one silently loses data. A
+ * the model does not express, and one substitutes a pack's identity. A
  * {@code KNOWN GAP} case passing says the behaviour is known, not that it is acceptable.
  */
 @DisplayName("A raw binary pack, written and read back")
@@ -124,6 +124,45 @@ class BinaryPackRoundTripTest {
     }
 
     @Nested
+    @DisplayName("keeps an option pointing at the first stage node")
+    class OptionOnFirstNode {
+
+        // Options are stored as sector addresses, and the first stage node sits at sector 0. The
+        // reader used to stop at the first zero, which silently dropped that option and every one
+        // after it. The stage nodes' transitions carry the exact option count, which is what the
+        // reader now uses.
+
+        @Test
+        @DisplayName("in the plain format")
+        void plain() throws IOException {
+            assertOptionsSurvive(false);
+        }
+
+        @Test
+        @DisplayName("in the enriched format")
+        void enriched() throws IOException {
+            assertOptionsSurvive(true);
+        }
+
+        private void assertOptionsSurvive(boolean enriched) throws IOException {
+            StoryPack original = PackFixtures.packWithOptionOnFirstNode();
+
+            StoryPack read = roundTrip(original, enriched);
+
+            StageNode first = read.getStageNodes().get(0);
+            StageNode second = read.getStageNodes().get(1);
+            assertEquals(2, first.getOkTransition().getActionNode().getOptions().size(),
+                    "both options are read back");
+            assertSame(first, first.getOkTransition().getActionNode().getOptions().get(0),
+                    "option 0 is the first stage node");
+            assertSame(second, first.getOkTransition().getActionNode().getOptions().get(1),
+                    "option 1 is the second stage node");
+            assertSame(second.getOkTransition().getActionNode(), first.getOkTransition().getActionNode(),
+                    "still one shared action node");
+        }
+    }
+
+    @Nested
     @DisplayName("does not keep — KNOWN GAP")
     class DoesNotKeep {
 
@@ -147,29 +186,6 @@ class BinaryPackRoundTripTest {
                     "the first stage node's uuid, not the pack's");
             assertNotEquals(PackFixtures.UUID, read.getUuid(),
                     "the pack's own uuid is not what comes back");
-        }
-
-        @Test
-        @DisplayName("KNOWN GAP: an option pointing at the first stage node, which ends the list")
-        void optionOnTheFirstNodeTruncatesTheList() throws IOException {
-            StoryPack original = PackFixtures.packWithOptionOnFirstNode();
-            assertEquals(2, original.getStageNodes().get(0).getOkTransition()
-                    .getActionNode().getOptions().size(), "the fixture offers two options");
-
-            StoryPack read = roundTrip(original, false);
-
-            // Options are stored as sector addresses and the list ends at the first zero. Stage
-            // nodes are laid out from sector 0, so the first one has address 0 and is
-            // indistinguishable from the terminator. An action node that offers it loses that
-            // option *and every option after it* -- here, both of them.
-            //
-            // "Back to the beginning" is an ordinary thing for a menu to offer, so this is reachable
-            // from a pack someone would actually build. Fixing it means changing either the
-            // terminator or the layout, which is a format decision rather than a reader fix, and is
-            // why this is recorded rather than corrected here.
-            assertEquals(0, read.getStageNodes().get(0).getOkTransition()
-                            .getActionNode().getOptions().size(),
-                    "the whole option list is lost, not just the offending entry");
         }
 
         @Test

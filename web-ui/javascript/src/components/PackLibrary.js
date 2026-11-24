@@ -124,7 +124,10 @@ class PackLibrary extends React.Component {
                 // Pack is converted and stored in the local library, then transferred to the device
                 this.props.convertPackInLibrary(source.uuid, source.path, driverFormat, this.props.settings.allowEnriched, this.context)
                     .then(path => {
-                        this.doAddToDevice({...source, format: driverFormat}, path);
+                        // A failed conversion has already been reported, and yields no path
+                        if (path) {
+                            this.doAddToDevice({...source, format: driverFormat}, path);
+                        }
                     });
             }
             return;
@@ -169,56 +172,56 @@ class PackLibrary extends React.Component {
 
     dismissEnrichedDialog = (allow) => {
         return () => {
+            const data = this.state.allowEnrichedDialog.data;
+            if (!data) {
+                // Already dismissed (double click): the conversion is under way
+                return;
+            }
+            // Close the dialog first, so a second click cannot start a second conversion
+            this.setState({
+                allowEnrichedDialog: {
+                    show: false,
+                    data: null
+                }
+            });
             this.props.setAllowEnriched(allow);
             // Pack is converted and stored in the local library, then transferred to the device
-            this.props.convertPackInLibrary(this.state.allowEnrichedDialog.data.pack.uuid, this.state.allowEnrichedDialog.data.pack.path, this.state.allowEnrichedDialog.data.format, allow, this.context)
+            this.props.convertPackInLibrary(data.pack.uuid, data.pack.path, data.format, allow, this.context)
                 .then(path => {
-                    if (this.state.allowEnrichedDialog.data.addToDevice) {
-                        return this.doAddToDevice(this.state.allowEnrichedDialog.data.pack, path);
+                    // A failed conversion has already been reported, and yields no path
+                    if (path && data.addToDevice) {
+                        this.doAddToDevice(data.pack, path);
                     }
-                })
-                .then(() => {
-                    this.setState({
-                        allowEnrichedDialog: {
-                            show: false,
-                            data: null
-                        }
-                    });
                 });
         }
     };
 
     dismissConfirmConversionDialog = (answer) => {
         return () => {
+            const data = this.state.confirmConversionDialog.data;
+            // Close the dialog first, so a second click cannot start a second operation
+            this.setState({
+                confirmConversionDialog: {
+                    show: false,
+                    data: null
+                }
+            });
+            if (!data) {
+                // Already dismissed (double click)
+                return;
+            }
             if (answer === 'convert') {
                 // Pack is converted and stored in the local library, then transferred to the device
-                this.props.convertPackInLibrary(this.state.confirmConversionDialog.data.pack.uuid, this.state.confirmConversionDialog.data.pack.path, this.state.confirmConversionDialog.data.format, this.props.settings.allowEnriched, this.context)
-                    .then(path => this.doAddToDevice(this.state.confirmConversionDialog.data.pack, path))
-                    .then(() => {
-                        this.setState({
-                            confirmConversionDialog: {
-                                show: false,
-                                data: null
-                            }
-                        });
+                this.props.convertPackInLibrary(data.pack.uuid, data.pack.path, data.format, this.props.settings.allowEnriched, this.context)
+                    .then(path => {
+                        // A failed conversion has already been reported, and yields no path
+                        if (path) {
+                            this.doAddToDevice(data.pack, path);
+                        }
                     });
             } else if (answer === 'transfer') {
                 // The user decides the existing pack is the one they want. STUdio cannot tell.
-                const cached = this.state.confirmConversionDialog.data.cached;
-                this.doAddToDevice(cached, cached.path);
-                this.setState({
-                    confirmConversionDialog: {
-                        show: false,
-                        data: null
-                    }
-                });
-            } else {
-                this.setState({
-                    confirmConversionDialog: {
-                        show: false,
-                        data: null
-                    }
-                });
+                this.doAddToDevice(data.cached, data.cached.path);
             }
         }
     };
@@ -329,8 +332,11 @@ class PackLibrary extends React.Component {
             // First, download pack file from library
             this.props.downloadPackFromLibrary(pack.uuid, pack.path)
                 .then(packFile => {
-                    // Next, load pack into editor
-                    this.props.loadPackInEditor(packFile, pack.path);
+                    // A failed download has already been reported, and yields no file
+                    if (packFile) {
+                        // Next, load pack into editor
+                        this.props.loadPackInEditor(packFile, pack.path);
+                    }
                 });
         }
     };
@@ -477,7 +483,8 @@ class PackLibrary extends React.Component {
                                      onDragEnter={event => {
                                          let data = this.state.reordering;
                                          if (data && data.uuid !== pack.uuid) {
-                                             let reordered = this.state.device.packs;
+                                             // A copy: this.state.device.packs is the Redux store's own array
+                                             let reordered = [...this.state.device.packs];
                                              let draggedIndex = reordered.findIndex(p => p.uuid === data.uuid);
                                              if (draggedIndex < idx) {
                                                  // Going down, place dragged item right after the dragged-over pack

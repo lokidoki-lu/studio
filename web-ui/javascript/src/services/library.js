@@ -4,7 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-import {handleJsonOrError} from "../utils/fetch";
+import {handleJsonOrError, errorMessage, errorCode} from "../utils/fetch";
 
 export const fetchLibraryInfos = () => {
     return fetch('/api/library/infos')
@@ -31,8 +31,36 @@ export const uploadToLibrary = async (uuid, path, packData, progressHandler) => 
             xhr.upload.onprogress = progressHandler;
         }
         xhr.onload = () => {
-            console.log('xhr upload complete: ' + JSON.parse(xhr.responseText));
-            resolve(JSON.parse(xhr.responseText));
+            let body;
+            try {
+                body = JSON.parse(xhr.responseText);
+            } catch (e) {
+                body = undefined;
+            }
+            if (xhr.status < 200 || xhr.status >= 300) {
+                // Same shape as handleJsonOrError, so the toast shows the backend's explanation.
+                const text = xhr.responseText || '';
+                const error = new Error((xhr.statusText || ('HTTP ' + xhr.status)) + ': ' + errorMessage(text));
+                error.status = xhr.status;
+                const code = errorCode(text);
+                if (code) {
+                    error.code = code;
+                }
+                reject(error);
+                return;
+            }
+            if (body === undefined) {
+                reject(new Error('Invalid response from the library upload: ' + xhr.responseText));
+                return;
+            }
+            console.log('xhr upload complete: %o', body);
+            resolve(body);
+        };
+        xhr.onerror = () => {
+            reject(new Error('Network error while uploading the pack to the library'));
+        };
+        xhr.onabort = () => {
+            reject(new Error('Upload to the library was aborted'));
         };
         xhr.open('post', '/api/library/upload', true);
         let formData = new FormData();

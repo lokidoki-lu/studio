@@ -338,3 +338,19 @@ describe('eventBusChannel', () => {
         expect(channel.getState()).toBe(CHANNEL_CLOSED);
     });
 });
+
+describe('channel state listeners', () => {
+    it('tells extra listeners about every open and close, until removed', () => {
+        const channel = createEventBusChannel(URL);
+        const states = [];
+        const remove = channel.addStateListener(state => states.push(state));
+
+        lastSocket().serverOpen();
+        lastSocket().serverClose();
+        remove();
+        jest.advanceTimersByTime(30000);
+        lastSocket().serverOpen();
+
+        expect(states).toEqual([CHANNEL_OPEN, CHANNEL_CLOSED]);
+    });
+});

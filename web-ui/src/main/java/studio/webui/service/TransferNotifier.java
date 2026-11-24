@@ -41,18 +41,33 @@ public class TransferNotifier {
     }
 
     public void progress(String transferId, long transferred, long total) {
-        registry.progress(transferId, transferred, total);
+        if (!registry.progress(transferId, transferred, total)) {
+            // Progress callbacks run asynchronously and may arrive after the verdict.
+            return;
+        }
         double p = total > 0 ? (double) transferred / (double) total : 0.0;
         send("storyteller.transfer." + transferId + ".progress", new JsonObject().put("progress", p));
     }
 
     public void succeeded(String transferId) {
-        registry.succeeded(transferId);
+        if (!registry.succeeded(transferId)) {
+            return;
+        }
         send("storyteller.transfer." + transferId + ".done", new JsonObject().put("success", true));
     }
 
+    /** Fails every transfer not yet finished, as when the device is unplugged. */
+    public void failAllUnfinished(Throwable cause) {
+        for (String id : registry.unfinished()) {
+            failed(id, cause);
+        }
+    }
+
     public void failed(String transferId, Throwable cause) {
-        registry.failed(transferId, cause);
+        // Reported once: the queue giving up and the operation's own failure may both arrive.
+        if (!registry.failed(transferId, cause)) {
+            return;
+        }
         JsonObject body = ApiErrors.body(cause);
         send("storyteller.transfer." + transferId + ".done", new JsonObject()
                 .put("success", false)
@@ -78,7 +93,7 @@ public class TransferNotifier {
 
     private void send(String address, JsonObject body) {
         if (eventBus != null) {
-            eventBus.send(address, body);
+            eventBus.publish(address, body);
         }
     }
 }

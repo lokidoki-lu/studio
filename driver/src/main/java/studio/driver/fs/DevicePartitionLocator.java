@@ -7,7 +7,14 @@
 package studio.driver.fs;
 
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
@@ -128,15 +135,53 @@ public class DevicePartitionLocator {
             return Optional.empty();
         }
 
+        // Keyed by volume identity, so that one volume listed under several names (a symlink, a
+        // bind mount, the same path spelled twice) counts once. The first name listed is kept.
+        Map<Object, String> byVolume = new LinkedHashMap<>();
         for (String mountPoint : mountPoints) {
             try {
                 if (partitionMarkerPresent.test(mountPoint)) {
-                    return Optional.of(mountPoint);
+                    byVolume.putIfAbsent(volumeIdentity(mountPoint), mountPoint);
                 }
             } catch (Exception e) {
                 LOGGER.log(Level.FINE, "Failed to probe mount point " + mountPoint, e);
             }
         }
-        return Optional.empty();
+        List<String> candidates = new ArrayList<>(byVolume.values());
+        if (candidates.size() > 1) {
+            // Two story tellers plugged at once, a card reader holding a copy of a device's
+            // partition, the same volume mounted twice... Nothing here can tell which one is the
+            // device that was just plugged, and picking the first in listing order would aim every
+            // later write — the pack index included — at whichever volume the OS happened to list
+            // first. Refuse instead; the search goes on, so removing the extra volume resolves it.
+            LOGGER.warning("Several mounted volumes look like a story teller partition " + candidates
+                    + "; refusing to choose one. Unplug or unmount all but one of them.");
+            return Optional.empty();
+        }
+        return candidates.isEmpty() ? Optional.empty() : Optional.of(candidates.get(0));
+    }
+
+    /**
+     * What tells two mount points apart: the file key of the root (device and inode on Unix) when
+     * the platform has one, else its canonical path ({@code toRealPath}, which resolves symlinks and
+     * normalises the spelling), else the name as listed. Windows reports no file key, so there two
+     * drive letters stay two candidates — the ambiguity is still refused, never guessed.
+     */
+    static Object volumeIdentity(String mountPoint) {
+        try {
+            Path real = Paths.get(mountPoint).toRealPath();
+            try {
+                Object fileKey = Files.readAttributes(real, BasicFileAttributes.class).fileKey();
+                if (fileKey != null) {
+                    return fileKey;
+                }
+            } catch (Exception noAttributes) {
+                LOGGER.log(Level.FINEST, "No file key for " + real, noAttributes);
+            }
+            return real.toString();
+        } catch (Exception unresolvable) {
+            LOGGER.log(Level.FINEST, "Could not resolve mount point " + mountPoint, unresolvable);
+            return mountPoint;
+        }
     }
 }

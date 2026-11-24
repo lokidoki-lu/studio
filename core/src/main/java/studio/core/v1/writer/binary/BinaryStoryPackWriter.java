@@ -46,6 +46,8 @@ public class BinaryStoryPackWriter {
         TreeMap<SectorAddr, ActionNode> actionNodesMap = new TreeMap<>();
         int nextFreeOffset = pack.getStageNodes().size();
         for (StageNode stageNode : pack.getStageNodes()) {
+            requireActionNode(stageNode.getOkTransition());
+            requireActionNode(stageNode.getHomeTransition());
             if (stageNode.getOkTransition() != null && !actionNodesMap.containsValue(stageNode.getOkTransition().getActionNode())) {
                 actionNodesMap.put(new SectorAddr(nextFreeOffset++), stageNode.getOkTransition().getActionNode());
             }
@@ -186,6 +188,9 @@ public class BinaryStoryPackWriter {
             ActionNode actionNode = actionNodeEntry.getValue();
             for (StageNode stageNode : actionNode.getOptions()) {
                 int stageNodeOffset = pack.getStageNodes().indexOf(stageNode);
+                if (stageNodeOffset == -1) {
+                    throw new IllegalArgumentException("Cannot write binary pack file: an action node option is not a stage node of this pack.");
+                }
                 dos.writeShort(stageNodeOffset);
             }
 
@@ -232,6 +237,12 @@ public class BinaryStoryPackWriter {
 
         // Write check bytes
         dos.write(Constants.CHECK_BYTES, 0, Constants.CHECK_BYTES.length);
+    }
+
+    private static void requireActionNode(Transition transition) {
+        if (transition != null && (transition.getActionNode() == null || transition.getActionNode().getOptions() == null)) {
+            throw new IllegalArgumentException("Cannot write binary pack file: a transition has no action node.");
+        }
     }
 
     private int writeEnrichedNodeMetadata(DataOutputStream dos, Node node) throws IOException {
