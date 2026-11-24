@@ -8,13 +8,18 @@
     margin-left: 4px;
 }
 
+/* The page does not scroll under a dialog: the dialog does, so the confirm button stays reachable */
+.library-purge-modal {
+    overflow-y: auto;
+}
+
 .library-purge-modal .modal-dialog {
     width: auto;
     max-width: 900px;
 }
 
 .library-purge-warning {
-    color: #a94442;
+    color: var(--ui-danger, #a94442);
 }
 
 .library-purge-list {

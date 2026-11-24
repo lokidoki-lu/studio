@@ -196,8 +196,11 @@ export function askTitleText(promptLabel, title) {
 
 // -- every missing title voice of a pack
 
-/** Names the editor gives new nodes: not titles anyone wants spoken. */
-const PLACEHOLDER_NAME = /^(Stage title|Cover title|Menu title|Option #\d+)$/;
+/**
+ * Names the editor gives new nodes, from the models (`… title`) and from the tray (`… node`): not
+ * titles anyone wants spoken.
+ */
+const PLACEHOLDER_NAME = /^((Stage|Cover|Menu) (title|node)|Option #\d+)$/;
 
 function isRealTitle(name) {
     return typeof name === 'string' && name.trim().length > 0 && !PLACEHOLDER_NAME.test(name.trim());
@@ -206,7 +209,8 @@ function isRealTitle(name) {
 /**
  * The titles of the diagram that have no audio: cover and stage nodes, menu questions and menu
  * options. Story nodes are left out, their audio being the story itself, and so are nodes still
- * carrying the editor's placeholder name. Each entry is {text, apply(dataUrl)}.
+ * carrying the editor's placeholder name. Each entry is {text, isMissing(), apply(dataUrl)}:
+ * isMissing() tells, when its turn comes, whether the title still has no audio.
  */
 export function collectMissingTitleAudio(nodes) {
     const missing = [];
@@ -214,15 +218,18 @@ export function collectMissingTitleAudio(nodes) {
         const type = typeof node.getType === 'function' ? node.getType() : undefined;
         if (type === 'cover' || type === 'stage') {
             if (!node.getAudio() && isRealTitle(node.getName())) {
-                missing.push({text: node.getName().trim(), apply: (dataUrl) => node.setAudio(dataUrl)});
+                missing.push({text: node.getName().trim(), isMissing: () => !node.getAudio(),
+                    apply: (dataUrl) => node.setAudio(dataUrl)});
             }
         } else if (type === 'menu') {
             if (!node.getQuestionAudio() && isRealTitle(node.getName())) {
-                missing.push({text: node.getName().trim(), apply: (dataUrl) => node.setQuestionAudio(dataUrl)});
+                missing.push({text: node.getName().trim(), isMissing: () => !node.getQuestionAudio(),
+                    apply: (dataUrl) => node.setQuestionAudio(dataUrl)});
             }
             node.optionsStages.forEach((option, idx) => {
                 if (!node.getOptionAudio(idx) && isRealTitle(node.getOptionName(idx))) {
-                    missing.push({text: node.getOptionName(idx).trim(), apply: (dataUrl) => node.setOptionAudio(idx, dataUrl)});
+                    missing.push({text: node.getOptionName(idx).trim(), isMissing: () => !node.getOptionAudio(idx),
+                        apply: (dataUrl) => node.setOptionAudio(idx, dataUrl)});
                 }
             });
         }
@@ -234,13 +241,31 @@ export function collectMissingTitleAudio(nodes) {
  * Speaks every entry, one at a time. onProgress(done, total) after each one. Stops at the first
  * failure (the server or the voice is down: the next ones would fail the same way) and rejects with
  * that error, error.generated telling how many were done.
+ *
+ * The batch takes minutes, and the user keeps editing meanwhile: a title given an audio since the
+ * list was made is left as the user set it, and once isCurrent() turns false (another pack opened
+ * in the editor) the batch stops instead of writing into a diagram nobody sees.
  */
-export async function generateMissingTitleAudio(missing, {speak = speakTitle, onProgress = () => {}} = {}) {
+export async function generateMissingTitleAudio(missing, {speak = speakTitle, onProgress = () => {}, isCurrent = () => true} = {}) {
     let done = 0;
     for (const entry of missing) {
         try {
-            const speech = await speak(entry.text);
-            entry.apply(speech.dataUrl);
+            if (!isCurrent()) {
+                const stopped = new Error('The editor now shows another pack');
+                stopped.code = 'PACK_CHANGED';
+                throw stopped;
+            }
+            if (!entry.isMissing || entry.isMissing()) {
+                const speech = await speak(entry.text);
+                if (!isCurrent()) {
+                    const stopped = new Error('The editor now shows another pack');
+                    stopped.code = 'PACK_CHANGED';
+                    throw stopped;
+                }
+                if (!entry.isMissing || entry.isMissing()) {
+                    entry.apply(speech.dataUrl);
+                }
+            }
         } catch (e) {
             e.generated = done;
             throw e;

@@ -121,6 +121,13 @@ describe('collectMissingTitleAudio', () => {
         expect(m.optionsStages[1].audio).toBe(null);
         expect(story.audio).toBe(null);
     });
+
+    it('skips the names given to nodes dropped from the tray', () => {
+        const missing = collectMissingTitleAudio([
+            stage('stage', 'Stage node'), stage('cover', 'Cover node'), menu('Menu node', null, []),
+            stage('stage', 'Le vrai titre')]);
+        expect(missing.map(e => e.text)).toEqual(['Le vrai titre']);
+    });
 });
 
 describe('generateMissingTitleAudio', () => {
@@ -153,5 +160,34 @@ describe('generateMissingTitleAudio', () => {
         const entries = [{text: 'a', apply: () => {}}, {text: 'b', apply: () => {}}, {text: 'c', apply: () => {}}];
         await expect(generateMissingTitleAudio(entries, {speak})).rejects.toMatchObject({message: 'hors ligne', generated: 1});
         expect(speak).toHaveBeenCalledTimes(2);
+    });
+
+    it('leaves alone a title given an audio while the batch runs', async () => {
+        const first = stage('stage', 'Premier');
+        const second = stage('stage', 'Second');
+        const missing = collectMissingTitleAudio([first, second]);
+        const speak = jest.fn(async (text) => {
+            // While the first title is spoken, the user drops a recording on the second node
+            if (text === 'Premier') second.audio = 'data:recorded';
+            return {dataUrl: 'data:tts-' + text};
+        });
+
+        await generateMissingTitleAudio(missing, {speak});
+
+        expect(first.audio).toBe('data:tts-Premier');
+        expect(second.audio).toBe('data:recorded');
+        expect(speak).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops once another pack is shown, writing nothing more', async () => {
+        const first = stage('stage', 'Premier');
+        const second = stage('stage', 'Second');
+        let current = true;
+        const speak = jest.fn(async () => { current = false; return {dataUrl: 'data:x'}; });
+
+        await expect(generateMissingTitleAudio(collectMissingTitleAudio([first, second]), {speak, isCurrent: () => current}))
+            .rejects.toMatchObject({code: 'PACK_CHANGED', generated: 0});
+        expect(first.audio).toBeFalsy();
+        expect(second.audio).toBeFalsy();
     });
 });
