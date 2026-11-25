@@ -175,6 +175,54 @@
     }
   },
 
+  "libraryMode": {
+    "label": "Affichage",
+    "simple": "Simplifiée",
+    "full": "Complète",
+    "simpleTitle": "Une carte par pack et un bouton pour l'envoyer sur la Lunii, comme dans Lunii Pack",
+    "fullTitle": "Tous les fichiers, formats et conversions, avec le glisser-déposer"
+  },
+
+  "simpleLibrary": {
+    "device": {
+      "title": "Ma Lunii",
+      "unplugged": "Aucune Lunii branchée. Branchez-la pour y envoyer des histoires.",
+      "storage": "{{free}} libres sur {{total}}",
+      "used": "{{percent}} % de la carte utilisés",
+      "error": "La Lunii signale des erreurs.",
+      "moveUp": "Monter « {{title}} » dans le menu de la Lunii",
+      "moveDown": "Descendre « {{title}} » dans le menu de la Lunii",
+      "save": "Copier « {{title}} » dans la bibliothèque",
+      "remove": "Retirer « {{title}} » de la Lunii"
+    },
+    "library": {
+      "title": "Bibliothèque",
+      "search": "Rechercher un titre…",
+      "sort": "Trier par",
+      "sorts": {
+        "title": "Titre",
+        "recent": "Plus récents",
+        "size": "Plus gros"
+      },
+      "notOnDevice": "Pas encore sur la Lunii",
+      "empty": "Aucun pack dans la bibliothèque. Importez un fichier ou créez un pack depuis YouTube."
+    },
+    "card": {
+      "send": "Envoyer sur la Lunii",
+      "removeFromDevice": "Retirer de la Lunii",
+      "onDevice": "Sur la Lunii",
+      "plugFirst": "Branchez d'abord la Lunii",
+      "files": "{{count}} fichiers",
+      "preview": "Aperçu de « {{title}} »",
+      "edit": "Ouvrir « {{title}} » dans l'éditeur",
+      "remove": "Supprimer « {{title}} » de la bibliothèque"
+    },
+    "removeDialog": {
+      "content": "Supprimer « {{title}} » de la bibliothèque ?",
+      "contentMany": "Supprimer « {{title}} » de la bibliothèque, avec ses {{count}} fichiers (pack d'origine et conversions) ?"
+    }
+  },
+
   "editor": {
     "titleVoice": {
       "choose": "Voix des titres",

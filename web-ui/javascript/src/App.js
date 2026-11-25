@@ -15,7 +15,7 @@ import Switch from "react-switch";
 import {AppContext} from './AppContext';
 import Modal from './components/Modal';
 import PackEditor from './components/diagram/PackEditor';
-import PackLibrary from './components/PackLibrary';
+import LibraryView from './components/LibraryView';
 import EditorPackViewer from "./components/viewer/EditorPackViewer";
 import {simplifiedSample} from "./utils/sample";
 import {
@@ -252,7 +252,7 @@ class App extends React.Component {
                             <span title={t('header.buttons.editor')} className={`btn glyphicon glyphicon-edit ${this.state.shown === 'editor' && 'active'}`} onClick={this.showEditor}/>
                         </div>
                     </header>
-                    {this.state.shown === 'library' && <PackLibrary/>}
+                    {this.state.shown === 'library' && <LibraryView/>}
                     {this.state.shown === 'editor' && <PackEditor/>}
                 </div>
             </AppContext.Provider>
