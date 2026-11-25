@@ -9,7 +9,9 @@ package studio.core.v1;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import studio.core.v1.model.ActionNode;
 import studio.core.v1.model.StageNode;
+import studio.core.v1.model.enriched.EnrichedNodeMetadata;
 import studio.core.v1.model.StoryPack;
 import studio.core.v1.reader.binary.BinaryStoryPackReader;
 import studio.core.v1.writer.binary.BinaryStoryPackWriter;
@@ -17,12 +19,15 @@ import studio.core.v1.writer.binary.BinaryStoryPackWriter;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -228,6 +233,53 @@ class BinaryPackRoundTripTest {
             for (int i = imageSize; i < after.length; i++) {
                 assertEquals(0, after[i], "padding at index " + i);
             }
+        }
+    }
+
+    @Nested
+    @DisplayName("a large menu, in the enriched format")
+    class LargeMenu {
+
+        /** The two-stage pack, its action node offering the second stage node {@code options} times, with a name. */
+        private StoryPack packWithMenuOf(int options) {
+            StoryPack pack = PackFixtures.twoStagePack();
+            StageNode second = pack.getStageNodes().get(1);
+            ActionNode action = pack.getStageNodes().get(0).getOkTransition().getActionNode();
+            action.setOptions(new ArrayList<>(Collections.nCopies(options, second)));
+            action.setEnriched(new EnrichedNodeMetadata("Menu", null, null, null));
+            return pack;
+        }
+
+        @Test
+        @DisplayName("keeps the action node metadata while it fits in the sector (152 options)")
+        void keepsMetadataWhenItFits() throws IOException {
+            StoryPack read = roundTrip(packWithMenuOf(152), true);
+
+            ActionNode action = read.getStageNodes().get(0).getOkTransition().getActionNode();
+            assertEquals(152, action.getOptions().size());
+            assertNotNull(action.getEnriched());
+            assertEquals("Menu", action.getEnriched().getName());
+        }
+
+        @Test
+        @DisplayName("is written without the action node metadata when it does not fit (160 options), instead of failing")
+        void dropsMetadataWhenItDoesNotFit() throws IOException {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            new BinaryStoryPackWriter().write(packWithMenuOf(160), out, true);
+            StoryPack read = new BinaryStoryPackReader().read(new ByteArrayInputStream(out.toByteArray()));
+
+            ActionNode action = read.getStageNodes().get(0).getOkTransition().getActionNode();
+            assertEquals(160, action.getOptions().size());
+            assertNull(action.getEnriched(), "the reader does not look for metadata that cannot fit");
+            assertEquals(0, (out.size() - Constants.CHECK_BYTES.length) % Constants.SECTOR_SIZE, "sectors stay aligned");
+        }
+
+        @Test
+        @DisplayName("refuses more options than a sector holds, with a clear message")
+        void refusesMoreOptionsThanASectorHolds() {
+            IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                    () -> new BinaryStoryPackWriter().write(packWithMenuOf(257), new ByteArrayOutputStream(), false));
+            assertTrue(thrown.getMessage().contains("257"), thrown.getMessage());
         }
     }
 

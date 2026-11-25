@@ -369,6 +369,26 @@ public class StoryTellerService implements IStoryTellerService {
     }
 
     private volatile SendGuard sendGuard;
+    private volatile ExtractionGuard extractionGuard;
+
+    @Override
+    public void setExtractionGuard(ExtractionGuard guard) {
+        this.extractionGuard = guard;
+    }
+
+    /** The extraction guard, checked again when the extraction starts. A guard that fails refuses. */
+    private Optional<StoryTellerException> extractionRefusedAgain(String uuid) {
+        ExtractionGuard guard = extractionGuard;
+        if (guard == null) {
+            return Optional.empty();
+        }
+        try {
+            return guard.refusal(uuid);
+        } catch (RuntimeException e) {
+            return Optional.of(new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                    "Le pack " + uuid + " n'a pas pu être revérifié avant la copie : rien n'a été copié", e));
+        }
+    }
 
     @Override
     public void setSendGuard(SendGuard guard) {
@@ -538,9 +558,14 @@ public class StoryTellerService implements IStoryTellerService {
             notifier.started(transferId);
             CompletableFuture<TransferStatus> extraction;
             try {
+                // Never an official pack: checked again now, the official database or the library
+                // may have changed while the extraction waited
+                Optional<StoryTellerException> refused = extractionRefusedAgain(uuid);
                 // Checked again in turn: another extraction of the same pack may have been queued
                 // ahead of this one since the request was accepted.
-                if (device != null ? packFile.exists() : new File(packFile, uuid).exists()) {
+                if (refused.isPresent()) {
+                    extraction = CompletableFuture.failedFuture(refused.get());
+                } else if (device != null ? packFile.exists() : new File(packFile, uuid).exists()) {
                     extraction = CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.CONTENT_FOLDER_EXISTS,
                             "The pack " + uuid + " is already in the library"));
                 } else if (device != null) {
@@ -876,10 +901,8 @@ public class StoryTellerService implements IStoryTellerService {
                         .put("uuid", pack.getUuid().toString())
                         .put("format", Constants.PACK_FORMAT_RAW)
                         .put("version", pack.getVersion())
-                        .put("title", metadata.getTitle())
-                        .put("description", metadata.getDescription())
-                        .put("image", metadata.getThumbnail())
                         .put("sectorSize", pack.getSizeInSectors())
+                        .mergeIn(knownFields(metadata))
                         .put("official", metadata.isOfficial())
                 )
                 .orElse(new JsonObject()
@@ -889,15 +912,25 @@ public class StoryTellerService implements IStoryTellerService {
                         .put("sectorSize", pack.getSizeInSectors())
                 );
     }
+    /**
+     * Title, description and image of a pack, only those the database knows: an incomplete official
+     * entry leaves them out rather than putting nulls.
+     */
+    private static JsonObject knownFields(studio.metadata.DatabasePackMetadata metadata) {
+        JsonObject json = new JsonObject();
+        Optional.ofNullable(metadata.getTitle()).ifPresent(title -> json.put("title", title));
+        Optional.ofNullable(metadata.getDescription()).ifPresent(desc -> json.put("description", desc));
+        Optional.ofNullable(metadata.getThumbnail()).ifPresent(image -> json.put("image", image));
+        return json;
+    }
+
     private JsonObject getFsPackMetadata(FsStoryPackInfos pack) {
         return databaseMetadataService.getPackMetadata(pack.getUuid().toString())
                 .map(metadata -> new JsonObject()
                         .put("uuid", pack.getUuid().toString())
                         .put("format", Constants.PACK_FORMAT_FS)
                         .put("version", pack.getVersion())
-                        .put("title", metadata.getTitle())
-                        .put("description", metadata.getDescription())
-                        .put("image", metadata.getThumbnail())
+                        .mergeIn(knownFields(metadata))
                         .put("folderName", pack.getFolderName())
                         .put("sizeInBytes", pack.getSizeInBytes())
                         .put("official", metadata.isOfficial())

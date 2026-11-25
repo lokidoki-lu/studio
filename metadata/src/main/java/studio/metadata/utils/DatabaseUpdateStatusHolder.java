@@ -9,6 +9,6 @@ package studio.metadata.utils;
 public class DatabaseUpdateStatusHolder {
 
     // Keep track of the last official database update time
-    public static long lastOfficialDatabaseUpdate = 0L;
+    public static volatile long lastOfficialDatabaseUpdate = 0L;
 
 }

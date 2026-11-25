@@ -94,6 +94,7 @@ public class FsStoryTellerAsyncDriver {
     FsStoryTellerAsyncDriver(DevicePartitionLocator partitionLocator, PackIndexWriter packIndexWriter) {
         this.partitionLocator = partitionLocator;
         this.packIndexWriter = packIndexWriter;
+        this.usbSerialReader = FsStoryTellerAsyncDriver::readUsbSerialNumber;
         // Initialize libusb, handle and propagate hotplug events
         LOGGER.fine("Registering hotplug listener");
         LibUsbDetectionHelper.initializeLibUsb(DeviceVersion.DEVICE_VERSION_2, new DeviceHotplugEventListener() {
@@ -139,6 +140,92 @@ public class FsStoryTellerAsyncDriver {
         return search;
     }
 
+    private synchronized boolean isAnotherDevicePublished(Device device) {
+        return this.device != null && !this.device.equals(device) && this.partitionMountPoint != null;
+    }
+
+    /**
+     * The serial number a plugged device reports on USB, or empty when it cannot be read. Set by the
+     * production constructor; {@code null} (a driver built without it, as in the tests) means unknown.
+     */
+    private volatile java.util.function.Function<Device, Optional<String>> usbSerialReader;
+    /**
+     * The serial number in the {@code .md} of a mount point, or {@code null}. {@code null} reader:
+     * read it with {@link #getDeviceInfos(String)}.
+     */
+    private volatile java.util.function.Function<String, String> volumeSerialReader;
+
+    /**
+     * The mount point to skip while searching the partition of {@code device}, read at every attempt:
+     * the one of the published device when it is another one. Except when that volume's {@code .md}
+     * carries the serial number {@code device} reports on USB: then it is the same Lunii, enumerated
+     * again under a new libusb object (its unplug was lost or comes late), and its own partition must
+     * not be refused. When either serial cannot be read, or they differ, the volume is skipped.
+     */
+    private List<String> mountPointToSkip(Device device, Optional<String> newDeviceSerial) {
+        String mountPoint;
+        synchronized (this) {
+            if (!isAnotherDevicePublished(device)) {
+                return List.of();
+            }
+            mountPoint = this.partitionMountPoint;
+        }
+        if (newDeviceSerial.isPresent()) {
+            String volumeSerial = serialOnVolume(mountPoint);
+            if (volumeSerial != null && volumeSerial.trim().equalsIgnoreCase(newDeviceSerial.get().trim())) {
+                LOGGER.info("The device plugged carries the serial number of the partition " + mountPoint
+                        + " already in use: the same Lunii enumerated again, its partition is not skipped");
+                return List.of();
+            }
+        }
+        return List.of(mountPoint);
+    }
+
+    private String serialOnVolume(String mountPoint) {
+        try {
+            java.util.function.Function<String, String> reader = this.volumeSerialReader;
+            if (reader != null) {
+                return reader.apply(mountPoint);
+            }
+            return getDeviceInfos(mountPoint).join().getSerialNumber();
+        } catch (RuntimeException e) {
+            LOGGER.log(Level.FINE, "Could not read the serial number on " + mountPoint, e);
+            return null;
+        }
+    }
+
+    private Optional<String> usbSerialOf(Device device) {
+        java.util.function.Function<Device, Optional<String>> reader = this.usbSerialReader;
+        if (reader == null) {
+            return Optional.empty();
+        }
+        try {
+            Optional<String> serial = reader.apply(device);
+            return serial == null ? Optional.empty() : serial.filter(s -> !s.trim().isEmpty());
+        } catch (RuntimeException e) {
+            LOGGER.log(Level.FINE, "Could not read the USB serial number of the device plugged", e);
+            return Optional.empty();
+        }
+    }
+
+    /** Reads the USB serial number string of {@code device}, opening it without claiming anything. */
+    static Optional<String> readUsbSerialNumber(Device device) {
+        org.usb4java.DeviceDescriptor descriptor = new org.usb4java.DeviceDescriptor();
+        if (org.usb4java.LibUsb.getDeviceDescriptor(device, descriptor) != org.usb4java.LibUsb.SUCCESS
+                || descriptor.iSerialNumber() == 0) {
+            return Optional.empty();
+        }
+        org.usb4java.DeviceHandle handle = new org.usb4java.DeviceHandle();
+        if (org.usb4java.LibUsb.open(device, handle) != org.usb4java.LibUsb.SUCCESS) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.ofNullable(org.usb4java.LibUsb.getStringDescriptor(handle, descriptor.iSerialNumber()));
+        } finally {
+            org.usb4java.LibUsb.close(handle);
+        }
+    }
+
     private synchronized boolean isSearchCurrent(Device device, Object search) {
         return this.partitionSearch == search && this.awaitingPartitionFor == device;
     }
@@ -166,8 +253,18 @@ public class FsStoryTellerAsyncDriver {
     private void awaitPartitionAndPublish(Device device, Object search) {
         LOGGER.info("Device plugged; waiting for its partition to be mounted");
         try {
-            Optional<String> mountPoint =
-                    partitionLocator.awaitPartition(() -> isSearchCurrent(device, search));
+            // While another Lunii is published, its volume is already mounted and carries a .md: the
+            // first scan, run before the new one is mounted, used to find it alone and publish the new
+            // device on the partition of the other — whose unplug was then ignored. Its volume is
+            // skipped (see mountPointToSkip); the same device plugged again is not concerned.
+            Optional<String> mountPoint;
+            if (isAnotherDevicePublished(device)) {
+                Optional<String> serial = usbSerialOf(device);
+                mountPoint = partitionLocator.awaitPartition(() -> isSearchCurrent(device, search),
+                        () -> mountPointToSkip(device, serial));
+            } else {
+                mountPoint = partitionLocator.awaitPartition(() -> isSearchCurrent(device, search));
+            }
 
             String published;
             synchronized (this) {
@@ -493,11 +590,25 @@ public class FsStoryTellerAsyncDriver {
                             // FileInputStream: the listing runs outside the device operation queue, and
                             // on Windows only an NIO handle lets a concurrent delete of the pack proceed.
                             short version;
+                            byte[] niHeader;
                             try (InputStream niFis = Files.newInputStream(nodeIndex.toPath());
                                  DataInputStream niDis = new DataInputStream(niFis)) {
-                                ByteBuffer bb = ByteBuffer.wrap(niDis.readNBytes(512)).order(ByteOrder.LITTLE_ENDIAN);
-                                version = bb.getShort(2);
+                                niHeader = niDis.readNBytes(512);
+                            } catch (IOException unreadable) {
+                                // Same rule as a missing 'ni': one broken pack must not hide the others.
+                                LOGGER.log(Level.WARNING, "Pack " + packUUID + " is listed in the index but its node"
+                                        + " index cannot be read; leaving it out of the list", unreadable);
+                                continue;
                             }
+                            if (niHeader.length < 4) {
+                                // A 'ni' cut short (0 bytes after an interrupted copy, for one) has no
+                                // version to read; reading it anyway threw and failed the whole listing.
+                                // As for a missing 'ni', nothing is repaired: the pack is only left out.
+                                LOGGER.warning("Pack " + packUUID + " is listed in the index but its node index is"
+                                        + " truncated (" + niHeader.length + " bytes); leaving it out of the list");
+                                continue;
+                            }
+                            version = ByteBuffer.wrap(niHeader).order(ByteOrder.LITTLE_ENDIAN).getShort(2);
                             packInfos.setVersion(version);
                             LOGGER.fine("Pack version: " + version);
 
@@ -676,6 +787,15 @@ public class FsStoryTellerAsyncDriver {
                 // The index is 16 bytes per pack, so this stays in the kilobytes.
                 index = Files.readAllBytes(Paths.get(piFile));
             } catch (Exception e) {
+                if (isIndexMissingNextToPending(mountPoint)) {
+                    // Not an unknown failure: a replacement of the index was cut halfway, and the device
+                    // check is where it is resolved. Say so, with the reason the client acts on.
+                    throw new StoryTellerException(StoryTellerException.Reason.PACK_INDEX_PENDING,
+                            "The pack index (.pi) is missing on the device partition, but a pending one (.pi.new) is"
+                                    + " there: an index update was interrupted. Nothing was read, written or removed."
+                                    + " It can be resolved from the device check (GET /api/device/diagnosis, then"
+                                    + " POST /api/device/repair/pendingIndex).", e);
+                }
                 throw new StoryTellerException("Failed to read pack index on device partition", e);
             }
 
@@ -726,9 +846,25 @@ public class FsStoryTellerAsyncDriver {
                             // Reorder list according to uuids list. Compared as UUIDs, never as the
                             // strings received: an upper-case request would otherwise match nothing
                             // and leave the order unchanged while reporting success.
-                            packUUIDs.sort(Comparator.comparingInt(requested::indexOf));
+                            // Only the slots of the requested packs are reordered. A pack of the index
+                            // missing from the request (one the list left out, its 'ni' truncated or
+                            // missing) keeps its exact position: sorting the whole index by indexOf gave
+                            // it -1 and moved it to the top.
+                            List<Integer> slots = new ArrayList<>();
+                            List<UUID> movable = new ArrayList<>();
+                            for (int i = 0; i < packUUIDs.size(); i++) {
+                                if (requested.contains(packUUIDs.get(i))) {
+                                    slots.add(i);
+                                    movable.add(packUUIDs.get(i));
+                                }
+                            }
+                            movable.sort(Comparator.comparingInt(requested::indexOf));
+                            List<UUID> reordered = new ArrayList<>(packUUIDs);
+                            for (int k = 0; k < slots.size(); k++) {
+                                reordered.set(slots.get(k), movable.get(k));
+                            }
                             // Write pack index
-                            return writePackIndex(session, packUUIDs);
+                            return writePackIndex(session, reordered);
                         } else {
                             throw new StoryTellerException("Packs on device do not match UUIDs");
                         }
@@ -916,6 +1052,31 @@ public class FsStoryTellerAsyncDriver {
     }
 
     /**
+     * As {@link #readValidIndexBytes}, but returns {@code null} when {@code .pi} is missing while a
+     * {@code .pi.new} is there. A replacement of the index by a rename can, on some FAT drivers, remove
+     * the old entry before it creates the new one; cut in between, it leaves exactly that. The pending
+     * index is then the only one left, and the check and its resolution must be able to read it
+     * instead of failing on the index that is gone. Without {@code .pi.new} a missing {@code .pi}
+     * still fails: there is nothing to adopt, and no index is invented.
+     */
+    private static byte[] readIndexBytesOrNullIfOnlyPending(String mountPoint) {
+        Path index = Paths.get(mountPoint, PACK_INDEX_FILENAME);
+        if (isIndexMissingNextToPending(mountPoint)) {
+            LOGGER.warning("The pack index " + index + " is missing, but a pending one is there: reading the"
+                    + " installed index as empty");
+            return null;
+        }
+        return readValidIndexBytes(mountPoint);
+    }
+
+    private static boolean isIndexMissingNextToPending(String mountPoint) {
+        Path index = Paths.get(mountPoint, PACK_INDEX_FILENAME);
+        Path pending = Paths.get(mountPoint, PACK_INDEX_FILENAME + TemporaryFilePackIndexWriter.TEMPORARY_SUFFIX);
+        // notExists, not !exists: an index whose presence cannot be determined is not "missing".
+        return Files.notExists(index, LinkOption.NOFOLLOW_LINKS) && Files.isRegularFile(pending, LinkOption.NOFOLLOW_LINKS);
+    }
+
+    /**
      * Identifies the Lunii plugged in {@code session}: its serial number and the plug generation. A
      * repair asked with the token of an earlier check is refused if the Lunii was swapped, or
      * unplugged and plugged again, in between: what the check showed may not be this card any more.
@@ -960,7 +1121,7 @@ public class FsStoryTellerAsyncDriver {
             return CompletableFuture.failedFuture(noDevice());
         }
         return CompletableFuture.supplyAsync(() -> {
-            byte[] index = readValidIndexBytes(session.mountPoint);
+            byte[] index = readIndexBytesOrNullIfOnlyPending(session.mountPoint);
             FsDeviceInfos infos = deviceInfosOrNull(session);
             try {
                 FsDeviceDiagnosis diagnosis = FsDeviceMaintenance.diagnose(Paths.get(session.mountPoint), index, infos);
@@ -984,6 +1145,11 @@ public class FsStoryTellerAsyncDriver {
      * and nothing is done if they changed since. Adopting is refused for a torn file, and for one
      * that names any pack whose folder is not a complete copy on the card: an index that lists a
      * pack with nothing behind it, or that drops packs because it was cut short, is never installed.
+     *
+     * <p>When {@code .pi} is missing next to {@code .pi.new} (a replacement cut between the two halves
+     * of the rename), the installed index reads as empty: adopting puts {@code .pi.new} in place under
+     * the same conditions (no backup, there is nothing to keep), and discarding is refused, since it
+     * would leave the device with no index at all.
      */
     public CompletableFuture<Boolean> resolvePendingIndex(boolean adopt, String fingerprint, String deviceToken) {
         PartitionSession session = currentPartition();
@@ -999,7 +1165,8 @@ public class FsStoryTellerAsyncDriver {
                 throw new StoryTellerException(StoryTellerException.Reason.DEVICE_STATE_CHANGED,
                         "There is no pending pack index on the device any more: nothing was done");
             }
-            byte[] current = readValidIndexBytes(session.mountPoint);
+            // null: .pi is missing next to .pi.new, read as an empty index (see readIndexBytesOrNullIfOnlyPending)
+            byte[] current = readIndexBytesOrNullIfOnlyPending(session.mountPoint);
             byte[] pendingBytes;
             try {
                 pendingBytes = Files.readAllBytes(pending);
@@ -1017,20 +1184,58 @@ public class FsStoryTellerAsyncDriver {
                 if (adopt) {
                     if (analysis.getKind() == FsDeviceDiagnosis.PendingIndexKind.TORN) {
                         throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
-                                "The pending pack index is incomplete and cannot be adopted; it can only be discarded");
+                                "The pending pack index is incomplete and cannot be adopted"
+                                        + (current == null
+                                        ? ". The pack index (.pi) is missing, so it cannot be discarded either: nothing was done"
+                                        : "; it can only be discarded"));
+                    }
+                    if (!analysis.getUnlistedCompleteFolders().isEmpty()) {
+                        throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                                "The pack index (.pi) is missing, and the pending one does not name "
+                                        + analysis.getUnlistedCompleteFolders().size() + " complete pack folder(s) of the"
+                                        + " device (" + analysis.getUnlistedCompleteFolders() + "): it may have been cut"
+                                        + " short, and adopting it would drop them from the index. Nothing was done.");
                     }
                     if (!analysis.isAdoptable()) {
                         throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
                                 "Adopting the pending pack index would list " + analysis.getIncomplete().size()
                                         + " pack(s) whose folder is not a complete copy on the device ("
-                                        + analysis.getIncomplete() + "): nothing was done. It can only be discarded.");
+                                        + analysis.getIncomplete() + "): nothing was done."
+                                        + (current == null ? "" : " It can only be discarded."));
                     }
-                    Path backup = partition.resolve(PACK_INDEX_BACKUP_FILENAME);
-                    LOGGER.info("Adopting the pending pack index " + pending + "; the previous one is kept as " + backup);
-                    Files.copy(index, backup, StandardCopyOption.REPLACE_EXISTING);
-                    FsSync.forceFile(backup);
-                    FsSync.forceFile(pending);
-                    Files.move(pending, index, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                    if (current == null) {
+                        // No previous index to keep, so an index that appeared since the check must not
+                        // be replaced: it would be lost without a backup. Files.move without options
+                        // refuses an existing target (FileAlreadyExistsException) — ATOMIC_MOVE would
+                        // not: it replaces the target on every platform. On Windows the refusal is
+                        // atomic (MoveFileEx without MOVEFILE_REPLACE_EXISTING). On Unix the JDK checks,
+                        // then renames: a .pi created in between would still be replaced. That window is
+                        // accepted: every device operation of STUdio is serialized by the web service, so
+                        // only another program writing .pi at that very instant could hit it. Hard links,
+                        // which would close it, do not exist on FAT.
+                        LOGGER.info("Adopting the pending pack index " + pending + " in place of the missing " + index);
+                        FsSync.forceFile(pending);
+                        try {
+                            Files.move(pending, index);
+                        } catch (FileAlreadyExistsException appeared) {
+                            throw new StoryTellerException(StoryTellerException.Reason.DEVICE_STATE_CHANGED,
+                                    "A pack index appeared on the device since it was checked: nothing was done."
+                                            + " Check the device again.", appeared);
+                        }
+                    } else {
+                        Path backup = partition.resolve(PACK_INDEX_BACKUP_FILENAME);
+                        LOGGER.info("Adopting the pending pack index " + pending + "; the previous one is kept as " + backup);
+                        Files.copy(index, backup, StandardCopyOption.REPLACE_EXISTING);
+                        FsSync.forceFile(backup);
+                        FsSync.forceFile(pending);
+                        Files.move(pending, index, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                    }
+                } else if (current == null) {
+                    // .pi.new is the only index left: discarding it would leave the device with none.
+                    throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                            "The pack index (.pi) is missing and the pending one (.pi.new) is the only index left on"
+                                    + " the device: it was not discarded. It can be adopted if every pack it names is a"
+                                    + " complete copy.");
                 } else {
                     LOGGER.info("Discarding the pending pack index " + pending);
                     Files.delete(pending);

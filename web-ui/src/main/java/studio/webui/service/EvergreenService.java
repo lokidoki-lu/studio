@@ -9,13 +9,19 @@ package studio.webui.service;
 import io.vertx.config.ConfigRetriever;
 import io.vertx.config.ConfigRetrieverOptions;
 import io.vertx.config.ConfigStoreOptions;
+import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
+import io.vertx.ext.web.client.HttpRequest;
+import io.vertx.ext.web.client.HttpResponse;
 import io.vertx.ext.web.client.WebClient;
+
+import java.util.function.Consumer;
 
 public class EvergreenService {
 
@@ -31,10 +37,26 @@ public class EvergreenService {
 
     private final Logger LOGGER = LoggerFactory.getLogger(EvergreenService.class);
 
+    /** No answer from GitHub after this long fails the request, instead of leaving it pending. */
+    static final long REQUEST_TIMEOUT_MS = 15_000;
+
     private ConfigRetriever configRetriever;
     private WebClient webClient;
+    private final String apiHost;
+    private final String rawHost;
+    private final int port;
+    private final boolean ssl;
 
     public EvergreenService(Vertx vertx) {
+        this(vertx, GITHUB_API_FQDN, GITHUB_RAW_FQDN, 443, true);
+    }
+
+    /** For tests: GitHub replaced by a local server. */
+    EvergreenService(Vertx vertx, String apiHost, String rawHost, int port, boolean ssl) {
+        this.apiHost = apiHost;
+        this.rawHost = rawHost;
+        this.port = port;
+        this.ssl = ssl;
         ConfigStoreOptions propertiesStore = new ConfigStoreOptions()
                 .setType("file")
                 .setFormat("properties")
@@ -59,54 +81,69 @@ public class EvergreenService {
     public Future<JsonObject> latest() {
         // Latest available release (from github)
         Future<JsonObject> future = Future.future();
-        webClient
-                .get(443, GITHUB_API_FQDN, GITHUB_API_LATEST_RELEASE)
-                .ssl(true)
-                .send(ar -> {
-                    if (ar.succeeded()) {
-                        future.tryComplete(ar.result().bodyAsJsonObject());
-                    } else {
-                        future.tryFail(ar.cause());
-                    }
-                });
+        get(apiHost, GITHUB_API_LATEST_RELEASE).send(ar -> handle(ar, future, "latest release", response -> {
+            JsonObject release = response.bodyAsJsonObject();
+            if (release == null) {
+                throw new IllegalStateException("GitHub answered an empty body for the latest release");
+            }
+            future.tryComplete(release);
+        }));
         return future;
     }
 
     public Future<JsonObject> announce() {
         Future<JsonObject> future = Future.future();
         // Get announce's last modification date (from github)
-        webClient
-                .get(443, GITHUB_API_FQDN, GITHUB_API_ANNOUNCE_COMMIT)
-                .ssl(true)
-                .send(ar -> {
-                    if (ar.succeeded()) {
-                        JsonArray commits = ar.result().bodyAsJsonArray();
-                        if (commits.size() == 0) {
-                             // First announce
-                            future.tryComplete(new JsonObject()
-                                    .put("date", "2020-05-12T00:00:00.000Z")
-                                    .put("content", GITHUB_API_BUILTIN_ANNOUNCE_CONTENT_EN + "\n\n-----\n\n" + GITHUB_API_BUILTIN_ANNOUNCE_CONTENT_FR)
-                            );
-                        } else {
-                            String commitDate = commits.getJsonObject(0).getJsonObject("commit").getJsonObject("committer").getString("date");
-                            // Get announce content (from github)
-                            webClient
-                                    .get(443, GITHUB_RAW_FQDN, GITHUB_API_ANNOUNCE_CONTENT)
-                                    .ssl(true)
-                                    .send(ar2 -> {
-                                        if (ar2.succeeded()) {
-                                            String content = ar2.result().bodyAsString();
-                                            future.tryComplete(new JsonObject().put("date", commitDate).put("content", content));
-                                        } else {
-                                            future.tryFail(ar2.cause());
-                                        }
-                                    });
-                        }
-                    } else {
-                        future.tryFail(ar.cause());
-                    }
-                });
+        get(apiHost, GITHUB_API_ANNOUNCE_COMMIT).send(ar -> handle(ar, future, "announce commits", response -> {
+            JsonArray commits = response.bodyAsJsonArray();
+            if (commits == null || commits.size() == 0) {
+                 // First announce
+                future.tryComplete(new JsonObject()
+                        .put("date", "2020-05-12T00:00:00.000Z")
+                        .put("content", GITHUB_API_BUILTIN_ANNOUNCE_CONTENT_EN + "\n\n-----\n\n" + GITHUB_API_BUILTIN_ANNOUNCE_CONTENT_FR)
+                );
+                return;
+            }
+            // ClassCastException or NullPointerException on an unexpected shape: failed by handle()
+            String commitDate = commits.getJsonObject(0).getJsonObject("commit").getJsonObject("committer").getString("date");
+            if (commitDate == null) {
+                throw new IllegalStateException("GitHub answered a commit without a date for the announce");
+            }
+            // Get announce content (from github)
+            get(rawHost, GITHUB_API_ANNOUNCE_CONTENT).send(ar2 -> handle(ar2, future, "announce content", response2 ->
+                    future.tryComplete(new JsonObject().put("date", commitDate).put("content", response2.bodyAsString()))));
+        }));
         return future;
+    }
+
+    private HttpRequest<Buffer> get(String host, String path) {
+        return webClient.get(port, host, path).ssl(ssl).timeout(REQUEST_TIMEOUT_MS);
+    }
+
+    /**
+     * Completes {@code future} whatever GitHub answers: a failed request, a status other than 200
+     * (403 when rate limited) or a body {@code onOk} cannot use (decode error, unexpected shape)
+     * fails it. An exception thrown in a WebClient callback used to leave the future pending, and
+     * the HTTP request waiting on it unanswered.
+     */
+    private void handle(AsyncResult<HttpResponse<Buffer>> ar, Future<JsonObject> future, String what,
+                        Consumer<HttpResponse<Buffer>> onOk) {
+        if (ar.failed()) {
+            future.tryFail(ar.cause());
+            return;
+        }
+        HttpResponse<Buffer> response = ar.result();
+        if (response.statusCode() != 200) {
+            LOGGER.warn("GitHub answered " + response.statusCode() + " for the " + what);
+            future.tryFail(new IllegalStateException("GitHub answered " + response.statusCode() + " for the " + what));
+            return;
+        }
+        try {
+            onOk.accept(response);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Unexpected answer from GitHub for the " + what + ": " + e.getMessage());
+            future.tryFail(e);
+        }
     }
 
 }

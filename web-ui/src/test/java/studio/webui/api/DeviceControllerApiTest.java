@@ -17,6 +17,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import studio.core.v1.model.ControlSettings;
+import studio.core.v1.model.StageNode;
+import studio.core.v1.model.StoryPack;
+import studio.core.v1.writer.archive.ArchiveStoryPackWriter;
 import studio.driver.StoryTellerException;
 import studio.metadata.DatabaseMetadataService;
 import studio.webui.service.IStoryTellerService;
@@ -24,6 +28,7 @@ import studio.webui.service.LibraryService;
 import studio.webui.service.TransferRegistry;
 
 import java.io.File;
+import java.io.OutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -31,6 +36,7 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -62,6 +68,9 @@ class DeviceControllerApiTest {
     private final FakeService service = new FakeService();
     /** Packs the metadata database says are official. */
     private final Set<String> officialUuids = new java.util.HashSet<>();
+    /** Whether the official database counts as downloaded. */
+    private volatile boolean officialDatabaseAvailable = true;
+    private LibraryService library;
 
     @BeforeEach
     void start() throws Exception {
@@ -72,10 +81,17 @@ class DeviceControllerApiTest {
         setProperty(LibraryService.LOCAL_LIBRARY_PROP, root.resolve("library") + File.separator);
         setProperty(LibraryService.TMP_DIR_PROP, root.resolve("tmp") + File.separator);
         setProperty(DatabaseMetadataService.UNOFFICIAL_DB_PROP, db.resolve("unofficial.json").toString());
-        LibraryService library = new LibraryService(new DatabaseMetadataService(true) {
+        setProperty(studio.webui.service.ConversionProvenanceStore.CONVERSIONS_DB_PROP, db.resolve("conversions.json").toString());
+        setProperty(studio.webui.service.DeviceSourcedPackStore.DEVICE_SOURCED_DB_PROP, db.resolve("device-sourced.json").toString());
+        library = new LibraryService(new DatabaseMetadataService(true) {
             @Override
             public boolean isOfficialPack(String uuid) {
                 return officialUuids.contains(uuid);
+            }
+
+            @Override
+            public boolean isOfficialDatabaseAvailable() {
+                return officialDatabaseAvailable;
             }
         });
 
@@ -234,6 +250,8 @@ class DeviceControllerApiTest {
     @Test
     @DisplayName("addToLibrary writes a raw pack inside the library only")
     void addToLibraryDestination() throws Exception {
+        libraryArchive(U, "mine.zip");
+        officialDatabaseAvailable = true;
         post("/api/device/addToLibrary", new JsonObject().put("uuid", U).put("driver", "raw"));
         assertEquals(root.resolve("library").resolve(U + ".pack").toAbsolutePath().normalize().toFile(), service.lastExtractDestination);
         assertEquals(400, post("/api/device/addToLibrary", new JsonObject().put("uuid", U).put("driver", "zip")).statusCode());
@@ -256,6 +274,70 @@ class DeviceControllerApiTest {
         assertEquals(400, post("/api/device/removeFromDevice", new JsonObject().put("uuid", new JsonObject())).statusCode());
         assertEquals(400, post("/api/device/reorder", new JsonObject().put("uuids", "x")).statusCode());
         assertEquals(400, post("/api/device/orphans/remove", new JsonObject().put("folders", 1)).statusCode());
+    }
+
+    /** An archive made with STUdio: what proves a pack is one of the user's own. */
+    private void libraryArchive(String uuid, String name) throws Exception {
+        StageNode node = new StageNode(uuid, null, null, null, null,
+                new ControlSettings(false, false, false, false, false), null);
+        try (OutputStream out = Files.newOutputStream(root.resolve("library").resolve(name))) {
+            new ArchiveStoryPackWriter().write(
+                    new StoryPack(uuid, false, (short) 1, Collections.singletonList(node), null, false), out);
+        }
+    }
+
+    @Test
+    @DisplayName("addToLibrary refuses an official pack, and a pack not known to be the user's (fail-closed)")
+    void addToLibraryRefusesOfficialAndUnknownPacks() throws Exception {
+        for (String driver : List.of("raw", "fs")) {
+            HttpResponse<String> unknown = post("/api/device/addToLibrary", new JsonObject().put("uuid", U).put("driver", driver));
+            assertEquals(400, unknown.statusCode(), driver);
+            assertEquals("INVALID_REQUEST", new JsonObject(unknown.body()).getString("error"), driver);
+        }
+        assertEquals(null, service.lastExtractDestination, "nothing extracted without proof");
+
+        officialUuids.add(U);
+        libraryArchive(U, "u.zip");
+        HttpResponse<String> official = post("/api/device/addToLibrary", new JsonObject().put("uuid", U).put("driver", "fs"));
+        assertEquals(400, official.statusCode());
+        assertTrue(new JsonObject(official.body()).getString("message").contains("officiel"), official.body());
+        assertEquals(null, service.lastExtractDestination);
+
+        officialUuids.clear();
+        officialDatabaseAvailable = false;
+        assertEquals(400, post("/api/device/addToLibrary", new JsonObject().put("uuid", U).put("driver", "fs")).statusCode(),
+                "nothing leaves the Lunii while the official database is empty");
+        assertEquals(null, service.lastExtractDestination);
+        officialDatabaseAvailable = true;
+        post("/api/device/addToLibrary", new JsonObject().put("uuid", U).put("driver", "fs"));
+        assertTrue(service.lastExtractDestination != null, "the user's own pack is extracted");
+    }
+
+    @Test
+    @DisplayName("a library pack not known to be the user's is not sent, even absent from the official database")
+    void unprovenPackIsNotSent() throws Exception {
+        libraryFolder(U);
+        service.addPack = () -> CompletableFuture.completedFuture(Optional.of("t"));
+        for (String route : List.of("addFromLibrary", "updateFromLibrary")) {
+            HttpResponse<String> response = post("/api/device/" + route, new JsonObject().put("uuid", U).put("path", U));
+            assertEquals(400, response.statusCode(), route);
+            assertEquals("INVALID_REQUEST", new JsonObject(response.body()).getString("error"), route);
+        }
+        assertEquals(null, service.lastPackFile);
+        assertEquals(null, service.lastUpdate);
+
+        // A folder named by hand after one of the user's packs is not that pack
+        libraryArchive(U, "u.zip");
+        assertEquals(400, post("/api/device/addFromLibrary", new JsonObject().put("uuid", U).put("path", U)).statusCode());
+        assertEquals(null, service.lastPackFile);
+        // Its conversion by STUdio is
+        String converted = library.addConvertedFsPackFile("u.zip", false).orElseThrow().toString();
+        assertEquals(200, post("/api/device/addFromLibrary", new JsonObject().put("uuid", U).put("path", converted)).statusCode());
+        // Sending and updating wait for the official database
+        officialDatabaseAvailable = false;
+        HttpResponse<String> waiting = post("/api/device/updateFromLibrary", new JsonObject().put("uuid", U).put("path", converted));
+        assertEquals(400, waiting.statusCode());
+        assertTrue(new JsonObject(waiting.body()).getString("message").contains("base des packs officiels"), waiting.body());
     }
 
     /** A folder pack of the library, as the listing reads it: its name starts with its UUID. */
@@ -297,8 +379,10 @@ class DeviceControllerApiTest {
         assertEquals(null, service.lastPackFile);
         assertEquals(null, service.lastUpdate);
 
-        // The pack named by the uuid goes through
-        assertEquals(200, post("/api/device/updateFromLibrary", new JsonObject().put("uuid", U).put("path", U + ".converted_1")).statusCode());
+        // The pack named by the uuid goes through (one of the user's own: its archive is in the library)
+        libraryArchive(U, "u.zip");
+        String converted = library.addConvertedFsPackFile("u.zip", false).orElseThrow().toString();
+        assertEquals(200, post("/api/device/updateFromLibrary", new JsonObject().put("uuid", U).put("path", converted)).statusCode());
         assertEquals(U, service.lastUpdate);
     }
 

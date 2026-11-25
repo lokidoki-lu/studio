@@ -112,6 +112,15 @@ public class LibraryController {
                         "`path` and `entry` are required strings"));
                 return;
             }
+            // The editor opens a pack through this route, entry by entry: never an official pack, or
+            // one that may come from a Lunii, which it would save again under a new UUID. The library
+            // preview reads entries too, and says so (purpose: preview).
+            Optional<String> editorRefusal = "preview".equals(body.getValue("purpose"))
+                    ? Optional.empty() : libraryService.editorRefusal(packPath);
+            if (editorRefusal.isPresent()) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, editorRefusal.get()));
+                return;
+            }
             Optional<byte[]> entry;
             try {
                 entry = libraryService.readArchivePackEntry(packPath, entryName);
@@ -209,7 +218,15 @@ public class LibraryController {
                         "A multipart/form-data body with the pack file is required"));
                 return;
             }
-            boolean added = libraryService.addPackFile(packPath, ctx.fileUploads().iterator().next().uploadedFileName());
+            boolean added;
+            try {
+                added = libraryService.addPackFile(packPath, ctx.fileUploads().iterator().next().uploadedFileName());
+            } catch (StoryTellerException e) {
+                // Refused (an archive that may hold a pack from a Lunii): said as such, not a 500
+                LOGGER.error("Pack was not added to library", e);
+                ApiErrors.respond(ctx, e);
+                return;
+            }
             if (added) {
                 ctx.response()
                         .putHeader("content-type", "application/json")

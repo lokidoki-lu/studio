@@ -244,20 +244,23 @@ class ReadPathHardeningTest {
         }
 
         @Test
-        @DisplayName("a pack whose 'ni' is present but unreadable still fails the listing")
-        void aCorruptNodeIndexIsNotSwallowed() throws IOException {
-            // The tolerance is deliberately narrow. A `ni` that exists but cannot be parsed is a real
-            // parsing defect of an existing pack, not an orphan entry, and it must keep surfacing.
-            // Turning this into a silent skip would hide genuine corruption.
+        @DisplayName("a pack whose 'ni' is truncated is left out; it no longer hides the other packs")
+        void aCorruptNodeIndexDoesNotHideTheOthers() throws IOException {
+            // A truncated `ni` used to fail the whole listing: one damaged pack hid every pack of the
+            // device, which could then be neither reordered nor removed from the UI. It is now
+            // isolated like a missing `ni` (logged, left out); the device check still reports it, and
+            // nothing on the partition is changed.
             FsStoryTellerAsyncDriver driver = DriverTestSupport.pluggedDriverMountedOn(partition);
             materialise(driver, PRESENT);
             Path folder = partition.resolve(".content").resolve(driver.computePackFolderName(ORPHAN.toString()));
             Files.createDirectories(folder);
             Files.write(folder.resolve("ni"), new byte[]{0x01});   // too short to hold a version
-            writeIndex(encode(PRESENT, ORPHAN));
+            byte[] index = encode(PRESENT, ORPHAN);
+            writeIndex(index);
 
-            assertThrows(Throwable.class, () -> driver.getPacksList().join(),
-                    "an unparseable pack must not be silently skipped");
+            assertEquals(List.of(PRESENT), listedUuids(driver));
+            assertArrayEquals(index, Files.readAllBytes(partition.resolve(".pi")), "the index is not repaired");
+            assertArrayEquals(new byte[]{0x01}, Files.readAllBytes(folder.resolve("ni")), "the pack is not touched");
         }
 
         @Test

@@ -22,6 +22,7 @@
       "serial": "Numéro de série :",
       "firmware": "Version firmware :",
       "empty": "Aucun pack d'histoires dans l'appareil.",
+      "loading": "Lecture des histoires de la Lunii…",
       "removePack": "Supprimer ce pack d'histoires de l'appareil",
       "sdcardsize": "Taille Carte SD :",
       "sdcardunit": "Go",
@@ -50,6 +51,7 @@
       "addPack": "Ajouter un pack d'histoires à la bibliothèque",
       "import": "Importer des packs",
       "search": "Rechercher un pack (titre, fichier, UUID)",
+      "loading": "Lecture de la bibliothèque…",
       "noMatch": "Aucun pack ne correspond à cette recherche.",
       "size": "Place occupée sur le disque"
     },
@@ -466,6 +468,7 @@
       "uploading": "Téléversement du pack vers la bibliothèque...",
       "uploaded": "Pack d'histoires téléversé.",
       "uploadingFailed": "Échec du téléversement du pack d'histoires vers la bibliothèque.",
+      "convertedSourceMissing": "Ce pack converti ne peut pas être envoyé : son archive d'origine n'est plus dans la bibliothèque, et STUdio n'envoie une conversion que s'il peut la relier à son archive. Remettez l'archive d'origine (.zip) dans la bibliothèque, puis envoyez à nouveau le pack.",
       "converting": "Conversion du pack dans la bibliothèque...",
       "converted": "Pack d'histoires converti.",
       "convertingFailed": "Échec de la conversion du pack d'histoires dans la bibliothèque.",
@@ -583,6 +586,10 @@
         "title": "Le pack d'histoires existe déjà dans la bibliothèque",
         "content": "Écraser le pack d'histoires dans la bibliothèque ?"
       },
+      "clear": {
+        "title": "Effacer le pack d'histoires",
+        "content": "Effacer tout le pack d'histoires en cours d'édition ? Ce qui n'a pas été enregistré ou exporté sera perdu."
+      },
       "filenameSuggestion": {
         "title": "Le nom de fichier peut être mis à jour",
         "content": "Générer un nouveau nom de fichier pour ce pack d'histoires ?",
@@ -630,10 +637,9 @@
       },
       "askConfirmConversion": {
         "title": "Convertir le pack d'histoires ?",
-        "content": "<p>Une instance de ce pack d'histoires compatible avec l'appareil est déjà dans la bibliothèque, mais STUdio ne peut pas vérifier qu'elle a été produite à partir du pack que la bibliothèque contient aujourd'hui : elle peut donc ne pas correspondre.</p><p>Reconvertissez ce pack pour en être sûr, ou envoyez l'instance existante si vous savez que c'est celle que vous voulez.</p><p>(Le pack converti sera conservé dans la bibliothèque locale)</p>",
-        "contentMismatch": "<p>Une instance de ce pack d'histoires compatible avec l'appareil est déjà dans la bibliothèque, mais STUdio l'a vérifiée : elle n'a pas été produite à partir du pack que la bibliothèque contient aujourd'hui, elle n'enverrait donc pas ce que vous avez.</p><p>Reconvertissez ce pack, ou envoyez quand même l'instance existante si c'est ce que vous voulez.</p><p>(Le pack converti sera conservé dans la bibliothèque locale)</p>",
+        "content": "<p>Une instance de ce pack d'histoires compatible avec l'appareil est déjà dans la bibliothèque, mais STUdio ne peut pas la relier à l'archive d'origine que la bibliothèque contient aujourd'hui : rien ne prouve qu'elle en provient.</p><p>Une conversion qui ne peut pas être reliée à son archive d'origine n'est pas envoyée à la Lunii. Reconvertissez ce pack pour l'envoyer.</p><p>(Le pack converti sera conservé dans la bibliothèque locale)</p>",
+        "contentMismatch": "<p>Une instance de ce pack d'histoires compatible avec l'appareil est déjà dans la bibliothèque, mais STUdio l'a vérifiée : elle n'a pas été produite à partir de l'archive d'origine que la bibliothèque contient aujourd'hui.</p><p>Une conversion qui ne peut pas être reliée à son archive d'origine n'est pas envoyée à la Lunii. Reconvertissez ce pack pour l'envoyer.</p><p>(Le pack converti sera conservé dans la bibliothèque locale)</p>",
         "convert": "Reconvertir",
-        "transfer": "Envoyer l'existante",
         "cancel": "Annuler"
       }
     },
@@ -690,6 +696,10 @@
         "REORDER": "La Lunii adopte le nouvel ordre.",
         "OTHER": "La Lunii utilise la nouvelle liste ; l'index actuel est conservé dans .pi.bak."
       },
+      "confirmAdoptIndexMissing": "Rétablir l'index de la Lunii à partir du fichier en attente (.pi.new) ?",
+      "indexMissing": "L'index installé (.pi) a disparu : la Lunii n'affiche plus aucune histoire. Le nouvel index (.pi.new) peut être adopté pour les retrouver.",
+      "indexMissingUnlisted": "Ces dossiers contiennent une histoire complète que le fichier en attente ne mentionne pas : {{folders}}. Les adopter les ferait disparaître de la Lunii.",
+      "indexMissingCannotAdopt": "L'index installé (.pi) a disparu et le nouvel index (.pi.new) n'est pas utilisable. STUdio ne fait rien : ne supprimez aucun dossier de la carte, et demandez de l'aide avant toute autre manipulation.",
       "cannotAdopt": "Le nouvel index ne peut pas être adopté : il désigne {{count}} histoire(s) dont le dossier n'est pas une copie complète sur la Lunii. Seul l'index actuel peut être gardé.",
       "confirmAdoptRemoving": "Remplacer l'index actuel par le nouvel index ? Ces histoires ne seront plus listées sur la Lunii : {{titles}}. Leurs dossiers restent sur la carte, et l'index actuel est conservé dans .pi.bak."
     },
@@ -842,7 +852,9 @@
       "transfer": "le transfert a échoué",
       "unknown": "résultat inconnu (suivi perdu)",
       "error": "erreur inattendue",
-      "noDevice": "Lunii débranchée"
+      "noDevice": "Lunii débranchée",
+      "sourceMissing": "archive d'origine absente de la bibliothèque : remettez-la pour envoyer ce pack",
+      "unverifiedConversion": "conversion existante non reliée à son archive d'origine, non reconvertie"
     },
     "summary": {
       "title": "Envoi de la sélection terminé",

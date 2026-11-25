@@ -9,6 +9,7 @@ package studio.driver;
 import org.usb4java.*;
 import studio.driver.event.DeviceHotplugEventListener;
 
+import java.util.Objects;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -23,6 +24,8 @@ public class LibUsbActivePollingWorker implements Runnable {
     private final DeviceVersion deviceVersion;
     private final DeviceHotplugEventListener listener;
     private Device device = null;
+    /** Where {@link #device} sat on the bus when it was announced (see {@link #identityOf}). */
+    private Object deviceIdentity = null;
     private int consecutiveFailures = 0;
 
     public LibUsbActivePollingWorker(Context context, DeviceVersion deviceVersion, DeviceHotplugEventListener listener) {
@@ -69,6 +72,51 @@ public class LibUsbActivePollingWorker implements Runnable {
         return consecutiveFailures;
     }
 
+    /**
+     * Where a device sits on the bus: its bus number and address. A device unplugged and plugged
+     * again is enumerated anew and usually gets another address, even if libusb hands back the same
+     * object for it.
+     */
+    protected Object identityOf(Device d) {
+        return LibUsb.getBusNumber(d) + ":" + LibUsb.getDeviceAddress(d);
+    }
+
+    /**
+     * Fires the events one scan calls for. Comparing presence alone missed a device unplugged and
+     * plugged again, or swapped for another Lunii, between two scans (POLL_DELAY apart): no event, so
+     * the drivers kept the previous device, and its drive letter. A device found that is not the one
+     * announced (another libusb device, or the same one at another bus address) is now announced as
+     * the unplug of the previous one, then the plug of this one, in that order.
+     *
+     * @param identity {@link #identityOf(Device)} of {@code found}, {@code null} when nothing was found
+     */
+    void onScanResult(Device found, Object identity) {
+        if (found != null && this.device != null
+                && (!found.equals(this.device) || !Objects.equals(identity, this.deviceIdentity))) {
+            LOGGER.info("Active polling found another device than the one announced (" + this.deviceIdentity
+                    + " -> " + identity + "). Firing unplug, then plug.");
+            Device lost = this.device;
+            this.device = null;
+            this.deviceIdentity = null;
+            LibUsbDetectionHelper.dispatchUnplugged(this.listener, lost);
+        }
+        if (found != null && this.device == null) {
+            LOGGER.info("Active polling found a new device. Firing event.");
+            this.device = found;
+            this.deviceIdentity = identity;
+            LibUsbDetectionHelper.dispatchPlugged(this.listener, found);
+        } else if (found == null && this.device != null) {
+            LOGGER.info("Active polling lost the device. Firing event.");
+            // The device is captured here, not read from the field inside the task: the field is
+            // cleared on the next line, and the task used to run after that, announcing the
+            // unplug of "null" — which the drivers now ignore as not being their device.
+            Device lost = this.device;
+            this.device = null;
+            this.deviceIdentity = null;
+            LibUsbDetectionHelper.dispatchUnplugged(this.listener, lost);
+        }
+    }
+
     /** Seam: the actual scan, overridden in tests to inject failures without native libusb. */
     protected void scanOnce() {
         // List available devices
@@ -103,19 +151,7 @@ public class LibUsbActivePollingWorker implements Runnable {
                 }
             }
             // Fire plugged / unplugged events
-            if (found != null && this.device == null) {
-                LOGGER.info("Active polling found a new device. Firing event.");
-                this.device = found;
-                LibUsbDetectionHelper.dispatchPlugged(this.listener, found);
-            } else if (found == null && this.device != null) {
-                LOGGER.info("Active polling lost the device. Firing event.");
-                // The device is captured here, not read from the field inside the task: the field is
-                // cleared on the next line, and the task used to run after that, announcing the
-                // unplug of "null" — which the drivers now ignore as not being their device.
-                Device lost = this.device;
-                this.device = null;
-                LibUsbDetectionHelper.dispatchUnplugged(this.listener, lost);
-            }
+            onScanResult(found, found == null ? null : identityOf(found));
         } finally {
             // Ensure the allocated device list is freed
             LibUsb.freeDeviceList(devices, false);  // Do NOT unref devices

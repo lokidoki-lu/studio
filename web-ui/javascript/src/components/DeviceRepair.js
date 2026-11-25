@@ -71,11 +71,16 @@ export class DeviceRepair extends React.Component {
     }
 
     onOpen = () => {
-        this.setState({open: true, confirm: null, message: null});
+        // A fresh window: no integrity check left over from a previous opening
+        this.integrityGeneration = (this.integrityGeneration || 0) + 1;
+        this.stopPolling();
+        this.setState({open: true, confirm: null, message: null, integrity: null});
         return this.refresh();
     };
 
     onClose = () => {
+        // Answers still in flight (start or progress of an integrity check) belong to this window only
+        this.integrityGeneration = (this.integrityGeneration || 0) + 1;
         this.stopPolling();
         this.setState({open: false, confirm: null, diagnosis: null, integrity: null, error: null, message: null});
     };
@@ -130,17 +135,29 @@ export class DeviceRepair extends React.Component {
             return Promise.resolve();
         }
         this.setState({integrity: {done: false, checked: 0, total: 0}});
+        // Every answer is checked against this: the window closed (or reopened) since makes it stale
+        const generation = this.integrityGeneration = (this.integrityGeneration || 0) + 1;
+        const current = () => generation === this.integrityGeneration;
         return startIntegrityCheck()
             .then(resp => {
+                if (!current()) {
+                    return;
+                }
                 const id = resp.checkId;
                 const read = () => fetchIntegrityCheck(id)
                     .then(state => {
+                        if (!current()) {
+                            return;
+                        }
                         this.safeSetState({integrity: state});
                         if (state.done) {
                             this.stopPolling();
                         }
                     })
                     .catch(e => {
+                        if (!current()) {
+                            return;
+                        }
                         this.stopPolling();
                         this.safeSetState({integrity: {done: true, success: false, message: e && e.message}});
                     });
@@ -148,7 +165,11 @@ export class DeviceRepair extends React.Component {
                 this.poll = setInterval(read, INTEGRITY_POLL_MS);
                 return read();
             })
-            .catch(e => this.safeSetState({integrity: {done: true, success: false, message: (e && e.message) || t('deviceRepair.failed', {message: ''})}}));
+            .catch(e => {
+                if (current()) {
+                    this.safeSetState({integrity: {done: true, success: false, message: (e && e.message) || t('deviceRepair.failed', {message: ''})}});
+                }
+            });
     };
 
     toggleOrphan = (folder) => (event) => {
@@ -166,14 +187,28 @@ export class DeviceRepair extends React.Component {
         return t('deviceRepair.pendingIndex.confirmAdoptRemoving', {titles: removed.map(u => this.packLabel(u)).join(', ')});
     }
 
-    renderPendingIndex(p, token) {
+    renderPendingIndex(p, token, indexMissing) {
         const { t } = this.props;
         const kind = `deviceRepair.pendingIndex.kinds.${p.kind}`;
         const details = { added: (p.added || []).length, removed: (p.removed || []).length, current: p.currentCount, pending: p.pendingCount };
         return <section className="device-repair-section">
             <h5>{t('deviceRepair.pendingIndex.title')}</h5>
-            <p>{t(kind, details)}</p>
-            {p.safeToDiscard
+            {indexMissing
+                ? <p className="device-repair-warning">{t('deviceRepair.pendingIndex.indexMissing')}</p>
+                : <p>{t(kind, details)}</p>}
+            {indexMissing
+                ? (p.canAdopt
+                    ? <button type="button" className="ui-btn" disabled={this.state.busy}
+                              onClick={this.ask(t('deviceRepair.pendingIndex.confirmAdoptIndexMissing'), () => resolvePendingIndex('adopt', p.fingerprint, token))}>
+                        {t('deviceRepair.pendingIndex.adopt')}
+                    </button>
+                    : <>
+                        <p className="device-repair-hint">{t('deviceRepair.pendingIndex.indexMissingCannotAdopt')}</p>
+                        {(p.unlistedCompleteFolders || []).length > 0 && <p className="device-repair-hint">
+                            {t('deviceRepair.pendingIndex.indexMissingUnlisted', {folders: p.unlistedCompleteFolders.join(', ')})}
+                        </p>}
+                    </>)
+                : p.safeToDiscard
                 ? <>
                     <p className="device-repair-safe">{t('deviceRepair.pendingIndex.safe')}</p>
                     <button type="button" className="ui-btn" disabled={this.state.busy}
@@ -214,12 +249,14 @@ export class DeviceRepair extends React.Component {
         const interrupted = d.interruptedUpdates || [];
         const selected = orphans.filter(o => this.state.selectedOrphans[o.folder] && !o.referencedByPendingIndex).map(o => o.folder);
         const token = d.deviceToken;
+        // Without an installed index nothing else can be judged: every folder would look orphaned
+        const indexMissing = d.indexMissing === true;
         return <>
             <p className={d.problems > 0 ? 'device-repair-warning' : 'device-repair-safe'}>
                 {d.problems > 0 ? t('deviceRepair.problems', {count: d.problems}) : t('deviceRepair.noProblem', {count: d.indexedPacks})}
             </p>
-            {d.pendingIndex && this.renderPendingIndex(d.pendingIndex, token)}
-            {interrupted.length > 0 && <section className="device-repair-section">
+            {d.pendingIndex && this.renderPendingIndex(d.pendingIndex, token, indexMissing)}
+            {!indexMissing && interrupted.length > 0 && <section className="device-repair-section">
                 <h5>{t('deviceRepair.interrupted.title')}</h5>
                 <ul>
                     {interrupted.map(u => <li key={u.folder}>
@@ -232,7 +269,7 @@ export class DeviceRepair extends React.Component {
                     </li>)}
                 </ul>
             </section>}
-            {orphans.length > 0 && <section className="device-repair-section">
+            {!indexMissing && orphans.length > 0 && <section className="device-repair-section">
                 <h5>{t('deviceRepair.orphans.title')}</h5>
                 <p className="device-repair-hint">{t('deviceRepair.orphans.intro')}</p>
                 <ul className="device-repair-list">
@@ -250,7 +287,7 @@ export class DeviceRepair extends React.Component {
                     {t('deviceRepair.orphans.remove', {count: selected.length})}
                 </button>
             </section>}
-            {missing.length > 0 && <section className="device-repair-section">
+            {!indexMissing && missing.length > 0 && <section className="device-repair-section">
                 <h5>{t('deviceRepair.missing.title')}</h5>
                 <ul>
                     {missing.map(m => <li key={m.uuid}>

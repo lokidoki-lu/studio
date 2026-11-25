@@ -143,6 +143,20 @@ public interface IStoryTellerService {
     default void setSendGuard(SendGuard guard) {
     }
 
+    /**
+     * What the server checks about a Lunii pack before it is copied into the library (see
+     * {@link LibrarySendGuard#extractionRefusal}): checked again when the extraction actually
+     * starts, in the device queue.
+     */
+    @FunctionalInterface
+    interface ExtractionGuard {
+        /** The refusal, or empty if the pack {@code uuid} may be copied into the library. */
+        Optional<studio.driver.StoryTellerException> refusal(String uuid);
+    }
+
+    default void setExtractionGuard(ExtractionGuard guard) {
+    }
+
     private static studio.driver.StoryTellerException unsupported() {
         return new studio.driver.StoryTellerException(studio.driver.StoryTellerException.Reason.UNSUPPORTED_ON_DEVICE,
                 "Not available with this device service");

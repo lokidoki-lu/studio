@@ -21,7 +21,11 @@ export function readFromArchive(file) {
     return zip.loadAsync(file)
         .then((archive) => {
             // Read JSON story descriptor
-            return archive.file("story.json").async('string').then(storyJson => buildPackModel(
+            const descriptor = archive.file("story.json");
+            if (!descriptor) {
+                throw new Error('No story.json in ' + ((file && file.name) || 'the archive'));
+            }
+            return descriptor.async('string').then(storyJson => buildPackModel(
                 JSON.parse(storyJson),
                 // Assets are held as base64 data URLs
                 () => {
@@ -34,7 +38,9 @@ export function readFromArchive(file) {
                     .then(base64Asset => dataUrlPrefix(assetFileName) + base64Asset)
             ));
         }, e => {
-            console.log("Error reading " + file.name + ": " + e.message)
+            // Not a readable ZIP (truncated, renamed): the caller has to know, not get undefined
+            console.log("Error reading " + ((file && file.name) || 'archive') + ": " + e.message);
+            throw e;
         });
 }
 

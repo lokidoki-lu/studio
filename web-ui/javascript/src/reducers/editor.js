@@ -13,6 +13,10 @@ const initialState = {
 const editor = (state = initialState, action) => {
     switch (action.type) {
         case 'SET_EDITOR_DIAGRAM':
+            if (!action.diagram) {
+                // No model (a pack that could not be read): the editor keeps the pack it shows, and its name
+                return state;
+            }
             return { ...state, diagram: action.diagram, filename: (action.filename || '') };
         case 'SET_EDITOR_FILENAME':
             return { ...state, filename: (action.filename || '') };

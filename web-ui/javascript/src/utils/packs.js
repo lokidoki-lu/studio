@@ -58,6 +58,15 @@ export function isConversionOutput(pack) {
 }
 
 /*
+ * Whether the server sends this artefact only once verifyConversion has answered MATCH: a folder (fs)
+ * that STUdio converted. Without its source archive in the library, the proof cannot be made and the
+ * transfer is refused (guard of the official packs).
+ */
+export function needsProvenanceProof(pack) {
+    return !!pack && pack.format === 'fs' && isConversionOutput(pack);
+}
+
+/*
  * Decide what to do when a pack is dropped onto a device.
  *
  * `packs` are one UUID's artefacts as the library lists them, most recent first; `driverFormat` is
@@ -143,3 +152,20 @@ export function applyProvenanceVerdict(decision, verdict) {
     }
     return { ...decision, verdict: verdict === 'MISMATCH' ? 'MISMATCH' : 'UNKNOWN' };
 }
+
+const ZIP_TYPES = ['application/zip', 'application/x-zip-compressed'];
+
+/**
+ * A ZIP archive, judged on the extension as well as the MIME type, which Windows often leaves empty or
+ * sets to something else for a .zip.
+ */
+export const isZipFile = (file) => {
+    const name = (file && file.name ? file.name : '').toLowerCase();
+    return ZIP_TYPES.indexOf(file && file.type) !== -1 || name.endsWith('.zip');
+};
+
+/** A file the library can import: a ZIP archive or a binary .pack. */
+export const isPackFile = (file) => {
+    const name = (file && file.name ? file.name : '').toLowerCase();
+    return isZipFile(file) || name.endsWith('.pack');
+};

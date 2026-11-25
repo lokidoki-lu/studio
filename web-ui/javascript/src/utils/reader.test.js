@@ -11,7 +11,9 @@
  * then each asset once, as an entry served by the library, and keeps the assets as object URLs.
  */
 
-import {readFromLibrary, releaseLibraryAssets, adoptLibraryAssets, discardLibraryAssets} from "./reader";
+import JSZip from 'jszip';
+
+import {readFromArchive, readFromLibrary, releaseLibraryAssets, adoptLibraryAssets, discardLibraryAssets} from "./reader";
 
 const STAGE_UUID = '00000000-0000-0000-0000-000000000001';
 const SECOND_UUID = '00000000-0000-0000-0000-000000000002';
@@ -174,5 +176,38 @@ describe('readFromLibrary', () => {
 
         expect(created).toHaveLength(1);
         expect(revoked).toEqual([created[0].url]);
+    });
+});
+
+describe('readFromArchive', () => {
+    beforeEach(() => {
+        jest.spyOn(console, 'log').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+        console.log.mockRestore();
+    });
+
+    it('rejects a file that is not a readable ZIP, instead of resolving with nothing', async () => {
+        const notAZip = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+        await expect(readFromArchive(notAZip)).rejects.toBeDefined();
+    });
+
+    it('rejects a ZIP without story.json', async () => {
+        const zip = new JSZip();
+        zip.file('readme.txt', 'nothing here');
+        const bytes = await zip.generateAsync({type: 'uint8array'});
+        await expect(readFromArchive(bytes)).rejects.toThrow(/story\.json/);
+    });
+
+    it('reads a pack archive into a model', async () => {
+        const zip = new JSZip();
+        zip.file('story.json', JSON.stringify(story()));
+        zip.file('assets/cover.png', 'image bytes');
+        zip.file('assets/shared.mp3', 'audio bytes');
+        const bytes = await zip.generateAsync({type: 'uint8array'});
+        const model = await readFromArchive(bytes);
+        expect(model).toBeDefined();
+        expect(model.title).toBe('Été');
     });
 });

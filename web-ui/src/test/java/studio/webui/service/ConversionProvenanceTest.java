@@ -17,6 +17,7 @@ import studio.core.v1.model.StoryPack;
 import studio.core.v1.writer.archive.ArchiveStoryPackWriter;
 import studio.core.v1.writer.binary.BinaryStoryPackWriter;
 import studio.core.v1.writer.fs.FsStoryPackWriter;
+import studio.driver.StoryTellerException;
 import studio.metadata.DatabaseMetadataService;
 
 import java.io.IOException;
@@ -32,6 +33,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -193,7 +195,7 @@ class ConversionProvenanceTest {
     // ------------------------------------------------- when nothing is recorded
 
     @Test
-    @DisplayName("a source that changes during the conversion leaves the artefact but no record")
+    @DisplayName("an archive that changes during its conversion: the conversion is cancelled, nothing is left")
     void unstableSourceIsNotRecorded() throws IOException {
         writeArchive("pack.zip");
 
@@ -218,10 +220,13 @@ class ConversionProvenanceTest {
             }
         };
 
-        Path artifact = convert(mutating.addConvertedFsPackFile("pack.zip", false));
-
-        assertTrue(Files.exists(artifact), "the conversion the user asked for must survive");
-        assertFalse(provenance.find(artifact.getFileName().toString()).isPresent(),
+        // Unrecorded, the conversion of an archive would never be sent to a Lunii: it is cancelled
+        // rather than left as a copy refused at each transfer
+        assertThrows(StoryTellerException.class, () -> mutating.addConvertedFsPackFile("pack.zip", false));
+        try (java.util.stream.Stream<Path> entries = Files.list(library)) {
+            assertEquals(1, entries.count(), "only the source is left");
+        }
+        assertEquals(ConversionProvenanceStore.State.ABSENT, provenance.state(),
                 "a source that moved during the window cannot be recorded as the one converted");
     }
 
@@ -242,15 +247,18 @@ class ConversionProvenanceTest {
     }
 
     @Test
-    @DisplayName("an unreadable ledger costs the record, never the conversion")
-    void invalidStoreKeepsTheConversion() throws IOException {
+    @DisplayName("an unreadable ledger cancels the conversion of an archive, and is left untouched")
+    void invalidStoreCancelsTheConversion() throws IOException {
         writeArchive("pack.zip");
         byte[] corrupt = "{ not json".getBytes(StandardCharsets.UTF_8);
         Files.write(store, corrupt);
 
-        Path artifact = convert(service.addConvertedFsPackFile("pack.zip", false));
+        StoryTellerException e = assertThrows(StoryTellerException.class, () -> service.addConvertedFsPackFile("pack.zip", false));
 
-        assertTrue(Files.exists(artifact), "the conversion must not depend on the ledger");
+        assertTrue(e.getMessage().contains("conversions.json"), e.getMessage());
+        try (java.util.stream.Stream<Path> entries = Files.list(library)) {
+            assertEquals(1, entries.count(), "only the source is left");
+        }
         assertEquals(ConversionProvenanceStore.State.INVALID, provenance.state());
         assertArrayEqualsMessage(corrupt, Files.readAllBytes(store));
     }

@@ -140,11 +140,16 @@ final class FsDeviceMaintenance {
      * As {@link #diagnose(Path, byte[])}; with the device's {@code infos}, the state of an
      * interrupted update also tells a damaged pack folder next to a healthy copy (see
      * {@link #interruptedState(Path, String, boolean, FsDeviceInfos)}).
+     *
+     * <p>{@code indexBytes} is {@code null} when {@code .pi} is missing next to a {@code .pi.new}
+     * (see {@link FsDeviceDiagnosis#isIndexMissing()}): the installed index then reads as empty.
      */
     static FsDeviceDiagnosis diagnose(Path mountPoint, byte[] indexBytes, FsDeviceInfos infos) throws IOException {
-        List<UUID> index = parseIndex(indexBytes);
+        boolean indexMissing = indexBytes == null;
+        List<UUID> index = indexMissing ? List.of() : parseIndex(indexBytes);
         FsDeviceDiagnosis diagnosis = new FsDeviceDiagnosis();
         diagnosis.setIndexedPacks(index.size());
+        diagnosis.setIndexMissing(indexMissing);
         Path content = mountPoint.resolve(".content");
 
         Map<String, UUID> referenced = new HashMap<>();
@@ -310,21 +315,40 @@ final class FsDeviceMaintenance {
      * <p>Adoptable only when every pack it names has a complete folder on the card: an empty file, one
      * cut on a record boundary, or one filled with zeros or noise names packs that are not there (or
      * none at all), and adopting it would empty or scramble the index.
+     *
+     * <p>A {@code .pi.new} that adds nothing and drops more than one pack, in whatever order, is torn
+     * as well: the writer writes the records in order, unbuffered, so a write cut on a record boundary
+     * leaves the beginning of the intended index (of a removal or of a reordering), while no operation
+     * of STUdio removes more than one pack per index write. Dropping one pack only cannot be told from
+     * a removal and stays a choice.
+     *
+     * <p>{@code currentBytes} is {@code null} when {@code .pi} is missing: it is read as empty, so a
+     * {@code .pi.new} whose packs are all complete copies can be adopted. Nothing is safe to discard
+     * then, since discarding would leave the device with no index at all, and an empty {@code .pi.new}
+     * is torn.
      */
     static FsDeviceDiagnosis.PendingIndex analysePendingIndex(byte[] currentBytes, byte[] pendingBytes, Path content) {
+        boolean currentMissing = currentBytes == null;
         String fingerprint = fingerprint(currentBytes, pendingBytes);
-        List<UUID> current = parseIndex(currentBytes);
+        List<UUID> current = currentMissing ? List.of() : parseIndex(currentBytes);
+        int currentCount = currentMissing ? -1 : current.size();
         // An empty .pi.new next to a non-empty .pi is a write cut before its first record: the writer
         // creates the file, then writes it. It is not "a removal of every pack".
-        if (pendingBytes.length % 16 != 0 || (pendingBytes.length == 0 && !current.isEmpty())) {
-            return new FsDeviceDiagnosis.PendingIndex(PendingIndexKind.TORN, true, fingerprint, current.size(), -1,
-                    List.of(), List.of(), List.of(), false);
+        if (pendingBytes.length % 16 != 0 || (pendingBytes.length == 0 && (!current.isEmpty() || currentMissing))) {
+            return tornPendingIndex(!currentMissing, fingerprint, currentCount);
         }
         List<UUID> pending = parseIndex(pendingBytes);
         List<UUID> added = new ArrayList<>(new LinkedHashSet<>(pending));
         added.removeAll(current);
         List<UUID> removed = new ArrayList<>(new LinkedHashSet<>(current));
         removed.removeAll(pending);
+        if (added.isEmpty() && removed.size() > 1) {
+            // No operation of STUdio drops more than one pack per index write (a removal drops one, a
+            // reordering none). Dropping several, in whatever order, is a write cut on a record
+            // boundary — a removal of the last pack, or a reordering [D,C,B,A] cut at [D,C] — and
+            // adopting it would silently unindex complete copies. .pi is intact: it can be discarded.
+            return tornPendingIndex(true, fingerprint, currentCount);
+        }
 
         PendingIndexKind kind;
         boolean safe;
@@ -354,8 +378,61 @@ final class FsDeviceMaintenance {
             }
         }
         boolean adoptable = kind != PendingIndexKind.ADD_INCOMPLETE && incomplete.isEmpty();
-        return new FsDeviceDiagnosis.PendingIndex(kind, safe, fingerprint, current.size(), pending.size(), added, removed,
-                incomplete, adoptable);
+        List<String> unlistedComplete = List.of();
+        if (currentMissing) {
+            // Discarding would leave no index at all: never offered as harmless.
+            safe = false;
+            // Without .pi, nothing proves .pi.new is whole: one cut on a record boundary names only the
+            // first packs. Adopting it would drop every complete pack it does not name from the index,
+            // so it is refused while there is one, however many. No tolerance: there is no evidence.
+            unlistedComplete = completeFoldersNotNamed(content, pending);
+            if (!unlistedComplete.isEmpty()) {
+                adoptable = false;
+            }
+        }
+        return new FsDeviceDiagnosis.PendingIndex(kind, safe, fingerprint, currentCount, pending.size(), added, removed,
+                incomplete, adoptable, unlistedComplete);
+    }
+
+    /**
+     * The packs of {@code content}, by folder name (8 hex characters, upper-cased, sorted, once each),
+     * that no entry of {@code named} refers to and that have at least one complete copy: the pack
+     * folder itself, or a leftover of an interrupted in-place update ({@code .studio-new-X},
+     * {@code .studio-old-X}), which may be the only complete copy left. A listing that fails is
+     * reported, never read as "none": the answer decides whether an index may be installed.
+     */
+    private static List<String> completeFoldersNotNamed(Path content, List<UUID> named) {
+        Set<String> namedFolders = new HashSet<>();
+        for (UUID uuid : named) {
+            namedFolders.add(folderNameOf(uuid));
+        }
+        Set<String> unlisted = new java.util.TreeSet<>();
+        if (!Files.isDirectory(content, LinkOption.NOFOLLOW_LINKS)) {
+            return new ArrayList<>(unlisted);
+        }
+        try (Stream<Path> entries = Files.list(content)) {
+            for (Path entry : (Iterable<Path>) entries::iterator) {
+                String name = entry.getFileName().toString();
+                String hex = stagingHex(name);
+                if (hex == null) {
+                    if (!PACK_FOLDER_NAME.matcher(name).matches()) {
+                        continue;
+                    }
+                    hex = name.toUpperCase(Locale.ROOT);
+                }
+                if (!namedFolders.contains(hex) && !unlisted.contains(hex) && isCompletePackFolder(entry)) {
+                    unlisted.add(hex);
+                }
+            }
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException("Failed to list the pack folders of " + content, e);
+        }
+        return new ArrayList<>(unlisted);
+    }
+
+    private static FsDeviceDiagnosis.PendingIndex tornPendingIndex(boolean safe, String fingerprint, int currentCount) {
+        return new FsDeviceDiagnosis.PendingIndex(PendingIndexKind.TORN, safe, fingerprint, currentCount, -1,
+                List.of(), List.of(), List.of(), false);
     }
 
     private static boolean isOrderedSubsequence(List<UUID> sub, List<UUID> list) {
@@ -368,11 +445,14 @@ final class FsDeviceMaintenance {
         return i == sub.size();
     }
 
+    /** {@code current} is {@code null} when {@code .pi} is missing, which is not the same as empty. */
     static String fingerprint(byte[] current, byte[] pending) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            digest.update(ByteBuffer.allocate(8).putLong(current.length).array());
-            digest.update(current);
+            digest.update(ByteBuffer.allocate(8).putLong(current == null ? -1L : current.length).array());
+            if (current != null) {
+                digest.update(current);
+            }
             digest.update(pending);
             StringBuilder sb = new StringBuilder();
             for (byte b : digest.digest()) {

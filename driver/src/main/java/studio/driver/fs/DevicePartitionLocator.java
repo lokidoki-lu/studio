@@ -96,13 +96,28 @@ public class DevicePartitionLocator {
      * @return the mount point, or empty if the device went away or the deadline expired.
      */
     public Optional<String> awaitPartition(BooleanSupplier deviceStillPlugged) {
+        return awaitPartition(deviceStillPlugged, List::of);
+    }
+
+    /**
+     * As {@link #awaitPartition(BooleanSupplier)}, never answering one of the {@code excluded} mount
+     * points (compared by volume, like candidates): the partition of a device already published
+     * belongs to that device, not to the one just plugged. A volume is skipped, not refused: the
+     * search goes on until the new device's own partition is mounted. Consulted before every
+     * attempt, so a volume stops being excluded once its device is gone.
+     */
+    public Optional<String> awaitPartition(BooleanSupplier deviceStillPlugged, Supplier<List<String>> excluded) {
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             if (!deviceStillPlugged.getAsBoolean()) {
                 LOGGER.info("Device partition search cancelled: device is no longer plugged");
                 return Optional.empty();
             }
 
-            Optional<String> found = scanOnce();
+            List<Object> excludedVolumes = new ArrayList<>();
+            for (String mountPoint : excluded.get()) {
+                excludedVolumes.add(volumeIdentity(mountPoint));
+            }
+            Optional<String> found = scanOnce(excludedVolumes);
             if (found.isPresent()) {
                 LOGGER.info("Device partition located on " + found.get() + " after " + attempt + " attempt(s)");
                 return found;
@@ -124,7 +139,7 @@ public class DevicePartitionLocator {
         return Optional.empty();
     }
 
-    private Optional<String> scanOnce() {
+    private Optional<String> scanOnce(List<Object> excludedVolumes) {
         List<String> mountPoints;
         try {
             mountPoints = mountPointsSupplier.get();
@@ -141,7 +156,12 @@ public class DevicePartitionLocator {
         for (String mountPoint : mountPoints) {
             try {
                 if (partitionMarkerPresent.test(mountPoint)) {
-                    byVolume.putIfAbsent(volumeIdentity(mountPoint), mountPoint);
+                    Object volume = volumeIdentity(mountPoint);
+                    if (excludedVolumes.contains(volume)) {
+                        LOGGER.fine("Skipping " + mountPoint + ": it is the partition of the device already in use");
+                        continue;
+                    }
+                    byVolume.putIfAbsent(volume, mountPoint);
                 }
             } catch (Exception e) {
                 LOGGER.log(Level.FINE, "Failed to probe mount point " + mountPoint, e);
