@@ -134,6 +134,43 @@ describe('in-place update', () => {
         expect(props.updateOnDevice).toHaveBeenCalledWith('u-yt', 'yt.fs', 'fs', 'fs', expect.anything());
     });
 
+    it('an update that needs the conversion question stays an update once answered, and is told apart from a send queue', async () => {
+        const props = actions();
+        // An archive source and an fs conversion whose provenance cannot be proven: the user is asked
+        const library = {...LIBRARY, packs: [
+            {uuid: 'u-yt', packs: [
+                {uuid: 'u-yt', path: 'yt.zip', format: 'archive', title: 'Ma chaîne', size: 5e6, version: 1, timestamp: 2},
+                {uuid: 'u-yt', path: 'yt.fs', format: 'fs', title: 'Ma chaîne', size: 5e6, version: 1, timestamp: 1}
+            ]},
+            ...LIBRARY.packs.slice(1)
+        ]};
+        await render(PackLibrary, {device: DEVICE, library, ...props});
+        const update = buttons(container.querySelector('.plugged-device .pack-tile'), 'deviceUpdate.update');
+        act(() => { update[0].click(); });
+        await flush();
+        expect(props.verifyConversion).toHaveBeenCalledWith('yt.zip', 'yt.fs');
+        // A single pack: the "applies to the whole selection" note is not shown
+        expect(container.textContent).not.toContain('sendQueue.appliesToAll');
+        const convert = buttons(container, 'dialogs.library.askConfirmConversion.convert');
+        expect(convert).toHaveLength(1);
+        act(() => { convert[0].click(); });
+        await flush();
+        expect(props.convertPackInLibrary).toHaveBeenCalledWith('u-yt', 'yt.zip', 'fs', false, expect.anything());
+        expect(props.updateOnDevice).toHaveBeenCalledWith('u-yt', 'converted', 'fs', 'fs', expect.anything());
+        expect(props.addFromLibrary).not.toHaveBeenCalled();
+    });
+
+    it('an update that does not fit on the device is neither converted nor sent', async () => {
+        const props = {...actions(), estimateOnDevice: jest.fn(paths => Promise.resolve({method: 'measured', packs: paths.map(path => ({path, bytes: 9e9}))}))};
+        await render(PackLibrary, {device: DEVICE, library: LIBRARY, ...props});
+        const update = buttons(container.querySelector('.plugged-device .pack-tile'), 'deviceUpdate.update');
+        act(() => { update[0].click(); });
+        await flush();
+        expect(props.estimateOnDevice).toHaveBeenCalledWith(['yt.fs'], 'fs');
+        expect(props.updateOnDevice).not.toHaveBeenCalled();
+        expect(props.convertPackInLibrary).not.toHaveBeenCalled();
+    });
+
     it('a 1.x Lunii is not asked for updates', async () => {
         const props = actions();
         await render(PackLibrarySimple, {device: {...DEVICE, metadata: {...DEVICE.metadata, driver: 'raw'}}, library: LIBRARY, ...props});

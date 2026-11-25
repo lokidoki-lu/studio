@@ -174,6 +174,11 @@ public class StoryTellerService implements IStoryTellerService {
                 "The device was unplugged before the transfer ended"));
     }
 
+    @Override
+    public OptionalLong deviceBlockSize() {
+        return fsDevice != null ? fsDriver.partitionBlockSize() : OptionalLong.empty();
+    }
+
     public CompletableFuture<Optional<JsonObject>> deviceInfos() {
         if (device != null) {
             // A 1.x device is read over USB, which must not overlap a transfer.

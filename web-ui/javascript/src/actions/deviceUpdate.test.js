@@ -66,7 +66,7 @@ async function run(ch, mode) {
     const dispatch = jest.fn();
     // A pack of its own per run: a transfer still followed would make the next one refused as busy
     const uuid = 'uuid-' + (++counter);
-    await actionAddFromLibrary(uuid, 'pack.fs', 'fs', 'fs', { channel: ch }, t, mode)(dispatch);
+    await actionAddFromLibrary(uuid, 'pack.fs', 'fs', 'fs', { channel: ch }, t, { mode })(dispatch);
     await flush();
     return dispatch;
 }

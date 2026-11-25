@@ -764,6 +764,60 @@
       "updated": "Story updated on the Lunii, in the same place.",
       "failed": "Failed to update the story on the Lunii"
     }
+  },
+  "sendQueue": {
+    "selection": "{{count}} pack selected",
+    "selection_plural": "{{count}} packs selected",
+    "select": "Select “{{title}}” to send it to the Lunii",
+    "selectAll": "Select all",
+    "clear": "Deselect all",
+    "send": "Send the selection to the Lunii",
+    "progress": "Pack {{current}}/{{total}}: {{title}}",
+    "overall": "Sending progress: {{percent}} %",
+    "cancel": "Cancel the rest",
+    "cancelling": "Stopping after this pack…",
+    "appliesToAll": "This answer will also apply to the other packs of the selection.",
+    "phases": {
+      "preparing": "preparing",
+      "verifying": "checking",
+      "converting": "converting",
+      "transferring": "transferring"
+    },
+    "reasons": {
+      "official": "official story, not transferable",
+      "onDevice": "already on the Lunii",
+      "cancelled": "sending cancelled",
+      "declined": "left out when asked",
+      "nothing": "nothing to send",
+      "space": "not enough space",
+      "conversion": "the conversion failed",
+      "busy": "the Lunii stayed busy",
+      "incompatible": "format not compatible with the Lunii",
+      "transfer": "the transfer failed",
+      "unknown": "outcome unknown (tracking lost)",
+      "error": "unexpected error",
+      "noDevice": "Lunii unplugged"
+    },
+    "summary": {
+      "title": "Sending of the selection finished",
+      "counts": "Sent: {{sent}} · Skipped: {{skipped}} · Failed: {{failed}}",
+      "sent": "Sent",
+      "skipped": "Skipped",
+      "failed": "Failed"
+    }
+  },
+  "spaceEstimate": {
+    "summary": "Space needed: {{required}} · Space free: {{free}}",
+    "rough": "(rough estimate)",
+    "estimating": "Estimating the space needed…",
+    "plugFirst": "Plug the Lunii in to estimate the space and send",
+    "tooBig": "It does not fit: {{missing}} short. Remove packs from the selection, or free some space on the Lunii.",
+    "blocked": "Not enough space on the Lunii for this selection",
+    "refusal": {
+      "title": "Not enough space on the Lunii",
+      "content": "This pack will take about {{required}} once in the Lunii's format, but it only has {{free}} free: {{missing}} short.",
+      "content_plural": "These {{count}} packs will take about {{required}} once in the Lunii's format, but it only has {{free}} free: {{missing}} short.",
+      "explain": "Nothing was converted nor sent. Free some space by removing stories from the Lunii, or send fewer packs at a time. The estimate counts the conversion (MP3 and images for recent Lunii, WAV for the first Lunii) and the minimum space each file takes on the card."
+    }
   }
-
 }

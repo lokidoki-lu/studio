@@ -12,6 +12,7 @@ import io.vertx.core.json.JsonObject;
 import java.io.File;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.CompletableFuture;
 
 public interface IStoryTellerService {
@@ -39,6 +40,14 @@ public interface IStoryTellerService {
 
     /** Removes the named unreferenced pack content folders, and reports what happened to each. */
     CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames);
+
+    /**
+     * The block size the plugged device's partition reports (V2/V3 only), from which the library
+     * estimate derives the cluster to round to. Empty when there is none or it cannot be read.
+     */
+    default OptionalLong deviceBlockSize() {
+        return OptionalLong.empty();
+    }
 
     // ------------------------------------------------------------ device check, repairs, updates
     // Defaults refuse, so that stand-ins (the mock service, test fakes) need not implement them.

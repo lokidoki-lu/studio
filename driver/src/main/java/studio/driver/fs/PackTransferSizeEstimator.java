@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.OptionalLong;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -47,7 +48,7 @@ import java.util.stream.Stream;
  * result is a floor on the requirement, not a guarantee of success. The real protection against
  * running out of space mid-transfer is what happens when a copy fails, which is still unchanged.
  */
-final class PackTransferSizeEstimator {
+public final class PackTransferSizeEstimator {
 
     /** Only the first block of an asset is ciphered; the rest is copied through unchanged. */
     private static final long CIPHER_BLOCK_SIZE = 512L;
@@ -128,5 +129,93 @@ final class PackTransferSizeEstimator {
         }
         long remainder = size % AES_BLOCK_SIZE;
         return remainder == 0L ? size : size + (AES_BLOCK_SIZE - remainder);
+    }
+
+    // ------------------------------------------------------------------ allocated space (estimate)
+
+    /**
+     * The cluster assumed when the partition does not say: 32 KiB, the largest FAT32 cluster an SD
+     * card of a Lunii is formatted with. Erring high over-counts the slack of each file; erring low
+     * would let a transfer start that does not fit.
+     */
+    public static final long DEFAULT_CLUSTER_BYTES = 32L * 1024L;
+
+    /** The sector size, which is what {@code FileStore.getBlockSize()} reports for FAT32 on Windows. */
+    private static final long SECTOR_BYTES = 512L;
+
+    /**
+     * The allocation unit to round to, from what the partition reports.
+     *
+     * <p>{@code FileStore.getBlockSize()} reports the cluster on some systems and the 512-byte sector
+     * on others (see the class comment). A value of a sector or less, absent, or not a power of two
+     * is therefore not trusted, and {@link #DEFAULT_CLUSTER_BYTES} is used instead.
+     */
+    public static long clusterBytes(OptionalLong reportedBlockSize) {
+        if (reportedBlockSize == null || reportedBlockSize.isEmpty()) {
+            return DEFAULT_CLUSTER_BYTES;
+        }
+        long reported = reportedBlockSize.getAsLong();
+        if (reported <= SECTOR_BYTES || reported > 1024L * 1024L || Long.bitCount(reported) != 1) {
+            return DEFAULT_CLUSTER_BYTES;
+        }
+        return reported;
+    }
+
+    /** {@code logicalBytes} rounded up to whole clusters: what a file of that size occupies. */
+    public static long allocated(long logicalBytes, long clusterBytes) {
+        if (clusterBytes <= 0) {
+            throw new IllegalArgumentException("cluster size must be positive: " + clusterBytes);
+        }
+        if (logicalBytes <= 0) {
+            return 0L;
+        }
+        long clusters = logicalBytes / clusterBytes + (logicalBytes % clusterBytes == 0 ? 0 : 1);
+        return Math.multiplyExact(clusters, clusterBytes);
+    }
+
+    /**
+     * What a pack occupies once on a FAT32 partition, cluster slack included: every file the
+     * transfer writes rounded up to whole clusters, one cluster per folder, the boot file, and the
+     * temporary copy of the index (assumed to fit one cluster, as it does below two thousand packs).
+     *
+     * <p>It follows {@link #additionalBytesForUpload} file by file — same files copied, same cipher
+     * padding — so that the two cannot drift; it only adds the allocation on top. Still an estimate:
+     * directory entries and the FAT itself are not counted.
+     *
+     * @param sourceFolder the pack as it sits in the library, in FS format and in clear
+     */
+    public static long allocatedBytesForUpload(Path sourceFolder, long clusterBytes) throws IOException {
+        List<Path> files;
+        long folders;
+        try (Stream<Path> paths = Files.walk(sourceFolder)) {
+            List<Path> all = paths.collect(Collectors.toList());
+            files = all.stream().filter(Files::isRegularFile).collect(Collectors.toList());
+            folders = all.stream().filter(Files::isDirectory).count();
+        }
+        long total = 0L;
+        for (Path file : files) {
+            total = Math.addExact(total, allocated(transferredBytes(file), clusterBytes));
+        }
+        return Math.addExact(total, allocatedOverhead(folders, clusterBytes));
+    }
+
+    /**
+     * The same, for a pack that is not in FS format yet: the sizes its files are expected to have
+     * once converted (index files and assets), and how many folders it will have.
+     */
+    public static long allocatedBytesForFiles(Iterable<Long> fileSizes, long folders, long clusterBytes) {
+        long total = 0L;
+        for (Long size : fileSizes) {
+            // Every file but ni is ciphered: the padding only ever adds bytes, so assume it everywhere
+            total = Math.addExact(total, allocated(cipheredSize(size == null ? 0L : size), clusterBytes));
+        }
+        return Math.addExact(total, allocatedOverhead(folders, clusterBytes));
+    }
+
+    /** Folders, the boot file and the temporary index: one cluster each. */
+    private static long allocatedOverhead(long folders, long clusterBytes) {
+        long overhead = Math.multiplyExact(folders, clusterBytes);
+        overhead = Math.addExact(overhead, allocated(BOOT_FILE_MAX_BYTES, clusterBytes));
+        return Math.addExact(overhead, allocated(PACK_INDEX_RECORD_SIZE, clusterBytes));
     }
 }
