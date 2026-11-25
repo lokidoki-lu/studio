@@ -18,7 +18,9 @@ import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
@@ -243,6 +245,27 @@ public class ConversionProvenanceStore {
      * the ledger itself is read; each write uses a temporary of its own.
      */
     private Optional<JsonObject> read(Path path) {
+        // A few attempts: Windows reports a file being replaced or scanned (indexer, antivirus) as
+        // access denied for a moment, which must not read as a damaged ledger
+        for (int attempt = 1; ; attempt++) {
+            try {
+                return readOnce(path);
+            } catch (FileSystemException e) {
+                if (e instanceof NoSuchFileException || attempt >= 5) {
+                    LOGGER.error("Failed to read provenance database, leaving it untouched: " + path, e);
+                    return Optional.empty();
+                }
+                try {
+                    Thread.sleep(50);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return Optional.empty();
+                }
+            }
+        }
+    }
+
+    private Optional<JsonObject> readOnce(Path path) throws FileSystemException {
         try (Reader reader = Files.newBufferedReader(path)) {
             // The instance form, not the static parseReader: gson is pinned at 2.8.5 by the parent,
             // and the static overload only exists from 2.8.6. Same call the metadata database makes.
@@ -263,6 +286,8 @@ public class ConversionProvenanceStore {
                 return Optional.empty();
             }
             return Optional.of(root);
+        } catch (FileSystemException e) {
+            throw e;
         } catch (IOException | RuntimeException e) {
             LOGGER.error("Failed to read provenance database, leaving it untouched: " + path, e);
             return Optional.empty();

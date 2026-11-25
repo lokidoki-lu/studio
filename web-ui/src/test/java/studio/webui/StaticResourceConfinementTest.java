@@ -82,7 +82,7 @@ class StaticResourceConfinementTest {
 
     private static final List<String> TOUCHED_PROPERTIES = List.of(
             "studio.open", "env", "studio.library", "studio.tmpdir",
-            "studio.db.official", "studio.db.unofficial");
+            "studio.db.official", "studio.db.official.refresh", "studio.db.unofficial");
 
     private final Map<String, String> savedProperties = new HashMap<>();
 
@@ -103,6 +103,8 @@ class StaticResourceConfinementTest {
         Path officialDb = studioHome.resolve("official.json");
         Files.write(officialDb, "{}".getBytes(StandardCharsets.UTF_8));
         System.setProperty("studio.db.official", officialDb.toString());
+        // Never download the official database from the Lunii servers in a test
+        System.setProperty("studio.db.official.refresh", "false");
         System.setProperty("studio.db.unofficial", studioHome.resolve("unofficial.json").toString());
         System.setProperty("studio.library",
                 Files.createDirectories(studioHome.resolve("library")) + "/");

@@ -148,7 +148,9 @@ public class LegacyFsStoryPackReader {
 
                 // Transition will be updated later with the actual action nodes
                 Transition okTransition = null;
-                if (okTransitionActionNodeIndexInLI != -1 && okTransitionNumberOfOptions != -1 && okTransitionSelectedOptionIndex != -1) {
+                // Not frozen on this point: carries the fix for random options (-1), so that the reference
+                // still describes the expected output, see FsStoryPackReader
+                if (okTransitionActionNodeIndexInLI != -1 && okTransitionNumberOfOptions != -1) {
                     if (!actionNodesOptionsCount.containsKey(okTransitionActionNodeIndexInLI)) {
                         actionNodesOptionsCount.put(okTransitionActionNodeIndexInLI, okTransitionNumberOfOptions);
                     }
@@ -158,7 +160,7 @@ public class LegacyFsStoryPackReader {
                     transitionsWithAction.put(okTransitionActionNodeIndexInLI, twa);
                 }
                 Transition homeTransition = null;
-                if (homeTransitionActionNodeIndexInLI != -1 && homeTransitionNumberOfOptions != -1 && homeTransitionSelectedOptionIndex != -1) {
+                if (homeTransitionActionNodeIndexInLI != -1 && homeTransitionNumberOfOptions != -1) {
                     if (!actionNodesOptionsCount.containsKey(homeTransitionActionNodeIndexInLI)) {
                         actionNodesOptionsCount.put(homeTransitionActionNodeIndexInLI, homeTransitionNumberOfOptions);
                     }

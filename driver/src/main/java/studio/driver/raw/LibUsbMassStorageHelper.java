@@ -203,37 +203,123 @@ public class LibUsbMassStorageHelper {
      * @return The return value from the function
      */
     public static <T> CompletableFuture<T> executeOnDeviceHandle(Device device, Function<DeviceHandle, CompletableFuture<T>> func) {
-        return CompletableFuture.supplyAsync(() -> {
-            // Open device handle
-            DeviceHandle handle = new DeviceHandle();
-            int result = LibUsb.open(device, handle);
-            if (result != LibUsb.SUCCESS) {
-                throw new StoryTellerException("Unable to open libusb device", new LibUsbException(result));
+        return executeOnDeviceHandle(device, func, HandleOps.NATIVE);
+    }
+
+    /**
+     * The libusb calls that open and release a handle. A seam, so that the release on every path can
+     * be tested without a device: calling the real API with a fake handle would crash the JVM.
+     */
+    interface HandleOps {
+        int open(Device device, DeviceHandle handle);
+
+        int detachKernelDriver(DeviceHandle handle, int interfaceId);
+
+        int claimInterface(DeviceHandle handle, int interfaceId);
+
+        int releaseInterface(DeviceHandle handle, int interfaceId);
+
+        void close(DeviceHandle handle);
+
+        HandleOps NATIVE = new HandleOps() {
+            @Override
+            public int open(Device device, DeviceHandle handle) {
+                return LibUsb.open(device, handle);
             }
+
+            @Override
+            public int detachKernelDriver(DeviceHandle handle, int interfaceId) {
+                return LibUsb.detachKernelDriver(handle, interfaceId);
+            }
+
+            @Override
+            public int claimInterface(DeviceHandle handle, int interfaceId) {
+                return LibUsb.claimInterface(handle, interfaceId);
+            }
+
+            @Override
+            public int releaseInterface(DeviceHandle handle, int interfaceId) {
+                return LibUsb.releaseInterface(handle, interfaceId);
+            }
+
+            @Override
+            public void close(DeviceHandle handle) {
+                LibUsb.close(handle);
+            }
+        };
+    }
+
+    /**
+     * As {@link #executeOnDeviceHandle(Device, Function)}, through {@code ops}.
+     *
+     * <p>The interface is released and the handle closed on every path once they were obtained: when
+     * the detach or the claim fails, when {@code func} throws before it returns a future (every
+     * operation starts with a transfer whose submission throws when it fails), and when the release
+     * itself fails. A handle left open with its interface claimed made every later claim fail until
+     * the Lunii was unplugged.
+     */
+    static <T> CompletableFuture<T> executeOnDeviceHandle(Device device, Function<DeviceHandle, CompletableFuture<T>> func,
+                                                          HandleOps ops) {
+        return CompletableFuture.supplyAsync(() -> openAndClaim(device, ops))
+                .thenCompose(handle -> {
+                    CompletableFuture<T> operation;
+                    try {
+                        operation = func.apply(handle);
+                        if (operation == null) {
+                            throw new StoryTellerException("The device operation returned no result");
+                        }
+                    } catch (Throwable e) {
+                        // Throwable: an Error thrown here (a native call, an assertion) would skip the
+                        // release just as surely as an exception.
+                        operation = CompletableFuture.failedFuture(e);
+                    }
+                    // Handler is executed in another thread to avoid deadlock (otherwise it would be called by the libusb async event handleing worker thread)
+                    return operation.whenCompleteAsync((retval, e) -> releaseAndClose(handle, ops));
+                });
+    }
+
+    private static DeviceHandle openAndClaim(Device device, HandleOps ops) {
+        // Open device handle
+        DeviceHandle handle = new DeviceHandle();
+        int result = ops.open(device, handle);
+        if (result != LibUsb.SUCCESS) {
+            throw new StoryTellerException("Unable to open libusb device", new LibUsbException(result));
+        }
+        try {
             // First, detach kernel driver
-            result = LibUsb.detachKernelDriver(handle, INTERFACE_ID);
+            result = ops.detachKernelDriver(handle, INTERFACE_ID);
             if (result != LibUsb.SUCCESS && result != LibUsb.ERROR_NOT_SUPPORTED && result != LibUsb.ERROR_NOT_FOUND) {
                 throw new StoryTellerException("Unable to detach libusb kernel driver", new LibUsbException(result));
             }
             // Claim interface
-            result = LibUsb.claimInterface(handle, INTERFACE_ID);
+            result = ops.claimInterface(handle, INTERFACE_ID);
             if (result != LibUsb.SUCCESS) {
                 throw new StoryTellerException("Unable to claim libusb interface", new LibUsbException(result));
             }
-            return handle;
-        })
-                .thenCompose(handle -> func.apply(handle)
-                        // Handler is executed in another thread to avoid deadlock (otherwise it would be called by the libusb async event handleing worker thread)
-                        .whenCompleteAsync((retval, e) -> {
-                            // Free interface
-                            int result = LibUsb.releaseInterface(handle, INTERFACE_ID);
-                            if (result != LibUsb.SUCCESS) {
-                                throw new StoryTellerException("Unable to release interface", new LibUsbException(result));
-                            }
-                            // Close handle
-                            LibUsb.close(handle);
-                        })
-                );
+        } catch (RuntimeException | Error e) {
+            // Nothing claimed: only the handle to give back. A failure to close must not hide why.
+            try {
+                ops.close(handle);
+            } catch (RuntimeException | Error closeFailure) {
+                e.addSuppressed(closeFailure);
+            }
+            throw e;
+        }
+        return handle;
+    }
+
+    private static void releaseAndClose(DeviceHandle handle, HandleOps ops) {
+        int result;
+        try {
+            // Free interface
+            result = ops.releaseInterface(handle, INTERFACE_ID);
+        } finally {
+            // Close handle, even when the release failed or threw
+            ops.close(handle);
+        }
+        if (result != LibUsb.SUCCESS) {
+            throw new StoryTellerException("Unable to release interface", new LibUsbException(result));
+        }
     }
 
     public static CompletableFuture<ByteBuffer> asyncReadSPISectors(DeviceHandle handle, int offset, short nbSectorsToRead) {
@@ -317,12 +403,16 @@ public class LibUsbMassStorageHelper {
                 ENDPOINT_OUT,
                 data,
                 xfer -> {
-                    if (xfer.status() != LibUsb.TRANSFER_COMPLETED) {
-                        LOGGER.severe("TRANSFER OUT NOT COMPLETED: " + xfer.status());
+                    // Read what is needed, then free the transfer exactly once, whatever its status:
+                    // libusb calls this once per submitted transfer, and a failed one used to leak.
+                    int status = xfer.status();
+                    int length = xfer.actualLength();
+                    LibUsb.freeTransfer(xfer);
+                    if (status != LibUsb.TRANSFER_COMPLETED) {
+                        LOGGER.severe("TRANSFER OUT NOT COMPLETED: " + status);
                         promise.completeExceptionally(new StoryTellerException("Transfer OUT failed"));
                     } else {
-                        LOGGER.finest("Async transfer OUT done. " + xfer.actualLength() + " bytes sent.");
-                        LibUsb.freeTransfer(xfer);
+                        LOGGER.finest("Async transfer OUT done. " + length + " bytes sent.");
                         promise.complete(true);
                     }
                 },
@@ -331,6 +421,8 @@ public class LibUsbMassStorageHelper {
         );
         int result = LibUsb.submitTransfer(transfer);
         if (result != LibUsb.SUCCESS) {
+            // Never submitted, so its callback will never free it.
+            LibUsb.freeTransfer(transfer);
             throw new StoryTellerException("Unable to submit transfer OUT", new LibUsbException(result));
         }
 
@@ -347,12 +439,16 @@ public class LibUsbMassStorageHelper {
                 ENDPOINT_IN,
                 data,
                 xfer -> {
-                    if (xfer.status() != LibUsb.TRANSFER_COMPLETED) {
-                        LOGGER.severe("TRANSFER IN NOT COMPLETED: " + xfer.status());
+                    // Read what is needed, then free the transfer exactly once, whatever its status:
+                    // libusb calls this once per submitted transfer, and a failed one used to leak.
+                    int status = xfer.status();
+                    int length = xfer.actualLength();
+                    LibUsb.freeTransfer(xfer);
+                    if (status != LibUsb.TRANSFER_COMPLETED) {
+                        LOGGER.severe("TRANSFER IN NOT COMPLETED: " + status);
                         promise.completeExceptionally(new StoryTellerException("Transfer IN failed"));
                     } else {
-                        LOGGER.finest("Async transfer IN done. " + xfer.actualLength() + " bytes received.");
-                        LibUsb.freeTransfer(xfer);
+                        LOGGER.finest("Async transfer IN done. " + length + " bytes received.");
                         promise.complete(true);
                     }
                 },
@@ -361,6 +457,8 @@ public class LibUsbMassStorageHelper {
         );
         int result = LibUsb.submitTransfer(transfer);
         if (result != LibUsb.SUCCESS) {
+            // Never submitted, so its callback will never free it.
+            LibUsb.freeTransfer(transfer);
             throw new StoryTellerException("Unable to submit transfer IN", new LibUsbException(result));
         }
 

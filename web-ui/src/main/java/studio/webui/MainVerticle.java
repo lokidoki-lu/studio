@@ -91,9 +91,15 @@ public class MainVerticle extends AbstractVerticle {
 
         // Service that manages pack metadata
         databaseMetadataService = new DatabaseMetadataService(false);
+        // Keeps the official database up to date in the background (at startup if it is missing or
+        // old, then periodically): the official-pack guard depends on it. Never blocks startup.
+        databaseMetadataService.startOfficialDatabaseRefresh();
 
         // Service that manages local library
         libraryService = new LibraryService(databaseMetadataService);
+        // Marks the packs of the library that may come from a Lunii, in the background: transfers
+        // are refused until it is done
+        libraryService.startLibraryCheck();
 
         // Service that manages updates
         evergreenService = new EvergreenService(vertx);
@@ -195,6 +201,13 @@ public class MainVerticle extends AbstractVerticle {
                     LOGGER.error("Failed to open URL in default browser", e);
                 }
             }
+        }
+    }
+
+    @Override
+    public void stop() {
+        if (databaseMetadataService != null) {
+            databaseMetadataService.stopOfficialDatabaseRefresh();
         }
     }
 

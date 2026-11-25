@@ -25,11 +25,12 @@ export const downloadFromLibrary = async (uuid, path) => {
 };
 
 // One entry of a library archive (story.json, thumbnail.png, assets/...), as a Blob, or null if the archive has none
-export const fetchLibraryPackEntry = async (path, entry) => {
+// purpose 'preview' only shows the pack: the server lets it read packs it refuses to open in the editor
+export const fetchLibraryPackEntry = async (path, entry, purpose) => {
     const resp = await apiFetch('/api/library/entry', {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({path, entry})
+        body: JSON.stringify(purpose ? {path, entry, purpose} : {path, entry})
     });
     if (resp.status === 404) {
         return null;

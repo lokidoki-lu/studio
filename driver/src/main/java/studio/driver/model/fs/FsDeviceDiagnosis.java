@@ -87,7 +87,10 @@ public class FsDeviceDiagnosis {
 
     /** How a pending {@code .pi.new} relates to the installed {@code .pi}. */
     public enum PendingIndexKind {
-        /** Not a whole number of records, or empty while {@code .pi} is not: the write was cut before it completed. */
+        /**
+         * Not a whole number of records, empty while {@code .pi} is not (or is missing), or the beginning
+         * of {@code .pi} dropping more than one pack: the write was cut before it completed.
+         */
         TORN,
         /** Same content as {@code .pi}. */
         IDENTICAL,
@@ -113,6 +116,7 @@ public class FsDeviceDiagnosis {
         private final List<UUID> removed;
         private final List<UUID> incomplete;
         private final boolean adoptable;
+        private final List<String> unlistedCompleteFolders;
 
         public PendingIndex(PendingIndexKind kind, boolean safeToDiscard, String fingerprint, int currentCount,
                             int pendingCount, List<UUID> added, List<UUID> removed) {
@@ -122,6 +126,14 @@ public class FsDeviceDiagnosis {
         public PendingIndex(PendingIndexKind kind, boolean safeToDiscard, String fingerprint, int currentCount,
                             int pendingCount, List<UUID> added, List<UUID> removed, List<UUID> incomplete,
                             boolean adoptable) {
+            this(kind, safeToDiscard, fingerprint, currentCount, pendingCount, added, removed, incomplete, adoptable,
+                    List.of());
+        }
+
+        public PendingIndex(PendingIndexKind kind, boolean safeToDiscard, String fingerprint, int currentCount,
+                            int pendingCount, List<UUID> added, List<UUID> removed, List<UUID> incomplete,
+                            boolean adoptable, List<String> unlistedCompleteFolders) {
+            this.unlistedCompleteFolders = List.copyOf(unlistedCompleteFolders);
             this.kind = kind;
             this.safeToDiscard = safeToDiscard;
             this.fingerprint = fingerprint;
@@ -172,10 +184,22 @@ public class FsDeviceDiagnosis {
 
         /**
          * Whether it may replace {@code .pi}: never when it is torn, and never when it names a pack
-         * whose folder is not a complete copy, whatever its kind.
+         * whose folder is not a complete copy, whatever its kind; and, when {@code .pi} is missing,
+         * never while a complete pack folder is left that it does not name
+         * ({@link #getUnlistedCompleteFolders()}).
          */
         public boolean isAdoptable() {
             return adoptable;
+        }
+
+        /**
+         * Only when {@code .pi} is missing: the complete pack folders of {@code .content} (leftovers of
+         * an update excluded) that {@code .pi.new} does not name, sorted. With no {@code .pi} to compare
+         * with, nothing tells a {@code .pi.new} cut short from a complete one; adopting it would drop
+         * these packs from the index, so it is refused while there is any. Empty otherwise.
+         */
+        public List<String> getUnlistedCompleteFolders() {
+            return unlistedCompleteFolders;
         }
     }
 
@@ -261,6 +285,7 @@ public class FsDeviceDiagnosis {
     private final List<InterruptedUpdate> interruptedUpdates = new ArrayList<>();
     private PendingIndex pendingIndex;
     private int indexedPacks;
+    private boolean indexMissing;
     private String deviceToken;
 
     public List<OrphanFolder> getOrphans() {
@@ -290,6 +315,20 @@ public class FsDeviceDiagnosis {
 
     public void setIndexedPacks(int indexedPacks) {
         this.indexedPacks = indexedPacks;
+    }
+
+    /**
+     * Whether {@code .pi} is missing while a {@code .pi.new} is there: a replacement of the index cut
+     * between the removal of the old entry and the rename of the new one. The check then reads the
+     * installed index as empty, so that the pending one can be adopted if every pack it names is a
+     * complete copy; nothing else can be repaired until it is.
+     */
+    public boolean isIndexMissing() {
+        return indexMissing;
+    }
+
+    public void setIndexMissing(boolean indexMissing) {
+        this.indexMissing = indexMissing;
     }
 
     /**

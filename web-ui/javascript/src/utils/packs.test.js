@@ -26,7 +26,7 @@
  * rendering stack and this lot does not add one.
  */
 
-const { chooseDropAction, isConversionOutput, applyProvenanceVerdict } = require('./packs');
+const { chooseDropAction, isConversionOutput, applyProvenanceVerdict, needsProvenanceProof } = require('./packs');
 
 // The library lists a pack's artefacts most-recent-first; these fixtures keep that order, and carry
 // the file names the backend actually sends.
@@ -284,5 +284,14 @@ describe('applyProvenanceVerdict', () => {
         expect(applyProvenanceVerdict(convert, 'MATCH')).toBe(convert);
         expect(applyProvenanceVerdict(transfer, 'MISMATCH')).toBe(transfer);
         expect(applyProvenanceVerdict(none, 'UNKNOWN')).toBe(none);
+    });
+});
+
+describe('needsProvenanceProof', () => {
+    it('holds for a folder STUdio converted, which the server sends only on a MATCH', () => {
+        expect(needsProvenanceProof({path: 'u.converted_1', format: 'fs'})).toBe(true);
+        expect(needsProvenanceProof({path: 'u.fs', format: 'fs'})).toBe(false);
+        expect(needsProvenanceProof({path: 'u.converted_1.pack', format: 'raw'})).toBe(false);
+        expect(needsProvenanceProof(undefined)).toBe(false);
     });
 });

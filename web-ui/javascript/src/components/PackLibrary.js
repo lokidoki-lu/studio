@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import DeviceLoading from './DeviceLoading';
 import { connect } from 'react-redux';
 import {withTranslation} from "react-i18next";
 import {toast} from "react-toastify";
@@ -37,7 +38,7 @@ import PackPreview from "./PackPreview";
 import {
     LOCAL_STORAGE_ALLOW_ENRICHED_BINARY_FORMAT
 } from "../utils/storage";
-import {chooseDropAction, applyProvenanceVerdict} from "../utils/packs";
+import {chooseDropAction, applyProvenanceVerdict, isPackFile, needsProvenanceProof} from "../utils/packs";
 import {verifyConversion} from "../services/library";
 import {matchingGroups} from "../utils/librarySearch";
 import {sizeUnit} from "../utils/purge";
@@ -47,15 +48,8 @@ import SendQueue from "./SendQueue";
 
 import './PackLibrary.css';
 
-/**
- * A file the library can import: a ZIP archive or a binary .pack. Judged on the extension as well as
- * the MIME type, which Windows often leaves empty or sets to something else for a .zip.
- */
-export const isPackFile = (file) => {
-    const name = (file && file.name ? file.name : '').toLowerCase();
-    return ['application/zip', 'application/x-zip-compressed'].indexOf(file && file.type) !== -1
-        || name.endsWith('.zip') || name.endsWith('.pack');
-};
+// A file the library can import (utils/packs.js), exported here as well for existing callers
+export {isPackFile};
 
 
 export class PackLibrary extends React.Component {
@@ -178,6 +172,32 @@ export class PackLibrary extends React.Component {
         });
     }
 
+    /**
+     * The pointer leaves the device zone: a reordering of the device's packs in progress goes back to the
+     * order it started from. Anything else dragged (a library pack) leaves the device list alone.
+     */
+    onDeviceDropzoneDragLeave = (event) => {
+        if (this.state.dragging !== 'device-pack' || !this.state.beforeReordering) {
+            return;
+        }
+        // Get the location of the dropzone
+        const zone = event.target && event.target.closest ? event.target.closest('.device-dropzone') : null;
+        if (!zone) {
+            return;
+        }
+        const rect = zone.getBoundingClientRect();
+        // Check whether the mouse coordinates are outside the dropzone rectangle
+        if (event.clientX > rect.left + rect.width || event.clientX < rect.left || event.clientY > rect.top + rect.height || event.clientY < rect.top) {
+            console.log("Reset reorder to beforeReordering: %o", this.state.beforeReordering);
+            this.setState({
+                device: {
+                    ...this.state.device,
+                    packs: [...this.state.beforeReordering]
+                }
+            });
+        }
+    };
+
     onDropPackIntoDevice = (event) => {
         event.preventDefault();
         let packData = event.dataTransfer.getData("local-library-pack");
@@ -225,6 +245,15 @@ export class PackLibrary extends React.Component {
         if (action === 'transfer') {
             // No identifiable non-converted source is currently in the library, so there is no
             // current source to compare this against and none to offer for re-conversion
+            if (needsProvenanceProof(cached)) {
+                // The server sends a converted folder only once it has proven it matches its archive:
+                // with the archive gone, that transfer is refused, so it is not even tried.
+                console.log('converted folder without its source archive, not sent: %o', cached);
+                if (!options.queue) {
+                    toast.error(this.props.t('toasts.library.convertedSourceMissing'), {autoClose: false});
+                }
+                return Promise.resolve({status: 'skipped', reason: 'sourceMissing'});
+            }
             console.log('OK, transferring pack: %o', cached);
             return this.doAddToDevice(cached, cached.path, options);
         }
@@ -310,14 +339,16 @@ export class PackLibrary extends React.Component {
             });
     };
 
+    /**
+     * The answer to a conversion that could not be proven (UNKNOWN) or is known not to match (MISMATCH):
+     * convert again, or leave the pack out. Sending the existing conversion is not offered: the server
+     * refuses it unless the check answers MATCH.
+     */
     answerConfirmConversion = (answer, data, options = {}) => {
         if (answer === 'convert') {
             return this.convertThenSend(data.pack, data.format, this.allowEnrichedFor(options), options);
         }
-        if (answer === 'transfer') {
-            // The user decides the existing pack is the one they want. STUdio cannot tell.
-            return this.doAddToDevice(data.cached, data.cached.path, options);
-        }
+        // Cancelling is the user's choice: said as such in the summary
         return Promise.resolve({status: 'skipped', reason: 'declined'});
     };
 
@@ -598,7 +629,6 @@ export class PackLibrary extends React.Component {
                        {this.state.confirmConversionDialog.data.options && this.state.confirmConversionDialog.data.options.queue && <p className="send-queue-note">{t('sendQueue.appliesToAll')}</p>}</div>}
                    buttons={[
                        { label: t('dialogs.library.askConfirmConversion.cancel'), onClick: this.dismissConfirmConversionDialog('cancel')},
-                       { label: t('dialogs.library.askConfirmConversion.transfer'), onClick: this.dismissConfirmConversionDialog('transfer')},
                        { label: t('dialogs.library.askConfirmConversion.convert'), onClick: this.dismissConfirmConversionDialog('convert')}
                    ]}
                    onClose={this.dismissConfirmConversionDialog('cancel', false)}
@@ -643,22 +673,10 @@ export class PackLibrary extends React.Component {
                     <div className={`device-dropzone ${this.state.dragging !== null ? 'highlighted-dropzone' : ''}`}
                          onDrop={this.onDropPackIntoDevice}
                          onDragOver={event => { event.preventDefault(); }}
-                         onDragLeave={event => {
-                             // Get the location of the dropzone
-                             var rect = event.target.closest('.device-dropzone').getBoundingClientRect();
-                             // Check whether the mouse coordinates are outside the dropzone rectangle
-                             if(event.clientX > rect.left + rect.width || event.clientX < rect.left || event.clientY > rect.top + rect.height || event.clientY < rect.top) {
-                                 console.log("Reset reorder to beforeReordering: %o", this.state.beforeReordering);
-                                 this.setState({
-                                     device: {
-                                         ...this.state.device,
-                                         packs: [...this.state.beforeReordering]
-                                     }
-                                 });
-                             }
-                         }}>
-                        {this.state.device.packs.length === 0 && <div className="empty">{t('library.device.empty')}</div>}
-                        {this.state.device.packs.length > 0 && <div className="pack-grid">
+                         onDragLeave={this.onDeviceDropzoneDragLeave}>
+                        {this.state.device.packsLoading && <DeviceLoading />}
+                        {!this.state.device.packsLoading && this.state.device.packs.length === 0 && <div className="empty">{t('library.device.empty')}</div>}
+                        {!this.state.device.packsLoading && this.state.device.packs.length > 0 && <div className="pack-grid">
                             {this.state.device.packs.map((pack,idx) =>
                                 <div key={pack.uuid}
                                      draggable={true}
@@ -693,12 +711,13 @@ export class PackLibrary extends React.Component {
                                      }}
                                      onDragEnd={event => {
                                          // Reorder on device only if order changed
-                                         if (this.state.beforeReordering.reduce((acc,p)=>acc+','+p.uuid, '') !== this.state.device.packs.reduce((acc,p)=>acc+','+p.uuid, '')) {
+                                         if (this.state.beforeReordering && this.state.beforeReordering.reduce((acc,p)=>acc+','+p.uuid, '') !== this.state.device.packs.reduce((acc,p)=>acc+','+p.uuid, '')) {
                                              console.log("Order changed, reordering...");
                                              let uuids = this.state.device.packs.map(p => p.uuid);
                                              this.props.reorderOnDevice(uuids);
                                          }
-                                         this.setState({dragging: null,  reordering: null});
+                                         // The snapshot only stands for this drag: a later one, of anything else, must not restore it
+                                         this.setState({dragging: null, reordering: null, beforeReordering: null});
                                      }}>
                                     <div className="pack-format">
                                         <span>{t(`library.format.${pack.format}`)}</span>
@@ -751,7 +770,8 @@ export class PackLibrary extends React.Component {
                     <div className={`library-dropzone ${this.state.dragging === 'device-pack' ? 'highlighted-dropzone' : ''}`}
                          onDrop={this.onDropPackIntoLibrary}
                          onDragOver={event => { event.preventDefault(); }}>
-                        {this.state.library.packs.length === 0 && <div className="empty">
+                        {this.state.library.loading && <DeviceLoading message="library.local.loading" />}
+                        {!this.state.library.loading && this.state.library.packs.length === 0 && <div className="empty">
                             <p>{t('library.local.empty.header')}</p>
                         </div>}
                         {this.state.library.packs.length > 0 && matchingGroups(this.state.library.packs, this.state.search).length === 0 && <div className="empty empty-search">
