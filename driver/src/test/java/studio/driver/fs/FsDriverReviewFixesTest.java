@@ -435,6 +435,25 @@ class FsDriverReviewFixesTest {
         assertFalse(Files.exists(pack.resolve(".cleartext")), "an empty ri is not taken for a cleartext one");
     }
 
+    @Test
+    @DisplayName("D7: a cleartext pack missing .cleartext is uploaded as cleartext, and its library folder is left untouched")
+    void uploadDoesNotWriteCleartextMarkerIntoTheSource() throws Exception {
+        writeIndexFile(PACK_A);
+        Path pack = sourcePack();
+        Files.delete(pack.resolve(".cleartext"));
+        byte[] ri = new byte[100];
+        Arrays.fill(ri, (byte) 'r');
+        System.arraycopy("000\\".getBytes(java.nio.charset.StandardCharsets.UTF_8), 0, ri, 0, 4);
+        Files.write(pack.resolve("ri"), ri);
+        FsStoryTellerAsyncDriver driver = driver();
+
+        driver.uploadPack(PACK_B.toString(), pack.toString(), null).join();
+
+        assertFalse(Files.exists(pack.resolve(".cleartext")), "the source pack of the library must not be modified");
+        assertFalse(Arrays.equals(ri, Files.readAllBytes(contentFolderFor(PACK_B).resolve("ri"))),
+                "detected as cleartext all the same: the ri is enciphered on the device");
+    }
+
     /* ================================================================== same path, other card */
 
     /**
