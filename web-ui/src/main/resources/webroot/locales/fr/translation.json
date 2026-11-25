@@ -90,6 +90,7 @@
       "pauses": "Pause entre deux téléchargements (évite le blocage par YouTube)"
     },
     "help": {
+      "imageStyle": "Les miniatures des vidéos, la couverture et les menus sont transformés dans ce style. Les titres restent lisibles.",
       "cleanTitles": "Les titres sont lus à voix haute sur la Lunii : sans ce nettoyage, ils sont gardés tels quels.",
       "sponsorBlock": "Les passages signalés par les utilisateurs de SponsorBlock sont coupés. L'identifiant de la vidéo est envoyé à sponsor.ajay.app.",
       "seasons": "Les épisodes sont triés par saison et par numéro, une saison par sous-menu.",
@@ -100,6 +101,14 @@
     "minMinutes": "Durée minimale (min)",
     "maxMinutes": "Durée maximale (min)",
     "menuSize": "Histoires par menu",
+    "imageStyle": "Style des images",
+    "imageStylePreview": "Aperçu du style choisi, sur une image d'exemple",
+    "imageStyles": {
+      "color": "Couleur (miniatures telles quelles)",
+      "gray": "Noir et blanc",
+      "drawing": "Dessin blanc sur noir, comme les histoires officielles",
+      "negative": "Négatif noir et blanc"
+    },
     "bitrate": "Qualité audio",
     "kbps": "{{value}} kbit/s",
     "maxVideos": "Vidéos au plus",

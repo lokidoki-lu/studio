@@ -7,6 +7,7 @@
 package studio.webui.api;
 
 import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
 import io.vertx.core.json.DecodeException;
 import io.vertx.core.json.Json;
 import io.vertx.core.json.JsonArray;
@@ -16,12 +17,19 @@ import io.vertx.core.logging.LoggerFactory;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import studio.webui.service.TitleVoiceService;
+import studio.webui.service.YoutubeImageStyle;
 import studio.webui.service.YoutubePackException;
 import studio.webui.service.YoutubePackJob;
 import studio.webui.service.YoutubePackRequest;
 import studio.webui.service.YoutubePackService;
 
+import javax.imageio.ImageIO;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** Packs made from YouTube links: {@code /api/youtube}. See API.md. */
 public class YoutubeController {
@@ -41,7 +49,33 @@ public class YoutubeController {
                     .put("defaultBitrate", YoutubePackRequest.DEFAULT_BITRATE)
                     .put("defaultMenuSize", YoutubePackRequest.DEFAULT_MENU_SIZE)
                     .put("defaultMaxVideos", YoutubePackRequest.DEFAULT_MAX_VIDEOS)
-                    .put("maxLinks", YoutubePackRequest.MAX_LINKS));
+                    .put("maxLinks", YoutubePackRequest.MAX_LINKS)
+                    .put("imageStyles", imageStyles())
+                    .put("defaultImageStyle", YoutubeImageStyle.DEFAULT.id));
+        }, false);
+
+        // A sample picture in a style, for the dialog's preview. Drawn once per style.
+        router.get("/image-styles/:style").blockingHandler(ctx -> {
+            String name = ctx.pathParam("style");
+            Optional<YoutubeImageStyle> style = YoutubeImageStyle.fromId(name == null ? null : name.replaceFirst("\\.png$", ""));
+            if (style.isEmpty()) {
+                json(ctx, 404, new JsonObject().put("success", false).put("error", "NOT_FOUND")
+                        .put("message", "Style d'image inconnu"));
+                return;
+            }
+            byte[] png;
+            try {
+                png = SAMPLES.computeIfAbsent(style.get(), YoutubeController::sample);
+            } catch (UncheckedIOException e) {
+                LOGGER.warn("Image style sample failed: " + e.getMessage());
+                json(ctx, 500, new JsonObject().put("success", false).put("error", "INTERNAL")
+                        .put("message", "Aper\u00e7u indisponible"));
+                return;
+            }
+            ctx.response().putHeader("content-type", "image/png")
+                    // Not kept by the browser: a new version of STUdio may draw them differently
+                    .putHeader("cache-control", "no-cache")
+                    .end(Buffer.buffer(png));
         }, false);
 
         // Start a creation
@@ -79,6 +113,28 @@ public class YoutubeController {
         router.post("/jobs/:id/cancel").blockingHandler(ctx -> handle(ctx, () -> json(ctx, 200, service.cancel(ctx.pathParam("id")).toJson())), false);
 
         return router;
+    }
+
+    private static final Map<YoutubeImageStyle, byte[]> SAMPLES = new ConcurrentHashMap<>();
+
+    private static JsonArray imageStyles() {
+        JsonArray styles = new JsonArray();
+        for (YoutubeImageStyle s : YoutubeImageStyle.values()) {
+            styles.add(s.id);
+        }
+        return styles;
+    }
+
+    private static byte[] sample(YoutubeImageStyle style) {
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            if (!ImageIO.write(style.sample("Titre de l'histoire"), "png", out)) {
+                throw new IOException("No PNG writer");
+            }
+            return out.toByteArray();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     private static void handle(RoutingContext ctx, Runnable action) {

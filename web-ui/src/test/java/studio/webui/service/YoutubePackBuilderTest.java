@@ -159,6 +159,37 @@ class YoutubePackBuilderTest {
     }
 
     @Test
+    void imageStyleAppliesToEveryPicture() throws Exception {
+        List<YoutubePackBuilder.Story> s = new ArrayList<>(stories(3, "Saison 1"));
+        s.addAll(stories(2, "Saison 2"));
+        Path out = tmp.resolve("gris.zip");
+        YoutubePackBuilder.build(s, new YoutubePackBuilder.Settings("Gris", "", "gris", 5, false, YoutubeImageStyle.GRAY),
+                text -> null, out);
+        int pictures = 0;
+        try (ZipFile z = new ZipFile(out.toFile())) {
+            for (ZipEntry e : java.util.Collections.list(z.entries())) {
+                if (!e.getName().endsWith(".png")) {
+                    continue;
+                }
+                pictures++;
+                BufferedImage img;
+                try (InputStream in = z.getInputStream(e)) {
+                    img = ImageIO.read(in);
+                }
+                for (int y = 0; y < img.getHeight(); y += 7) {
+                    for (int x = 0; x < img.getWidth(); x += 7) {
+                        int p = img.getRGB(x, y);
+                        assertEquals((p >> 16) & 0xff, p & 0xff, e.getName() + " at " + x + "," + y);
+                        assertEquals((p >> 8) & 0xff, p & 0xff, e.getName() + " at " + x + "," + y);
+                    }
+                }
+            }
+        }
+        // stories (some identical text pictures share a file), cover, groups, thumbnail.png
+        assertTrue(pictures >= 5, "pictures: " + pictures);
+    }
+
+    @Test
     void imagesAreCroppedAndLabelled() {
         BufferedImage wide = YoutubePackBuilder.fit(picture(1280, 720, Color.RED), 320, 240);
         assertEquals(320, wide.getWidth());
