@@ -409,7 +409,12 @@
       "unavailableTitle": "Simulation unavailable for this format",
       "unavailable": "Raw and FS packs store their images and sounds in the device's format (sector addressing, enciphered for FS): the whole pack would have to be decoded to read them. Convert it to the archive format to simulate it.",
       "errorTitle": "Simulation unavailable",
-      "error": "The pack could not be read ({{error}})."
+      "error": "The pack could not be read ({{error}}).",
+      "errors": {
+        "NO_STAGE_NODE": "it has no node",
+        "NO_STORY": "story.json is missing",
+        "INVALID_STORY": "story.json cannot be read"
+      }
     }
   },
 
