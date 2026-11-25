@@ -27,6 +27,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -82,6 +83,39 @@ final class FsDeviceMaintenance {
         return hex.substring(hex.length() - 8).toUpperCase(Locale.ROOT);
     }
 
+    /** What a pack folder, or a leftover of an update, holds. */
+    enum FolderState {
+        ABSENT, INCOMPLETE, COMPLETE;
+
+        static FolderState of(Path folder) {
+            if (!Files.isDirectory(folder, LinkOption.NOFOLLOW_LINKS)) {
+                return ABSENT;
+            }
+            return isCompletePackFolder(folder) ? COMPLETE : INCOMPLETE;
+        }
+
+        boolean present() {
+            return this != ABSENT;
+        }
+    }
+
+    /**
+     * The packs a pending {@code .pi.new} names, or an empty list when it is not a whole number of
+     * records. Only ever used to protect what it names.
+     */
+    static List<UUID> pendingIndexEntries(Path mountPoint) {
+        Path pending = mountPoint.resolve(".pi" + TemporaryFilePackIndexWriter.TEMPORARY_SUFFIX);
+        try {
+            if (!Files.isRegularFile(pending, LinkOption.NOFOLLOW_LINKS)) {
+                return List.of();
+            }
+            byte[] bytes = Files.readAllBytes(pending);
+            return bytes.length % 16 == 0 ? parseIndex(bytes) : List.of();
+        } catch (IOException e) {
+            return List.of();
+        }
+    }
+
     static List<UUID> parseIndex(byte[] bytes) {
         List<UUID> uuids = new ArrayList<>();
         ByteBuffer bb = ByteBuffer.wrap(bytes);
@@ -129,11 +163,18 @@ final class FsDeviceMaintenance {
             }
         }
 
+        // Folders a pending .pi.new names: adopting it would make them packs again, so they are not
+        // offered for removal like any orphan.
+        Set<String> pendingFolders = new HashSet<>();
+        for (UUID uuid : pendingIndexEntries(mountPoint)) {
+            pendingFolders.add(folderNameOf(uuid));
+        }
         for (Map.Entry<String, Path> folder : folders.entrySet()) {
             if (!referenced.containsKey(folder.getKey()) && !staging.containsKey(folder.getKey())) {
                 Path path = folder.getValue();
                 diagnosis.getOrphans().add(new FsDeviceDiagnosis.OrphanFolder(path.getFileName().toString(),
-                        FileUtils.getFolderSize(path.toString()), isCompletePackFolder(path)));
+                        FileUtils.getFolderSize(path.toString()), isCompletePackFolder(path),
+                        pendingFolders.contains(folder.getKey())));
             }
         }
 
@@ -152,12 +193,9 @@ final class FsDeviceMaintenance {
 
         for (Map.Entry<String, List<String>> leftovers : staging.entrySet()) {
             String hex = leftovers.getKey();
-            boolean hasNew = leftovers.getValue().stream().anyMatch(n -> n.startsWith(STAGING_NEW_PREFIX));
-            boolean hasOld = leftovers.getValue().stream().anyMatch(n -> n.startsWith(STAGING_OLD_PREFIX));
-            boolean hasFolder = folders.containsKey(hex);
             UUID uuid = referenced.get(hex);
             diagnosis.getInterruptedUpdates().add(new FsDeviceDiagnosis.InterruptedUpdate(hex, uuid,
-                    interruptedState(uuid != null, hasFolder, hasNew, hasOld), leftovers.getValue()));
+                    interruptedState(content, hex, uuid != null), leftovers.getValue()));
         }
 
         Path pending = mountPoint.resolve(".pi" + TemporaryFilePackIndexWriter.TEMPORARY_SUFFIX);
@@ -180,23 +218,100 @@ final class FsDeviceMaintenance {
         return null;
     }
 
-    static InterruptedUpdateState interruptedState(boolean referenced, boolean hasFolder, boolean hasNew, boolean hasOld) {
+    /** The state of the leftovers of {@code hex}, read from the folders now on the card. */
+    static InterruptedUpdateState interruptedState(Path content, String hex, boolean referenced) {
+        return interruptedState(referenced, FolderState.of(content.resolve(hex)),
+                FolderState.of(content.resolve(STAGING_NEW_PREFIX + hex)),
+                FolderState.of(content.resolve(STAGING_OLD_PREFIX + hex)));
+    }
+
+    /**
+     * Where an interrupted update stopped. The rule behind every state: a state is only given a
+     * repair when the copy it keeps is complete, and it never removes a complete copy unless the pack
+     * folder left in place is itself complete. A pack folder next to both leftovers is never
+     * resolved automatically: an interrupted rename on FAT can leave two entries for the same
+     * clusters, and an upload sent while leftovers were there can leave a partial folder between two
+     * complete copies.
+     */
+    static InterruptedUpdateState interruptedState(boolean referenced, FolderState folder, FolderState fresh,
+                                                   FolderState previous) {
         if (!referenced) {
             return InterruptedUpdateState.UNREFERENCED;
         }
-        if (hasFolder) {
-            return hasNew ? InterruptedUpdateState.COPY_INTERRUPTED : InterruptedUpdateState.CLEANUP_INTERRUPTED;
+        if (folder.present() && fresh.present() && previous.present()) {
+            return InterruptedUpdateState.CONFLICT;
         }
-        if (hasNew && hasOld) {
-            return InterruptedUpdateState.SWAP_INTERRUPTED;
+        if (folder == FolderState.COMPLETE) {
+            return fresh.present() ? InterruptedUpdateState.COPY_INTERRUPTED : InterruptedUpdateState.CLEANUP_INTERRUPTED;
         }
-        if (hasOld) {
-            return InterruptedUpdateState.PREVIOUS_ONLY;
+        if (folder == FolderState.INCOMPLETE) {
+            if (fresh == FolderState.COMPLETE) {
+                return InterruptedUpdateState.PROMOTE_NEW;
+            }
+            if (previous == FolderState.COMPLETE) {
+                return InterruptedUpdateState.RESTORE_PREVIOUS;
+            }
+            return InterruptedUpdateState.CONFLICT;
         }
-        // Only a new copy and no pack folder: the copy cannot have been completed and swapped, since
-        // the swap moves the previous folder aside first. Treated like an interrupted copy whose
-        // pack folder had gone missing beforehand: the leftover is removed, nothing is promoted.
-        return InterruptedUpdateState.COPY_INTERRUPTED;
+        // No pack folder
+        if (previous.present()) {
+            return fresh == FolderState.COMPLETE ? InterruptedUpdateState.SWAP_INTERRUPTED : InterruptedUpdateState.PREVIOUS_ONLY;
+        }
+        return fresh == FolderState.COMPLETE ? InterruptedUpdateState.NEW_ONLY : InterruptedUpdateState.ABANDONED_COPY;
+    }
+
+    /**
+     * Whether two folders hold the very same files, byte for byte. Two folders that are the same
+     * entries (a rename cut short on FAT can leave both names pointing at the same clusters) look
+     * exactly like this, and removing one would then destroy the other: such a pair is never
+     * cleaned up automatically.
+     */
+    static boolean sameFiles(Path a, Path b) throws IOException {
+        Map<String, Path> left = filesUnder(a);
+        Map<String, Path> right = filesUnder(b);
+        if (!left.keySet().equals(right.keySet())) {
+            return false;
+        }
+        for (Map.Entry<String, Path> file : left.entrySet()) {
+            if (Files.size(file.getValue()) != Files.size(right.get(file.getKey()))) {
+                return false;
+            }
+        }
+        for (Map.Entry<String, Path> file : left.entrySet()) {
+            if (!sameBytes(file.getValue(), right.get(file.getKey()))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean sameBytes(Path a, Path b) throws IOException {
+        try (InputStream left = Files.newInputStream(a); InputStream right = Files.newInputStream(b)) {
+            byte[] l = new byte[64 * 1024];
+            byte[] r = new byte[64 * 1024];
+            while (true) {
+                int n = left.readNBytes(l, 0, l.length);
+                int m = right.readNBytes(r, 0, r.length);
+                if (n != m || !Arrays.equals(l, 0, n, r, 0, m)) {
+                    return false;
+                }
+                if (n < l.length) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    private static Map<String, Path> filesUnder(Path root) throws IOException {
+        Map<String, Path> files = new TreeMap<>();
+        try (Stream<Path> paths = Files.walk(root)) {
+            for (Path p : (Iterable<Path>) paths::iterator) {
+                if (Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS)) {
+                    files.put(root.relativize(p).toString().replace('\\', '/').toUpperCase(Locale.ROOT), p);
+                }
+            }
+        }
+        return files;
     }
 
     /**
@@ -205,13 +320,19 @@ final class FsDeviceMaintenance {
      * <p>Safe to discard: torn (the move onto {@code .pi} never happened, so {@code .pi} is what the
      * interrupted operation left), identical, or {@code .pi} plus packs whose content never finished
      * copying. Everything else is a real choice between two indexes, which only the user can make.
+     *
+     * <p>Adoptable only when every pack it names has a complete folder on the card: an empty file, one
+     * cut on a record boundary, or one filled with zeros or noise names packs that are not there (or
+     * none at all), and adopting it would empty or scramble the index.
      */
     static FsDeviceDiagnosis.PendingIndex analysePendingIndex(byte[] currentBytes, byte[] pendingBytes, Path content) {
         String fingerprint = fingerprint(currentBytes, pendingBytes);
         List<UUID> current = parseIndex(currentBytes);
-        if (pendingBytes.length % 16 != 0) {
+        // An empty .pi.new next to a non-empty .pi is a write cut before its first record: the writer
+        // creates the file, then writes it. It is not "a removal of every pack".
+        if (pendingBytes.length % 16 != 0 || (pendingBytes.length == 0 && !current.isEmpty())) {
             return new FsDeviceDiagnosis.PendingIndex(PendingIndexKind.TORN, true, fingerprint, current.size(), -1,
-                    List.of(), List.of());
+                    List.of(), List.of(), List.of(), false);
         }
         List<UUID> pending = parseIndex(pendingBytes);
         List<UUID> added = new ArrayList<>(new LinkedHashSet<>(pending));
@@ -240,7 +361,15 @@ final class FsDeviceMaintenance {
             kind = PendingIndexKind.OTHER;
             safe = false;
         }
-        return new FsDeviceDiagnosis.PendingIndex(kind, safe, fingerprint, current.size(), pending.size(), added, removed);
+        List<UUID> incomplete = new ArrayList<>();
+        for (UUID uuid : new LinkedHashSet<>(pending)) {
+            if (!isCompletePackFolder(content.resolve(folderNameOf(uuid)))) {
+                incomplete.add(uuid);
+            }
+        }
+        boolean adoptable = kind != PendingIndexKind.ADD_INCOMPLETE && incomplete.isEmpty();
+        return new FsDeviceDiagnosis.PendingIndex(kind, safe, fingerprint, current.size(), pending.size(), added, removed,
+                incomplete, adoptable);
     }
 
     private static boolean isOrderedSubsequence(List<UUID> sub, List<UUID> list) {
@@ -294,7 +423,18 @@ final class FsDeviceMaintenance {
      * @param progress told about every file looked at (may be {@code null})
      */
     static FsPackIntegrity checkPack(UUID uuid, Path folder, FsDeviceInfos infos, IntConsumer progress) {
+        return checkPack(uuid, folder, infos, progress, false);
+    }
+
+    /**
+     * @param structureOnly check only what does not depend on a key: the files are there, the node
+     *                      index holds together, no asset is empty. For an official pack, whose
+     *                      ciphered parts and boot file may use a key of its own: checking them with the
+     *                      key of this Lunii would report a healthy pack as damaged.
+     */
+    static FsPackIntegrity checkPack(UUID uuid, Path folder, FsDeviceInfos infos, IntConsumer progress, boolean structureOnly) {
         FsPackIntegrity result = new FsPackIntegrity(uuid, folder.getFileName().toString());
+        result.setStructureOnly(structureOnly);
         int[] checked = {0};
         IntConsumer tick = n -> {
             checked[0] += n;
@@ -303,7 +443,7 @@ final class FsDeviceMaintenance {
             }
         };
         try {
-            check(result, folder, infos, tick);
+            check(result, folder, infos, tick, structureOnly);
         } catch (RuntimeException e) {
             result.add(ProblemCode.FILE_UNREADABLE, String.valueOf(e.getMessage()));
         }
@@ -311,7 +451,7 @@ final class FsDeviceMaintenance {
         return result;
     }
 
-    private static void check(FsPackIntegrity result, Path folder, FsDeviceInfos infos, IntConsumer tick) {
+    private static void check(FsPackIntegrity result, Path folder, FsDeviceInfos infos, IntConsumer tick, boolean structureOnly) {
         if (!Files.isDirectory(folder, LinkOption.NOFOLLOW_LINKS)) {
             result.add(ProblemCode.FOLDER_MISSING, folder.getFileName().toString());
             return;
@@ -341,6 +481,14 @@ final class FsDeviceMaintenance {
         boolean cleartext = riRaw != null && riRaw.length >= FsStoryPackReader.CLEARTEXT_RI_BEGINNING.length
                 && Arrays.equals(riRaw, 0, FsStoryPackReader.CLEARTEXT_RI_BEGINNING.length,
                 FsStoryPackReader.CLEARTEXT_RI_BEGINNING, 0, FsStoryPackReader.CLEARTEXT_RI_BEGINNING.length);
+        if (structureOnly && !cleartext) {
+            if (ni != null) {
+                checkNodes(result, ni, null, null, null);
+            }
+            checkAssetSizes(result, folder, "rf", tick);
+            checkAssetSizes(result, folder, "sf", tick);
+            return;
+        }
         List<String> images = riRaw == null ? null
                 : assetEntries(result, FsStoryPackReader.IMAGE_INDEX_FILENAME, decipher(riRaw, cleartext, infos));
         List<String> sounds = siRaw == null ? null
@@ -530,15 +678,44 @@ final class FsDeviceMaintenance {
         }
     }
 
+    /** Every file under {@code directory} is there and not empty: what can be said without a key. */
+    private static void checkAssetSizes(FsPackIntegrity result, Path folder, String directory, IntConsumer tick) {
+        Path root = folder.resolve(directory);
+        if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {
+            return;
+        }
+        try (Stream<Path> files = Files.walk(root)) {
+            for (Path file : (Iterable<Path>) files::iterator) {
+                if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
+                    continue;
+                }
+                tick.accept(1);
+                if (Files.size(file) == 0) {
+                    result.add(ProblemCode.ASSET_EMPTY, directory + "/" + root.relativize(file).toString().replace('\\', '/'));
+                }
+            }
+        } catch (IOException e) {
+            result.add(ProblemCode.FILE_UNREADABLE, directory + ": " + e.getMessage());
+        }
+    }
+
     static boolean looksLikeBmp(byte[] head) {
         return head.length >= 2 && head[0] == 'B' && head[1] == 'M';
     }
 
+    /**
+     * An ID3 tag or an MPEG frame sync, possibly after zero bytes: some encoders pad the start of the
+     * stream, and the Lunii plays such files.
+     */
     static boolean looksLikeMp3(byte[] head) {
-        if (head.length >= 3 && head[0] == 'I' && head[1] == 'D' && head[2] == '3') {
+        int i = 0;
+        while (i < head.length && head[i] == 0) {
+            i++;
+        }
+        if (head.length - i >= 3 && head[i] == 'I' && head[i + 1] == 'D' && head[i + 2] == '3') {
             return true;
         }
-        return head.length >= 2 && (head[0] & 0xFF) == 0xFF && (head[1] & 0xE0) == 0xE0;
+        return head.length - i >= 2 && (head[i] & 0xFF) == 0xFF && (head[i + 1] & 0xE0) == 0xE0;
     }
 
     private static void checkBootFile(FsPackIntegrity result, byte[] bt, byte[] riRaw, FsDeviceInfos infos) {

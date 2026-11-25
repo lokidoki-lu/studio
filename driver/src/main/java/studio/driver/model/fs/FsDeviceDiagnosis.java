@@ -25,11 +25,17 @@ public class FsDeviceDiagnosis {
         private final String folder;
         private final long sizeInBytes;
         private final boolean complete;
+        private final boolean referencedByPendingIndex;
 
         public OrphanFolder(String folder, long sizeInBytes, boolean complete) {
+            this(folder, sizeInBytes, complete, false);
+        }
+
+        public OrphanFolder(String folder, long sizeInBytes, boolean complete, boolean referencedByPendingIndex) {
             this.folder = folder;
             this.sizeInBytes = sizeInBytes;
             this.complete = complete;
+            this.referencedByPendingIndex = referencedByPendingIndex;
         }
 
         public String getFolder() {
@@ -43,6 +49,14 @@ public class FsDeviceDiagnosis {
         /** Whether it holds every file STUdio writes, the boot file (written last) included. */
         public boolean isComplete() {
             return complete;
+        }
+
+        /**
+         * Whether the pending {@code .pi.new} names it: adopting that index would make it a pack again,
+         * so it is not removed while the pending index is there.
+         */
+        public boolean isReferencedByPendingIndex() {
+            return referencedByPendingIndex;
         }
     }
 
@@ -73,7 +87,7 @@ public class FsDeviceDiagnosis {
 
     /** How a pending {@code .pi.new} relates to the installed {@code .pi}. */
     public enum PendingIndexKind {
-        /** Not a whole number of records: the write was cut before it completed. */
+        /** Not a whole number of records, or empty while {@code .pi} is not: the write was cut before it completed. */
         TORN,
         /** Same content as {@code .pi}. */
         IDENTICAL,
@@ -97,9 +111,17 @@ public class FsDeviceDiagnosis {
         private final int pendingCount;
         private final List<UUID> added;
         private final List<UUID> removed;
+        private final List<UUID> incomplete;
+        private final boolean adoptable;
 
         public PendingIndex(PendingIndexKind kind, boolean safeToDiscard, String fingerprint, int currentCount,
                             int pendingCount, List<UUID> added, List<UUID> removed) {
+            this(kind, safeToDiscard, fingerprint, currentCount, pendingCount, added, removed, List.of(), false);
+        }
+
+        public PendingIndex(PendingIndexKind kind, boolean safeToDiscard, String fingerprint, int currentCount,
+                            int pendingCount, List<UUID> added, List<UUID> removed, List<UUID> incomplete,
+                            boolean adoptable) {
             this.kind = kind;
             this.safeToDiscard = safeToDiscard;
             this.fingerprint = fingerprint;
@@ -107,6 +129,8 @@ public class FsDeviceDiagnosis {
             this.pendingCount = pendingCount;
             this.added = List.copyOf(added);
             this.removed = List.copyOf(removed);
+            this.incomplete = List.copyOf(incomplete);
+            this.adoptable = adoptable;
         }
 
         public PendingIndexKind getKind() {
@@ -140,18 +164,47 @@ public class FsDeviceDiagnosis {
         public List<UUID> getRemoved() {
             return removed;
         }
+
+        /** Packs {@code .pi.new} names whose folder is not a complete copy on the card. */
+        public List<UUID> getIncomplete() {
+            return incomplete;
+        }
+
+        /**
+         * Whether it may replace {@code .pi}: never when it is torn, and never when it names a pack
+         * whose folder is not a complete copy, whatever its kind.
+         */
+        public boolean isAdoptable() {
+            return adoptable;
+        }
     }
 
-    /** Where an interrupted in-place update stopped, read from the folders it leaves. */
+    /**
+     * Where an interrupted in-place update stopped, read from the folders it leaves ("complete": every
+     * file STUdio writes is there, the boot file included).
+     */
     public enum InterruptedUpdateState {
-        /** The new copy was being written; the pack itself is untouched. */
+        /** A new copy next to a complete pack folder: the copy was cut short, the pack in place is whole. */
         COPY_INTERRUPTED,
+        /** The pack folder is incomplete, the new copy complete: the new copy can be put in place. */
+        PROMOTE_NEW,
         /** Between the two renames: the pack folder is missing, the new copy is complete. */
         SWAP_INTERRUPTED,
-        /** The new content is in place; the previous one was still being removed. */
+        /** A complete pack folder and the previous content next to it: the previous one was being removed. */
         CLEANUP_INTERRUPTED,
-        /** Only the previous content is left, under its temporary name. */
+        /** The pack folder is incomplete, the previous content complete: it can be put back. */
+        RESTORE_PREVIOUS,
+        /** No pack folder; the previous content is left under its temporary name (and maybe an unfinished copy). */
         PREVIOUS_ONLY,
+        /** No pack folder and only a complete new copy: it can be put in place. */
+        NEW_ONLY,
+        /** No pack folder and only an unfinished new copy: nothing to save, the leftover can be removed. */
+        ABANDONED_COPY,
+        /**
+         * Anything else (a pack folder with both leftovers, or no complete copy to keep): STUdio cannot
+         * tell which copy holds the pack, and touches nothing.
+         */
+        CONFLICT,
         /** Leftovers for a pack the index does not reference any more. */
         UNREFERENCED
     }
@@ -193,6 +246,7 @@ public class FsDeviceDiagnosis {
     private final List<InterruptedUpdate> interruptedUpdates = new ArrayList<>();
     private PendingIndex pendingIndex;
     private int indexedPacks;
+    private String deviceToken;
 
     public List<OrphanFolder> getOrphans() {
         return orphans;
@@ -221,6 +275,18 @@ public class FsDeviceDiagnosis {
 
     public void setIndexedPacks(int indexedPacks) {
         this.indexedPacks = indexedPacks;
+    }
+
+    /**
+     * Identifies the Lunii (its serial number) and the plug session the check was made in. Every repair
+     * is asked with it, and refused if the Lunii plugged now is not that one, or was plugged again.
+     */
+    public String getDeviceToken() {
+        return deviceToken;
+    }
+
+    public void setDeviceToken(String deviceToken) {
+        this.deviceToken = deviceToken;
     }
 
     public int problemCount() {

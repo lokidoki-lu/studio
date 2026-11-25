@@ -111,25 +111,44 @@ runs in the device queue and re-reads the card before acting. New error codes: `
 refusal and the index writer now carry it), `DEVICE_STATE_CHANGED` (409: the card changed since the
 check, nothing done), `UNSUPPORTED_ON_DEVICE` (400).
 
-- `GET /diagnosis` → `{"supported", "indexedPacks", "problems", "orphans": [{"folder", "sizeInBytes",
-  "complete"}], "missingContent": [{"uuid", "folder", "folderPresent"}], "interruptedUpdates":
-  [{"folder", "uuid", "state", "leftovers"}], "pendingIndex": null | {"kind", "safeToDiscard",
-  "canAdopt", "fingerprint", "currentCount", "pendingCount", "added", "removed"}}`. Read only.
-  `kind`: `TORN`, `IDENTICAL`, `ADD_INCOMPLETE` (safe to discard), `ADD`, `REMOVE`, `REORDER`,
-  `OTHER` (a choice). Orphans are removed with `POST /orphans/remove`; an entry without content with
-  `POST /removeFromDevice`.
-- `POST /repair/pendingIndex` `{"action": "discard"|"adopt", "fingerprint"}` → `{"success": true}`.
-  `discard` deletes `.pi.new` (the installed index stays); `adopt` moves it onto `.pi` atomically,
-  refused for `TORN` and `ADD_INCOMPLETE`. Refused with `DEVICE_STATE_CHANGED` if the fingerprint no
-  longer matches.
-- `POST /repair/interruptedUpdate` `{"folder": "AAAABBBB"}` → `{"success": true}`: finishes or
-  cleans up an interrupted in-place update (`COPY_INTERRUPTED`: the new copy is removed;
-  `SWAP_INTERRUPTED`: the complete new copy is renamed into place; `CLEANUP_INTERRUPTED`: the old
-  version is removed; `PREVIOUS_ONLY`: the old version is put back). The index is not touched.
+- `GET /diagnosis` → `{"supported", "indexedPacks", "problems", "deviceToken", "orphans": [{"folder",
+  "sizeInBytes", "complete", "referencedByPendingIndex"}], "missingContent": [{"uuid", "folder",
+  "folderPresent"}], "interruptedUpdates": [{"folder", "uuid", "state", "leftovers"}], "pendingIndex":
+  null | {"kind", "safeToDiscard", "canAdopt", "fingerprint", "currentCount", "pendingCount", "added",
+  "removed", "incomplete"}}`. Read only. `deviceToken` (serial number and plug session) must be sent
+  back with every repair: a repair asked on another Lunii, or after the Lunii was plugged again, is
+  refused with `DEVICE_STATE_CHANGED`. `kind`: `TORN` (also an empty `.pi.new` next to a non-empty
+  `.pi`), `IDENTICAL`, `ADD_INCOMPLETE` (safe to discard), `ADD`, `REMOVE`, `REORDER`, `OTHER` (a
+  choice). `canAdopt` is false as soon as one pack the pending index names (`incomplete`) has no
+  complete folder on the card, whatever the kind. An orphan with `referencedByPendingIndex` is refused
+  by `POST /orphans/remove` (`FOLDER_STILL_REFERENCED`), which also takes the `deviceToken`.
+- `POST /repair/pendingIndex` `{"action": "discard"|"adopt", "fingerprint", "deviceToken"}` →
+  `{"success": true}`. `discard` deletes `.pi.new` (the installed index stays); `adopt` copies `.pi`
+  to `.pi.bak`, then moves `.pi.new` onto `.pi` atomically; refused unless `canAdopt`. Refused with
+  `DEVICE_STATE_CHANGED` if the fingerprint no longer matches.
+- `POST /repair/interruptedUpdate` `{"folder": "AAAABBBB", "state", "deviceToken"}` →
+  `{"success": true}`, refused with `DEVICE_STATE_CHANGED` if the leftovers are no longer in `state`.
+  "Complete" means every file STUdio writes is there; a complete copy is only ever removed once the
+  pack folder left in place is complete and passes the integrity check. `COPY_INTERRUPTED` (complete
+  pack folder + new copy): the new copy is removed. `PROMOTE_NEW` (incomplete pack folder + complete
+  new copy): the new copy replaces it. `SWAP_INTERRUPTED` (no pack folder, complete new copy + old
+  version): the new copy is renamed into place and the old version removed, or, if the new copy fails
+  the integrity check, the old version is put back. `CLEANUP_INTERRUPTED` (complete pack folder + old
+  version): the old version is removed, never when both hold the very same files. `RESTORE_PREVIOUS`
+  (incomplete pack folder + complete old version): the old version replaces it. `PREVIOUS_ONLY`: the
+  old version is put back. `NEW_ONLY`: the complete new copy is put in place. `ABANDONED_COPY`: the
+  unfinished copy, all that is left, is removed. `CONFLICT` (a pack folder next to both leftovers, or
+  no complete copy to keep): always refused, nothing is touched. `UNREFERENCED`: unfinished copies
+  are removed, a complete one is renamed to the pack folder name if it is free. The index is not
+  touched.
+- `POST /repair/missingContent` `{"uuid", "deviceToken"}` → `{"success": true}`: removes from the
+  index an entry the check reported without content, only if its folder is still absent or without
+  `ni` and no leftover of an update of it is there (`DEVICE_STATE_CHANGED` otherwise).
 - `POST /integrity` → `{"checkId"}`, then `GET /integrity/:id` → `{"done", "checked", "total",
   "success", "packs": [{"uuid", "title", "official", "ok", "stageNodes", "images", "sounds",
-  "problems": [{"code", "detail"}]}]}`. Read only: index files in full, the first block of each
-  asset. Codes: `FOLDER_MISSING`, `FILE_MISSING`, `FILE_UNREADABLE`, `NODE_INDEX_INVALID`,
+  "structureOnly", "problems": [{"code", "detail"}]}]}`. Read only: index files in full, the first
+  block of each asset. Official packs are checked for their structure only (`structureOnly`: files
+  present, node index, no empty asset), their ciphered parts may use a key of their own. Codes: `FOLDER_MISSING`, `FILE_MISSING`, `FILE_UNREADABLE`, `NODE_INDEX_INVALID`,
   `ASSET_INDEX_INVALID`, `LIST_INDEX_INVALID`, `COUNT_MISMATCH`, `ASSET_REFERENCE_OUT_OF_RANGE`,
   `TRANSITION_OUT_OF_RANGE`, `ASSET_MISSING`, `ASSET_EMPTY`, `ASSET_HEADER_INVALID`,
   `BOOT_FILE_INVALID`.
@@ -149,7 +168,9 @@ check, nothing done), `UNSUPPORTED_ON_DEVICE` (400).
   the new version is copied to `.content/.studio-new-XXXXXXXX`, then two renames swap it with the
   old one (`.studio-old-XXXXXXXX`, removed last); the index is not rewritten. Refused with
   `PACK_NOT_ON_DEVICE` if the pack is not there, `CONTENT_FOLDER_EXISTS` while leftovers of an
-  interrupted update remain, `UNSUPPORTED_ON_DEVICE` on a 1.x Lunii.
+  interrupted update remain, `UNSUPPORTED_ON_DEVICE` on a 1.x Lunii. `POST /addFromLibrary` is refused
+  with `CONTENT_FOLDER_EXISTS` too while such leftovers remain. Both routes refuse (400
+  `INVALID_REQUEST`) an official pack, and an entry whose own UUID is not `uuid`.
 
 ## Old packs in the library
 
