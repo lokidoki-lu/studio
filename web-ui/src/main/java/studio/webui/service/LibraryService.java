@@ -25,6 +25,7 @@ import studio.core.v1.writer.archive.ArchiveStoryPackWriter;
 import studio.core.v1.writer.binary.BinaryStoryPackWriter;
 import studio.core.v1.writer.fs.FsStoryPackWriter;
 import studio.driver.StoryTellerException;
+import studio.driver.fs.PackTransferSizeEstimator;
 import studio.metadata.DatabaseMetadataService;
 import studio.metadata.DatabasePackMetadata;
 import studio.webui.model.LibraryPack;
@@ -58,6 +59,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.Enumeration;
@@ -383,6 +385,49 @@ public class LibraryService {
             LOGGER.warn("Failed to read the details of library pack " + packPath + ": " + e.getMessage());
         }
         return Optional.of(details);
+    }
+
+    /**
+     * The space the named packs will take on the device once in {@code format} ({@code fs} or
+     * {@code raw}), estimated from their sizes and asset headers without converting anything (see
+     * {@link DeviceSpaceEstimate}). The FS estimate rounds every file up to the cluster derived from
+     * {@code deviceBlockSize} ({@link PackTransferSizeEstimator#clusterBytes}, 32 KiB when unknown).
+     *
+     * @return {format, clusterSize, clusterSizeSource (device|default), total, method, packs: [{path,
+     * bytes, method}], errors: [{path, message}]}; a name that is not a pack of the library, or that
+     * cannot be read, is listed in errors and left out of the total
+     */
+    public JsonObject estimateOnDevice(List<String> packPaths, String format, OptionalLong deviceBlockSize) {
+        long cluster = PackTransferSizeEstimator.clusterBytes(deviceBlockSize);
+        boolean fromDevice = deviceBlockSize != null && deviceBlockSize.isPresent() && deviceBlockSize.getAsLong() == cluster;
+        JsonArray packs = new JsonArray();
+        JsonArray errors = new JsonArray();
+        long total = 0;
+        String method = DeviceSpaceEstimate.MEASURED;
+        for (String packPath : packPaths) {
+            Optional<Path> entry = packPath == null ? Optional.empty() : libraryEntry(packPath).filter(Files::exists);
+            if (entry.isEmpty() || isStagingEntry(entry.get())) {
+                errors.add(new JsonObject().put("path", packPath).put("message", "Not a pack of the library"));
+                continue;
+            }
+            try {
+                DeviceSpaceEstimate.Result result = DeviceSpaceEstimate.estimate(entry.get(), format, cluster);
+                packs.add(new JsonObject().put("path", packPath).put("bytes", result.bytes).put("method", result.method));
+                total = Math.addExact(total, result.bytes);
+                method = DeviceSpaceEstimate.leastPrecise(method, result.method);
+            } catch (IOException | RuntimeException e) {
+                LOGGER.warn("Failed to estimate the size of library pack " + packPath + " on the device: " + e.getMessage());
+                errors.add(new JsonObject().put("path", packPath).put("message", String.valueOf(e.getMessage())));
+            }
+        }
+        return new JsonObject()
+                .put("format", format)
+                .put("clusterSize", "fs".equals(format) ? cluster : DeviceSpaceEstimate.SECTOR)
+                .put("clusterSizeSource", "fs".equals(format) && !fromDevice ? "default" : "device")
+                .put("total", total)
+                .put("method", method)
+                .put("packs", packs)
+                .put("errors", errors);
     }
 
     /**

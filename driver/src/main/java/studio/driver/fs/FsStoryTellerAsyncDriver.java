@@ -279,6 +279,25 @@ public class FsStoryTellerAsyncDriver {
     }
 
 
+    /**
+     * The block size the partition's file store reports, or empty without a partition or when it
+     * cannot be read. On FAT32 it is the cluster on some systems and the sector on others: see
+     * {@link PackTransferSizeEstimator#clusterBytes}, which decides whether to trust it. Reads no
+     * file of the device, so it is not queued with the device operations.
+     */
+    public OptionalLong partitionBlockSize() {
+        String mountPoint = this.partitionMountPoint;
+        if (this.device == null || mountPoint == null) {
+            return OptionalLong.empty();
+        }
+        try {
+            return OptionalLong.of(Files.getFileStore(Paths.get(mountPoint)).getBlockSize());
+        } catch (IOException | RuntimeException e) {
+            LOGGER.log(Level.FINE, "Could not read the block size of the partition " + mountPoint, e);
+            return OptionalLong.empty();
+        }
+    }
+
     public CompletableFuture<FsDeviceInfos> getDeviceInfos() {
         String mountPoint = this.partitionMountPoint;
         if (this.device == null || mountPoint == null) {
