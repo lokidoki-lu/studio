@@ -43,7 +43,8 @@
       "addPack": "Add a story pack to the library",
       "import": "Import packs",
       "search": "Search packs (title, file, UUID)",
-      "noMatch": "No story pack matches this search."
+      "noMatch": "No story pack matches this search.",
+      "size": "Space used on disk"
     },
     "official": "Official",
     "format": {
