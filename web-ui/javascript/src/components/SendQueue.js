@@ -59,6 +59,7 @@ export default class SendQueue extends React.Component {
         }
         const plugged = !!(device && device.metadata);
         const estimate = state.estimate;
+        // Not disabled when the estimate says it does not fit: the refusal then offers to send anyway
         const blocked = !!(estimate && !estimate.fits);
         const visibleUnselected = (visible || []).filter(uuid => !queue.isSelected(uuid));
         return <div className="send-queue-bar" role="region" aria-label={t('sendQueue.selection', {count})}>
@@ -70,7 +71,7 @@ export default class SendQueue extends React.Component {
                 {visibleUnselected.length > 0 &&
                 <button type="button" className="ui-btn" onClick={() => queue.select(visibleUnselected, true)}>{t('sendQueue.selectAll')}</button>}
                 <button type="button" className="ui-btn" onClick={() => queue.clear()}>{t('sendQueue.clear')}</button>
-                <button type="button" className="ui-btn ui-btn-primary send-queue-send" disabled={!plugged || blocked || queue.running()}
+                <button type="button" className="ui-btn ui-btn-primary send-queue-send" disabled={!plugged || queue.running()}
                         title={blocked ? t('spaceEstimate.blocked') : (plugged ? undefined : t('spaceEstimate.plugFirst'))}
                         onClick={() => queue.start()}>
                     {t('sendQueue.send')}
@@ -138,8 +139,12 @@ export default class SendQueue extends React.Component {
                               free: this.formatSize(refusal.free), missing: this.formatSize(refusal.missing)})}</p>
                           <p>{t('spaceEstimate.refusal.explain')}</p>
                           {refusal.method === 'rough' && <p>{t('spaceEstimate.rough')}</p>}
+                          <p>{t('spaceEstimate.refusal.sendAnywayExplain')}</p>
                       </div>}
-                      buttons={[{label: t('dialogs.shared.close'), onClick: () => queue.dismissRefusal()}]}
+                      buttons={[
+                          {label: t('dialogs.shared.close'), onClick: () => queue.dismissRefusal()},
+                          {label: t('spaceEstimate.refusal.sendAnyway'), onClick: () => queue.sendAnyway()}
+                      ]}
                       onClose={() => queue.dismissRefusal()}
         />;
     }

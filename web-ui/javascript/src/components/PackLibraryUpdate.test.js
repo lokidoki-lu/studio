@@ -171,6 +171,20 @@ describe('in-place update', () => {
         expect(props.convertPackInLibrary).not.toHaveBeenCalled();
     });
 
+    it('B2: an update the estimate says does not fit can be sent anyway', async () => {
+        const props = {...actions(), estimateOnDevice: jest.fn(paths => Promise.resolve({method: 'measured', packs: paths.map(path => ({path, bytes: 9e9}))}))};
+        await render(PackLibrary, {device: DEVICE, library: LIBRARY, ...props});
+        const update = buttons(container.querySelector('.plugged-device .pack-tile'), 'deviceUpdate.update');
+        act(() => { update[0].click(); });
+        await flush();
+        const refusal = document.getElementById('modal-space-refusal');
+        expect(refusal.textContent).toContain('spaceEstimate.refusal.sendAnywayExplain');
+        act(() => { buttons(refusal, 'spaceEstimate.refusal.sendAnyway')[0].click(); });
+        await flush();
+        expect(props.updateOnDevice).toHaveBeenCalledWith('u-yt', 'yt.fs', 'fs', 'fs', expect.anything());
+        expect(props.addFromLibrary).not.toHaveBeenCalled();
+    });
+
     it('a 1.x Lunii is not asked for updates', async () => {
         const props = actions();
         await render(PackLibrarySimple, {device: {...DEVICE, metadata: {...DEVICE.metadata, driver: 'raw'}}, library: LIBRARY, ...props});

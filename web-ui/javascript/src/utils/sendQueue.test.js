@@ -150,8 +150,33 @@ describe('retryWhileBusy', () => {
         expect(attempt).toHaveBeenCalledTimes(BUSY_RETRIES + 1);
 
         const once = jest.fn().mockResolvedValue({status: 'failed', reason: 'busy'});
-        await expect(retryWhileBusy(once, {isCancelled: () => true})).resolves.toEqual({status: 'failed', reason: 'busy'});
+        await expect(retryWhileBusy(once, {isCancelled: () => true})).resolves.toEqual({status: 'skipped', reason: 'cancelled'});
         expect(once).toHaveBeenCalledTimes(1);
+    });
+
+    it('B4: cancelled while waiting to try again, the pack is cancelled (not failed as busy), and not tried again', async () => {
+        let cancelled = false;
+        const attempt = jest.fn().mockResolvedValue({status: 'failed', reason: 'busy'});
+        const result = retryWhileBusy(attempt, {isCancelled: () => cancelled});
+        await settle();
+        expect(attempt).toHaveBeenCalledTimes(1);
+        cancelled = true;
+        jest.advanceTimersByTime(BUSY_RETRY_DELAY_MS);
+        await settle();
+        await expect(result).resolves.toEqual({status: 'skipped', reason: 'cancelled'});
+        expect(attempt).toHaveBeenCalledTimes(1);
+    });
+
+    it('B4: a cancellation does not change the outcome of an attempt that went through', async () => {
+        let cancelled = false;
+        const attempt = jest.fn()
+            .mockResolvedValueOnce({status: 'failed', reason: 'busy'})
+            .mockImplementationOnce(() => { cancelled = true; return Promise.resolve({status: 'sent'}); });
+        const result = retryWhileBusy(attempt, {isCancelled: () => cancelled});
+        await settle();
+        jest.advanceTimersByTime(BUSY_RETRY_DELAY_MS);
+        await settle();
+        await expect(result).resolves.toEqual({status: 'sent'});
     });
 
     it('does not retry any other failure', async () => {

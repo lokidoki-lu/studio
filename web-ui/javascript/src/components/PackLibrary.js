@@ -265,9 +265,12 @@ export class PackLibrary extends React.Component {
                     cached,
                     verdict: verified.verdict
                 };
-                if (answers.confirm) {
+                // Answered per verdict: a "transfer" given for an unprovable conversion is no answer
+                // for one known not to match its source
+                const answered = answers.confirm && answers.confirm[question.verdict];
+                if (answered) {
                     // Already answered for this selection
-                    return this.answerConfirmConversion(answers.confirm, question, options);
+                    return this.answerConfirmConversion(answered, question, options);
                 }
                 console.log('conversion not proven (%s), asking', verified.verdict);
                 return this.askInDialog('confirmConversionDialog', question, options);
@@ -367,7 +370,8 @@ export class PackLibrary extends React.Component {
         }
     };
 
-    dismissConfirmConversionDialog = (answer) => {
+    // Échap or ×: only this pack is left out; the answer is not kept for the rest of the selection
+    dismissConfirmConversionDialog = (answer, remember = true) => {
         return () => {
             const data = this.state.confirmConversionDialog.data;
             // Close the dialog first, so a second click cannot start a second operation
@@ -381,9 +385,9 @@ export class PackLibrary extends React.Component {
                 // Already dismissed (double click)
                 return;
             }
-            if (data.options && data.options.answers) {
-                // Applied to the rest of the selection as well, as the dialog says
-                data.options.answers.confirm = answer;
+            if (remember && data.options && data.options.answers) {
+                // Applied to the rest of the selection as well, as the dialog says (for the same verdict)
+                data.options.answers.confirm = {...data.options.answers.confirm, [data.verdict]: answer};
             }
             const result = this.answerConfirmConversion(answer, data, data.options);
             if (data.settle) {
@@ -596,7 +600,7 @@ export class PackLibrary extends React.Component {
                        { label: t('dialogs.library.askConfirmConversion.transfer'), onClick: this.dismissConfirmConversionDialog('transfer')},
                        { label: t('dialogs.library.askConfirmConversion.convert'), onClick: this.dismissConfirmConversionDialog('convert')}
                    ]}
-                   onClose={this.dismissConfirmConversionDialog('cancel')}
+                   onClose={this.dismissConfirmConversionDialog('cancel', false)}
             />}
         </>;
     }

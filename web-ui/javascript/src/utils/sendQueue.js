@@ -51,15 +51,21 @@ export const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * Runs attempt() again while it answers {reason: 'busy'}: the device lock is held for a moment by
- * the refresh that follows each transfer, and the next pack must not fail for that.
+ * the refresh that follows each transfer, and the next pack must not fail for that. Cancelled while
+ * it waits to try again, the pack was not sent because of the cancellation: it is 'cancelled'.
  */
 export async function retryWhileBusy(attempt, {retries = BUSY_RETRIES, delayMs = BUSY_RETRY_DELAY_MS, isCancelled} = {}) {
+    const cancelled = () => !!(isCancelled && isCancelled());
+    const busy = (outcome) => !!(outcome && outcome.reason === 'busy');
     let outcome = await attempt();
-    for (let i = 0; i < retries && outcome && outcome.reason === 'busy' && !(isCancelled && isCancelled()); i++) {
+    for (let i = 0; i < retries && busy(outcome) && !cancelled(); i++) {
         await wait(delayMs);
+        if (cancelled()) {
+            break;
+        }
         outcome = await attempt();
     }
-    return outcome;
+    return busy(outcome) && cancelled() ? {status: 'skipped', reason: 'cancelled'} : outcome;
 }
 
 /**

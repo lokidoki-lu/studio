@@ -344,7 +344,10 @@ export const actionAddFromLibrary = (uuid, path, format, driver, context, t, opt
                     settled({status: 'failed', reason: 'incompatible'});
                 } else if (followedPacks.has(key)) {
                     console.warn('pack ' + uuid + ' is already being transferred to the device');
-                    toast.error(t('toasts.device.busy'));
+                    // The send queue tries again on its own, without a toast each time
+                    if (!options.onSettled) {
+                        toast.error(t('toasts.device.busy'));
+                    }
                     release();
                     settled({status: 'failed', reason: 'busy'});
                 } else {
