@@ -133,6 +133,25 @@ class DeviceSpaceEstimateTest {
     }
 
     @Test
+    @DisplayName("B3: an FS pack to raw counts its enciphered MP3 at 32 kbps, so a low bit rate voice track is not under-counted")
+    void fsToRawAssumesTheLowestMp3BitRate() throws IOException {
+        Path fs = library.resolve("voice.fs");
+        Files.createDirectories(fs.resolve("sf").resolve("000"));
+        Files.createDirectories(fs.resolve("rf").resolve("000"));
+        // One minute of a 32 kbps VBR voice track: 240 000 bytes, 3 840 000 bytes once in 32 kHz WAV
+        long mp3Bytes = 60L * 32_000 / 8;
+        Files.write(fs.resolve("sf").resolve("000").resolve("00000000"), new byte[(int) mp3Bytes]);
+        Files.write(fs.resolve("ni"), new byte[512 + 44]);
+
+        DeviceSpaceEstimate.Result result = DeviceSpaceEstimate.estimate(fs, "raw", K32);
+
+        long wav = 60L * DeviceSpaceEstimate.WAV_BYTES_PER_SECOND;
+        assertEquals(16, DeviceSpaceEstimate.MP3_TO_WAV_FACTOR);
+        assertTrue(result.bytes >= wav, result.bytes + " < " + wav);
+        assertEquals(DeviceSpaceEstimate.ROUGH, result.method);
+    }
+
+    @Test
     @DisplayName("the library answer: per pack, a total, the cluster from the device when it is plausible, and unknown names as errors")
     void libraryAnswer() throws IOException {
         writeArchive("a.zip", wav(64_000, 64_000), monoMp3(4_000));
