@@ -473,15 +473,8 @@ public class FsStoryTellerAsyncDriver {
                             short version;
                             try (InputStream niFis = Files.newInputStream(nodeIndex.toPath());
                                  DataInputStream niDis = new DataInputStream(niFis)) {
-                                byte[] header = niDis.readNBytes(512);
-                                if (header.length < 4) {
-                                    // A truncated 'ni' (an interrupted copy) is local to its pack,
-                                    // like a missing one: it used to fail the whole listing.
-                                    LOGGER.warning("Pack " + packUUID + " has a truncated node index on the device ("
-                                            + header.length + " bytes); leaving it out of the list");
-                                    continue;
-                                }
-                                version = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN).getShort(2);
+                                ByteBuffer bb = ByteBuffer.wrap(niDis.readNBytes(512)).order(ByteOrder.LITTLE_ENDIAN);
+                                version = bb.getShort(2);
                             }
                             packInfos.setVersion(version);
                             LOGGER.fine("Pack version: " + version);
@@ -1152,15 +1145,6 @@ public class FsStoryTellerAsyncDriver {
         }
     }
 
-    /**
-     * Copies a pack folder, transcoding its assets for the direction of the transfer.
-     *
-     * <p>{@code destFolder} must have just been created, exclusively, by the calling operation: every
-     * file is written with {@code CREATE_NEW}, so nothing that already exists in it is ever
-     * truncated or replaced. Before each file, the partition the operation started on must still be
-     * the current one, so that a thread left over from a card that was unplugged never writes to (or
-     * reads from) another card mounted at the same path.
-     */
     /** Same rule as FsStoryPackReader's own detection: the ri file starts with a cleartext path. */
     static boolean riLooksCleartext(Path packFolder) throws IOException {
         Path ri = packFolder.resolve(FsStoryPackReader.IMAGE_INDEX_FILENAME);
@@ -1175,6 +1159,15 @@ public class FsStoryTellerAsyncDriver {
         return java.util.Arrays.equals(head, marker);
     }
 
+    /**
+     * Copies a pack folder, transcoding its assets for the direction of the transfer.
+     *
+     * <p>{@code destFolder} must have just been created, exclusively, by the calling operation: every
+     * file is written with {@code CREATE_NEW}, so nothing that already exists in it is ever
+     * truncated or replaced. Before each file, the partition the operation started on must still be
+     * the current one, so that a thread left over from a card that was unplugged never writes to (or
+     * reads from) another card mounted at the same path.
+     */
     private TransferStatus copyPackFolder(PartitionSession session, String sourceFolder, File destFolder, FsDeviceInfos deviceInfos, boolean isUpload, TransferProgressListener listener) throws IOException {
         // Keep track of transferred bytes and elapsed time
         final long startTime = System.currentTimeMillis();
