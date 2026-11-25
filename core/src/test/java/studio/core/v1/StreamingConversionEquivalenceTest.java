@@ -216,6 +216,92 @@ class StreamingConversionEquivalenceTest {
         assertFsToArchiveEquivalent(fs);
     }
 
+    @Test
+    @DisplayName("C2: FS to archive fails when an asset changes between its digest (the entry name) and its copy")
+    void fsToArchiveAssetChangedMidway() throws Exception {
+        Path fs = fsPack("changed", false);
+        List<Path> sounds = sounds(fs);
+        // The digests are all taken while story.json is written; the "assets/" folder entry comes
+        // next, before any asset is copied: that is when the files are changed.
+        ClosingProbe out = new ClosingProbe(() -> {
+            for (Path sound : sounds) {
+                byte[] content = Files.readAllBytes(sound);
+                content[content.length - 1] ^= 0x5A;
+                Files.write(sound, content);
+            }
+        });
+        IOException e = assertThrows(IOException.class, () -> StreamingPackConversion.fsToArchive(fs, out));
+        assertTrue(e.getMessage().contains("changed while the pack was being converted"), e.getMessage());
+        assertTrue(out.triggered, "the files were changed between the digests and the copies");
+        // C3: the archive stream is closed all the same
+        assertTrue(out.closed, "the zip stream is closed when an asset fails");
+    }
+
+    @Test
+    @DisplayName("C3: FS to archive closes the zip stream when copying an asset fails")
+    void fsToArchiveClosesOnFailure() throws Exception {
+        Path fs = fsPack("vanished", false);
+        List<Path> sounds = sounds(fs);
+        ClosingProbe out = new ClosingProbe(() -> {
+            for (Path sound : sounds) {
+                Files.delete(sound);
+            }
+        });
+        assertThrows(IOException.class, () -> StreamingPackConversion.fsToArchive(fs, out));
+        assertTrue(out.triggered);
+        assertTrue(out.closed, "the zip stream is closed when an asset fails");
+    }
+
+    private static List<Path> sounds(Path fs) throws IOException {
+        try (Stream<Path> walk = Files.walk(fs.resolve("sf"))) {
+            return walk.filter(Files::isRegularFile).sorted().collect(Collectors.toList());
+        }
+    }
+
+    /** Runs {@code action} once, when the zip names its "assets/" folder entry; records close(). */
+    private static final class ClosingProbe extends ByteArrayOutputStream {
+        interface Action {
+            void run() throws IOException;
+        }
+
+        private final Action action;
+        boolean triggered;
+        boolean closed;
+
+        ClosingProbe(Action action) {
+            this.action = action;
+        }
+
+        @Override
+        public synchronized void write(byte[] b, int off, int len) {
+            super.write(b, off, len);
+            trigger();
+        }
+
+        @Override
+        public synchronized void write(int b) {
+            super.write(b);
+            trigger();
+        }
+
+        private void trigger() {
+            if (!triggered && new String(toByteArray(), StandardCharsets.ISO_8859_1).contains("assets/")) {
+                triggered = true;
+                try {
+                    action.run();
+                } catch (IOException e) {
+                    throw new IllegalStateException(e);
+                }
+            }
+        }
+
+        @Override
+        public void close() throws IOException {
+            closed = true;
+            super.close();
+        }
+    }
+
     /** An FS pack converted from the rich archive by the legacy code, optionally ciphered as a v2 library pack. */
     private Path fsPack(String name, boolean ciphered) throws Exception {
         Path zip = tmp.resolve(name + "-source.zip");
