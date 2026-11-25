@@ -72,8 +72,8 @@ class TemporaryFilePackIndexWriter implements PackIndexWriter {
                     + temporary + ". It was not created by this operation, so the index write was refused"
                     + " rather than taking it over: overwriting or removing it would risk an index whose"
                     + " origin is not known, and the pack UUIDs it may hold exist nowhere else on the card."
-                    + " Nothing was overwritten or removed. STUdio has no operation to resolve this state"
-                    + " yet.", preexisting);
+                    + " Nothing was overwritten or removed. It can be resolved explicitly from the device"
+                    + " check (GET /api/device/diagnosis, then POST /api/device/repair/pendingIndex).", preexisting);
         }
 
         // From here the temporary is ours, and every path out of this method removes it.

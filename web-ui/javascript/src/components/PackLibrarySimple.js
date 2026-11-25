@@ -11,6 +11,7 @@ import {withTranslation} from "react-i18next";
 import {PackLibrary, mapStateToProps, mapDispatchToProps} from "./PackLibrary";
 import Modal from "./Modal";
 import YoutubePack from "./YoutubePack";
+import DeviceUpdateButton from "./DeviceUpdateButton";
 import {simpleItems, movedOrder, storagePercent, packTitle, SIMPLE_SORTS} from "../utils/simpleLibrary";
 import {sizeUnit} from "../utils/purge";
 
@@ -67,6 +68,30 @@ export class PackLibrarySimple extends PackLibrary {
             started = Promise.reject(e);
         }
         return started.catch(e => console.error('failed to send the pack to the device', e)).then(done);
+    };
+
+    /** "Update on my Lunii": the full library's in-place update, one at a time per pack. */
+    onUpdateOnDevice = (uuid) => () => {
+        if (!this.state.device.metadata || this.state.sending[uuid]) {
+            return Promise.resolve();
+        }
+        this.setState(state => ({sending: {...state.sending, [uuid]: true}}));
+        const done = () => {
+            if (!this.unmounted) {
+                this.setState(state => {
+                    const sending = {...state.sending};
+                    delete sending[uuid];
+                    return {sending};
+                });
+            }
+        };
+        let started;
+        try {
+            started = Promise.resolve(this.updatePackOnDevice(uuid));
+        } catch (e) {
+            started = Promise.reject(e);
+        }
+        return started.catch(e => console.error('failed to update the pack on the device', e)).then(done);
     };
 
     componentWillUnmount() {
@@ -135,6 +160,7 @@ export class PackLibrarySimple extends PackLibrary {
                 </div>
             </>}
             {device.metadata.error && <p className="simple-note simple-error">{t('simpleLibrary.device.error')}</p>}
+            {this.renderDeviceRepair('simple-device-repair')}
             {device.packs.length === 0 && <p className="simple-empty">{t('library.device.empty')}</p>}
             {device.packs.length > 0 && <ol className="simple-device-list">
                 {device.packs.map((pack, idx) => {
@@ -142,6 +168,7 @@ export class PackLibrarySimple extends PackLibrary {
                     return <li key={pack.uuid} className="simple-device-pack">
                         {pack.image ? <img src={pack.image} alt="" width="48" height="48"/> : <span className="simple-thumb-none" aria-hidden="true">♪</span>}
                         <span className="simple-device-title" title={title}>{title}</span>
+                        {!pack.official && <DeviceUpdateButton status={this.deviceUpdateOf(pack.uuid)} badgeOnly />}
                         <span className="simple-device-actions">
                             <button type="button" className="ui-btn ui-btn-icon" disabled={idx === 0}
                                     onClick={this.onMoveOnDevice(idx, -1)}
@@ -182,10 +209,13 @@ export class PackLibrarySimple extends PackLibrary {
                 <p className="simple-meta">{meta}</p>
                 <p className="simple-badges">
                     {item.onDevice && <span className="simple-badge ok">{t('simpleLibrary.card.onDevice')}</span>}
+                    {item.onDevice && !item.official && <DeviceUpdateButton status={this.deviceUpdateOf(item.uuid)} badgeOnly />}
                     {item.official && <span className="simple-badge">{t('library.official')}</span>}
                     {item.nightMode && <span className="simple-badge">{t('library.nightMode')}</span>}
                 </p>
                 <div className="simple-actions">
+                    {item.onDevice && !item.official && plugged &&
+                        <DeviceUpdateButton status={this.deviceUpdateOf(item.uuid)} onUpdate={this.onUpdateOnDevice(item.uuid)} busy={sending} buttonOnly />}
                     {item.onDevice
                         ? <button type="button" className="ui-btn" onClick={this.onRemovePackFromDevice(item.uuid)} disabled={!plugged}>
                             {t('simpleLibrary.card.removeFromDevice')}
