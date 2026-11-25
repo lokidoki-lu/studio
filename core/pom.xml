@@ -13,7 +13,7 @@
     <parent>
         <artifactId>studio-parent</artifactId>
         <groupId>studio</groupId>
-        <version>0.4.3-lunii.5</version>
+        <version>0.4.3-lunii.6</version>
     </parent>
 
     <artifactId>studio-core</artifactId>
