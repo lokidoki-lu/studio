@@ -184,10 +184,19 @@ final class PackDetails {
     static final class Duration {
         final double seconds;
         final boolean estimated;
+        /** Of an MP3, as its first frame says (0 when unknown): whether it can go to the device as is. */
+        final int sampleRate;
+        final boolean mono;
 
         Duration(double seconds, boolean estimated) {
+            this(seconds, estimated, 0, false);
+        }
+
+        Duration(double seconds, boolean estimated, int sampleRate, boolean mono) {
             this.seconds = seconds;
             this.estimated = estimated;
+            this.sampleRate = sampleRate;
+            this.mono = mono;
         }
     }
 
@@ -252,7 +261,7 @@ final class PackDetails {
                 if ((tag.equals("Xing") || tag.equals("Info")) && (buf[xing + 7] & 0x01) != 0) {
                     long frames = ByteBuffer.wrap(buf, xing + 8, 4).order(ByteOrder.BIG_ENDIAN).getInt() & 0xFFFFFFFFL;
                     if (frames > 0) {
-                        return new Duration((double) frames * samplesPerFrame / sampleRate, false);
+                        return new Duration((double) frames * samplesPerFrame / sampleRate, false, sampleRate, channelMode == 3);
                     }
                 }
             }
@@ -260,7 +269,7 @@ final class PackDetails {
                 return null;
             }
             long audioBytes = size - skipped - i;
-            return new Duration(audioBytes * 8.0 / bitrate, true);
+            return new Duration(audioBytes * 8.0 / bitrate, true, sampleRate, channelMode == 3);
         }
         return null;
     }

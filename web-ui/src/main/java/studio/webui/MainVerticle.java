@@ -266,7 +266,7 @@ public class MainVerticle extends AbstractVerticle {
         router.mountSubRouter("/device", DeviceController.apiRouter(vertx, storyTellerService, libraryService));
 
         // Library services
-        router.mountSubRouter("/library", LibraryController.apiRouter(vertx, libraryService));
+        router.mountSubRouter("/library", LibraryController.apiRouter(vertx, libraryService, storyTellerService::deviceBlockSize));
 
         // Evergreen services
         router.mountSubRouter("/evergreen", EvergreenController.apiRouter(vertx, evergreenService));
