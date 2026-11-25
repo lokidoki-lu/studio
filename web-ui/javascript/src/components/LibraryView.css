@@ -55,7 +55,7 @@
 
 .library-mode-option.active {
     background-color: var(--ui-accent);
-    color: #fff;
+    color: var(--ui-on-accent, #fff);
 }
 
 .library-mode-option:focus {

@@ -34,11 +34,20 @@ export function storyStats(story) {
 export function createSimulation(story, random = Math.random) {
     const stageNodes = (story && Array.isArray(story.stageNodes)) ? story.stageNodes : [];
     const actionNodes = (story && Array.isArray(story.actionNodes)) ? story.actionNodes : [];
-    const stages = new Map(stageNodes.filter(node => node && node.uuid).map(node => [node.uuid, node]));
+    // A uuid given to several stage nodes names the first of them
+    const stages = new Map();
+    stageNodes.forEach(node => {
+        if (node && node.uuid && !stages.has(node.uuid)) {
+            stages.set(node.uuid, node);
+        }
+    });
     const actions = new Map(actionNodes.filter(node => node && node.id).map(node => [node.id, node]));
     const first = stageNodes.find(node => node && node.squareOne) || stageNodes[0];
     if (!first) {
-        throw new Error('The pack has no stage node');
+        const error = new Error('NO_STAGE_NODE');
+        // For the preview's message, translated (preview.simulation.errors.NO_STAGE_NODE)
+        error.code = 'NO_STAGE_NODE';
+        throw error;
     }
     const startState = {stage: first.uuid, action: null, index: null};
 
@@ -55,11 +64,16 @@ export function createSimulation(story, random = Math.random) {
         if (options.length === 0) {
             return {state: null, event: 'broken'};
         }
+        // Some packs give the index as a string ("1")
         let index = transition.optionIndex;
-        if (index === -1 || index === undefined || index === null) {
+        if (index === undefined || index === null || index === '') {
+            index = -1;
+        }
+        index = Number(index);
+        if (index === -1) {
             index = Math.min(options.length - 1, Math.floor(random() * options.length));
         }
-        if (index < 0 || index >= options.length || !stages.has(options[index])) {
+        if (!Number.isInteger(index) || index < 0 || index >= options.length || !stages.has(options[index])) {
             return {state: null, event: 'broken'};
         }
         return {state: {stage: options[index], action: action.id, index}, event: 'moved'};
@@ -92,7 +106,16 @@ export function createSimulation(story, random = Math.random) {
                 .filter((image, i, all) => all.indexOf(image) === i);
         },
 
-        /** OK, or the end of the audio of a node with autoplay. */
+        /**
+         * Whether OK does something on the node shown: when the OK button is enabled, or, as on the
+         * device and in the editor's viewer, to replace autoplay when the autoplay option is off.
+         */
+        canOk: (state, autoplayOption) => {
+            const c = controls(state);
+            return c.ok === true || (c.autoplay === true && !autoplayOption);
+        },
+
+        /** OK, or the end of the audio of a node with autoplay (callers check canOk for a button press). */
         ok: (state) => {
             const node = stage(state);
             if (!node) {

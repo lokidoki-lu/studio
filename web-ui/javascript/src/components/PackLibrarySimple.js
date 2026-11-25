@@ -33,7 +33,9 @@ export class PackLibrarySimple extends PackLibrary {
             query: '',
             sort: 'title',
             notOnDevice: false,
-            removingGroup: null
+            removingGroup: null,
+            // uuid -> true while its "Send to my Lunii" is being started (conversion, verification)
+            sending: {}
         };
     }
 
@@ -44,10 +46,35 @@ export class PackLibrarySimple extends PackLibrary {
     };
 
     onSendToDevice = (item) => () => {
-        if (this.state.device.metadata) {
-            this.sendToDevice(item.group);
+        // Official packs are not sent, as in the full library (isPackDraggable); one sending at a time
+        if (!this.state.device.metadata || !this.isPackDraggable(item.group.packs[0] || {}) || this.state.sending[item.uuid]) {
+            return;
         }
+        this.setState(state => ({sending: {...state.sending, [item.uuid]: true}}));
+        const done = () => {
+            if (!this.unmounted) {
+                this.setState(state => {
+                    const sending = {...state.sending};
+                    delete sending[item.uuid];
+                    return {sending};
+                });
+            }
+        };
+        let started;
+        try {
+            started = Promise.resolve(this.sendToDevice(item.group));
+        } catch (e) {
+            started = Promise.reject(e);
+        }
+        return started.catch(e => console.error('failed to send the pack to the device', e)).then(done);
     };
+
+    componentWillUnmount() {
+        this.unmounted = true;
+        if (super.componentWillUnmount) {
+            super.componentWillUnmount();
+        }
+    }
 
     /** The full library's preview (PackPreview), of the editable archive when there is one. */
     onPreview = (item) => () => {
@@ -80,15 +107,15 @@ export class PackLibrarySimple extends PackLibrary {
         if (!item) {
             return Promise.resolve();
         }
-        return item.group.packs.reduce(
-            (previous, pack) => previous.then(() => this.props.removeFromLibrary(pack.path)),
-            Promise.resolve());
+        // One toast and one refresh of the library for all the files
+        return this.props.removeManyFromLibrary(item.group.packs.map(pack => pack.path));
     };
 
     renderDevice() {
         const { t } = this.props;
         const device = this.state.device;
-        const libraryUuids = (this.state.library.packs || []).map(g => g.uuid);
+        // Uuids compared regardless of case: the device and story.json may not write them alike
+        const libraryUuids = (this.state.library.packs || []).map(g => String(g.uuid).toLowerCase());
         if (!device.metadata) {
             return <section className="simple-device simple-device-unplugged" aria-label={t('simpleLibrary.device.title')}>
                 <h2>{t('simpleLibrary.device.title')}</h2>
@@ -122,7 +149,7 @@ export class PackLibrarySimple extends PackLibrary {
                             <button type="button" className="ui-btn ui-btn-icon" disabled={idx === device.packs.length - 1}
                                     onClick={this.onMoveOnDevice(idx, 1)}
                                     aria-label={t('simpleLibrary.device.moveDown', { title })} title={t('simpleLibrary.device.moveDown', { title })}>↓</button>
-                            {!pack.official && libraryUuids.indexOf(pack.uuid) === -1 &&
+                            {!pack.official && libraryUuids.indexOf(String(pack.uuid).toLowerCase()) === -1 &&
                             <button type="button" className="ui-btn ui-btn-icon" onClick={this.onSaveToLibrary(pack.uuid)}
                                     aria-label={t('simpleLibrary.device.save', { title })} title={t('simpleLibrary.device.save', { title })}>
                                 <span className="glyphicon glyphicon-save" aria-hidden="true"/>
@@ -141,6 +168,8 @@ export class PackLibrarySimple extends PackLibrary {
     renderCard(item) {
         const { t } = this.props;
         const plugged = !!this.state.device.metadata;
+        const sending = this.state.sending[item.uuid] === true;
+        const sendable = this.isPackDraggable(item.group.packs[0] || {});
         const meta = [item.size !== null ? this.formatSize(item.size) : null,
             item.files > 1 ? t('simpleLibrary.card.files', { count: item.files }) : null].filter(Boolean).join(' · ');
         return <li key={item.uuid} className={`simple-card ${item.onDevice ? 'on-device' : ''}`} title={item.uuid}>
@@ -161,9 +190,9 @@ export class PackLibrarySimple extends PackLibrary {
                         ? <button type="button" className="ui-btn" onClick={this.onRemovePackFromDevice(item.uuid)} disabled={!plugged}>
                             {t('simpleLibrary.card.removeFromDevice')}
                           </button>
-                        : <button type="button" className="ui-btn ui-btn-primary" onClick={this.onSendToDevice(item)} disabled={!plugged}
-                                  title={plugged ? undefined : t('simpleLibrary.card.plugFirst')}>
-                            {t('simpleLibrary.card.send')}
+                        : sendable && <button type="button" className="ui-btn ui-btn-primary" onClick={this.onSendToDevice(item)} disabled={!plugged || sending}
+                                  aria-busy={sending} title={plugged ? undefined : t('simpleLibrary.card.plugFirst')}>
+                            {t(sending ? 'simpleLibrary.card.sending' : 'simpleLibrary.card.send')}
                           </button>}
                     <button type="button" className="ui-btn ui-btn-icon" onClick={this.onPreview(item)}
                             aria-label={t('simpleLibrary.card.preview', { title: item.title })} title={t('simpleLibrary.card.preview', { title: item.title })}>
@@ -186,7 +215,8 @@ export class PackLibrarySimple extends PackLibrary {
         const { t } = this.props;
         const groups = (this.state.library && this.state.library.packs) || [];
         const items = simpleItems(groups, this.state.device.packs, {
-            query: this.state.query, sort: this.state.sort, notOnDevice: this.state.notOnDevice
+            query: this.state.query, sort: this.state.sort, notOnDevice: this.state.notOnDevice,
+            locale: this.props.i18n && this.props.i18n.language
         });
         const total = groups.reduce((sum, g) => sum + ((g.packs || []).map(p => p.size).filter(s => s >= 0)[0] || 0), 0);
         const removing = this.state.removingGroup;

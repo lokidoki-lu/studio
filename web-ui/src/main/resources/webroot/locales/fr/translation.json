@@ -124,16 +124,30 @@
       "WRITING": "Ajout à la bibliothèque",
       "FINISHED": "Terminé"
     },
-    "done": "Pack « {{title}} » ajouté à la bibliothèque : {{count}} histoire(s) ({{path}}).",
-    "silent": "{{count}} titre(s) sans voix : générez-les dans l'éditeur avant d'envoyer le pack sur la Lunii.",
+    "done": "Pack « {{title}} » ajouté à la bibliothèque : {{count}} histoire ({{path}}).",
+    "done_plural": "Pack « {{title}} » ajouté à la bibliothèque : {{count}} histoires ({{path}}).",
+    "silent": "{{count}} titre sans voix : générez-le dans l'éditeur avant d'envoyer le pack sur la Lunii.",
+    "silent_plural": "{{count}} titres sans voix : générez-les dans l'éditeur avant d'envoyer le pack sur la Lunii.",
     "blocked": "YouTube a bloqué la suite des téléchargements : réessayez dans quelques heures pour les vidéos manquantes.",
     "failed": "Échec : {{message}}",
     "cancelled": "Création annulée : rien n'a été ajouté à la bibliothèque.",
-    "warnings": "{{count}} avertissement(s) : voyez le journal ci-dessous.",
+    "warnings": "{{count}} avertissement : voyez le journal ci-dessous.",
+    "warnings_plural": "{{count}} avertissements : voyez le journal ci-dessous.",
     "background": "Vous pouvez fermer cette fenêtre : la création continue, le bouton « Depuis YouTube » suit sa progression.",
     "toasts": {
-      "done": "Pack « {{title}} » créé depuis YouTube : {{count}} histoire(s).",
-      "failed": "La création du pack depuis YouTube a échoué : {{message}}"
+      "done": "Pack « {{title}} » créé depuis YouTube : {{count}} histoire.",
+      "done_plural": "Pack « {{title}} » créé depuis YouTube : {{count}} histoires.",
+      "failed": "La création du pack depuis YouTube a échoué : {{message}}",
+      "interrupted": "La création du pack depuis YouTube a été interrompue (STUdio a redémarré ?).",
+      "unreachable": "STUdio ne répond plus : la création du pack depuis YouTube n'est plus suivie. Rouvrez la bibliothèque pour la retrouver."
+    },
+    "errors": {
+      "BUSY": "Un pack est déjà en cours de création.",
+      "TOOLS_MISSING": "yt-dlp ou ffmpeg est introuvable.",
+      "BLOCKED": "YouTube a bloqué les téléchargements : réessayez dans quelques heures.",
+      "NOTHING_DOWNLOADED": "Aucune vidéo n'a pu être téléchargée.",
+      "CANCELLED": "Création annulée.",
+      "NOT_FOUND": "Création introuvable (STUdio a redémarré ?)."
     }
   },
 
@@ -154,7 +168,8 @@
       "DUPLICATE_SOURCE": "Copie identique d'un fichier plus récent : {{kept}}"
     },
     "unselectedHint": "Décochées par défaut : ce sont des fichiers que vous avez ajoutés vous-même.",
-    "total": "Espace libéré : {{size}} ({{count}} cochée(s))",
+    "total": "Espace libéré : {{size}} ({{count}} cochée)",
+    "total_plural": "Espace libéré : {{size}} ({{count}} cochées)",
     "cancel": "Annuler",
     "confirm": "Supprimer définitivement",
     "units": {
@@ -215,7 +230,8 @@
       "files": "{{count}} fichiers",
       "preview": "Aperçu de « {{title}} »",
       "edit": "Ouvrir « {{title}} » dans l'éditeur",
-      "remove": "Supprimer « {{title}} » de la bibliothèque"
+      "remove": "Supprimer « {{title}} » de la bibliothèque",
+      "sending": "Envoi en cours…"
     },
     "removeDialog": {
       "content": "Supprimer « {{title}} » de la bibliothèque ?",
@@ -249,7 +265,8 @@
       "available": "disponible",
       "notInstalled": "non installée",
       "generatedOnline": "Voix en ligne : {{voice}}",
-      "generatedOffline": "Voix de l'ordinateur"
+      "generatedOffline": "Voix de l'ordinateur",
+      "unknown": "état inconnu (STUdio ne répond pas)"
     },
     "titleGenerator": {
       "audio": "Générer la voix à partir du titre",
@@ -399,7 +416,12 @@
       "unavailableTitle": "Simulation indisponible pour ce format",
       "unavailable": "Les packs aux formats brut et FS rangent leurs images et leurs sons dans le format de l'appareil (adressage par secteurs, chiffrement pour FS) : il faudrait décoder tout le pack pour les lire. Convertissez-le au format archive pour le simuler.",
       "errorTitle": "Simulation indisponible",
-      "error": "Le pack n'a pas pu être lu ({{error}})."
+      "error": "Le pack n'a pas pu être lu ({{error}}).",
+      "errors": {
+        "NO_STAGE_NODE": "il n'a aucun nœud",
+        "NO_STORY": "story.json est absent",
+        "INVALID_STORY": "story.json est illisible"
+      }
     }
   },
 
@@ -483,7 +505,8 @@
       "titleVoiceFallback": "Voix en ligne indisponible, voix de l'ordinateur utilisée ({{reason}})",
       "titleVoiceNothingMissing": "Tous les titres ont déjà un audio",
       "titleVoiceGenerating": "Génération des voix… {{done}} / {{total}}",
-      "titleVoiceGenerated": "{{count}} voix générée(s)",
+      "titleVoiceGenerated": "{{count}} voix générée",
+      "titleVoiceGenerated_plural": "{{count}} voix générées",
       "titleVoiceStopped": "Génération arrêtée après {{done}} / {{total}} : {{message}}",
       "saving": "Enregistrement du pack d'histoires dans la bibliothèque...",
       "saved": "Pack d'histoires enregistré dans la bibliothèque.",
@@ -506,7 +529,9 @@
       "verifyDiagramErrors": "Le diagramme contient {{count}} nœud en erreur.",
       "verifyDiagramErrors_plural": "Le diagramme contient {{count}} nœuds en erreur.",
       "verifyDiagramOK": "Le diagramme est valide.",
-      "verifyDiagramNightModeNoActionNodes": "Le mode nuit est activé mais le diagramme ne contient aucun nœud d'action."
+      "verifyDiagramNightModeNoActionNodes": "Le mode nuit est activé mais le diagramme ne contient aucun nœud d'action.",
+      "titleVoiceSkipped": "{{count}} titre refusé par la voix (trop long ou vide), laissé sans audio.",
+      "titleVoiceSkipped_plural": "{{count}} titres refusés par la voix (trop longs ou vides), laissés sans audio."
     },
     "viewer": {
       "missingPrev": "Impossible de trouver l'option précédente.",
@@ -529,7 +554,8 @@
       "loadingFailed": "Échec du chargement de la version actuelle.",
       "fetchingFailed": "Échec de la récupération de la dernière version."
     },
-    "reportIssue": "Signaler cette anomalie"
+    "reportIssue": "Signaler cette anomalie",
+    "unreachable": "STUdio ne répond pas : vérifiez qu'il est toujours lancé."
   },
 
   "dialogs": {
@@ -537,7 +563,8 @@
       "cancel": "Annuler",
       "yes": "Oui",
       "no": "Non",
-      "ok": "OK"
+      "ok": "OK",
+      "close": "Fermer"
     },
     "announce": {
       "optout": "Ne plus afficher ces annonces à l'avenir"

@@ -142,6 +142,45 @@ describe('createSimulation', () => {
         expect(sim.controls(sim.start())).toEqual({wheel: false, ok: false, home: false, pause: false, autoplay: false});
         expect(sim.ok(sim.start()).event).toBe('end');
     });
+
+    it('refuses a pack without nodes with a code the preview translates', () => {
+        let error = null;
+        try {
+            createSimulation({stageNodes: [], actionNodes: []});
+        } catch (e) {
+            error = e;
+        }
+        expect(error.code).toBe('NO_STAGE_NODE');
+    });
+
+    it('reads an option index given as a string as a number', () => {
+        const json = story();
+        json.stageNodes[1].okTransition.optionIndex = '1';
+        const sim = createSimulation(json);
+        const moved = sim.ok(sim.start());
+        expect(moved.state).toEqual({stage: 'menuB', action: 'choices', index: 1});
+        // The wheel then counts from 1, not from "1" + 1 = "11"
+        expect(sim.wheel(moved.state, 1).state.stage).toBe('menuC');
+        json.stageNodes[1].okTransition.optionIndex = 'x';
+        expect(createSimulation(json).ok(sim.start()).event).toBe('broken');
+    });
+
+    it('keeps the first of the stage nodes sharing a uuid', () => {
+        const json = story();
+        json.stageNodes.push({...json.stageNodes[0], name: 'Doublon'});
+        const sim = createSimulation(json);
+        expect(sim.stage({stage: 'menuA'}).name).toBe('Choix A');
+    });
+
+    it('accepts OK where it is enabled, or in place of autoplay when the autoplay option is off', () => {
+        const sim = createSimulation(story());
+        expect(sim.canOk({stage: 'cover'}, true)).toBe(true);
+        // A story: OK disabled, autoplay enabled
+        expect(sim.canOk({stage: 'A'}, true)).toBe(false);
+        expect(sim.canOk({stage: 'A'}, false)).toBe(true);
+        const bare = createSimulation({stageNodes: [{uuid: 'x', squareOne: true}], actionNodes: []});
+        expect(bare.canOk(bare.start(), false)).toBe(false);
+    });
 });
 
 describe('splitDuration', () => {
