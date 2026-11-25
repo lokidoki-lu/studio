@@ -34,12 +34,30 @@ public class LibraryController {
     public static Router apiRouter(Vertx vertx, LibraryService libraryService) {
         Router router = Router.router(vertx);
 
+        /*
+         * Ordering. A blockingHandler is ordered by default, and every ordered blocking handler of
+         * the verticle shares one FIFO queue (those of DeviceController included): a conversion or a
+         * purge listing used to hold back the library listing, a download and the update check for
+         * as long as they ran.
+         *
+         * Reads are therefore unordered (`false`), like /entry and /details already were. They only
+         * read files and go through thread-safe state (the Caffeine pack cache, the synchronized
+         * metadata database, the provenance ledger read as a whole file that is replaced atomically).
+         *
+         * Writes (/upload, /convert, /purge, /remove) stay ordered on purpose: they keep being run one
+         * at a time, in the order received, and still after the device transfers queued before them,
+         * exactly as before. That is the serialisation they were written against (a purge re-checks
+         * its candidates against the library as it is when it runs; a conversion and a removal of the
+         * same pack never overlap). An explicit lock would add a second mechanism without removing
+         * the first one, which device writes rely on.
+         */
+
         // Local library device metadata
         router.get("/infos").blockingHandler(ctx -> {
             ctx.response()
                     .putHeader("content-type", "application/json")
                     .end(Json.encode(libraryService.libraryInfos()));
-        });
+        }, false);
 
         // Local library packs list
         router.get("/packs").blockingHandler(ctx -> {
@@ -47,12 +65,15 @@ public class LibraryController {
             ctx.response()
                     .putHeader("content-type", "application/json")
                     .end(Json.encode(libraryPacks));
-        });
+        }, false);
 
         // Local library pack download
         router.post("/download").blockingHandler(ctx -> {
-            String uuid = ctx.getBodyAsJson().getString("uuid");
-            String packPath = ctx.getBodyAsJson().getString("path");
+            JsonObject body = DeviceController.jsonBody(ctx);
+            if (body == null) {
+                return;
+            }
+            String packPath = DeviceController.stringField(body, "path");
             libraryService.getRawPackFile(packPath)
                     .ifPresentOrElse(
                             file -> ctx.response()
@@ -63,7 +84,7 @@ public class LibraryController {
                                 ctx.fail(500);
                             }
                     );
-        });
+        }, false);
 
         // One entry of an archive pack of the library (story.json, thumbnail.png, assets/...). The
         // editor opens a library pack entry by entry, rather than downloading the whole archive and
@@ -132,8 +153,12 @@ public class LibraryController {
 
         // Local library pack upload
         router.post("/upload").blockingHandler(ctx -> {
-            String uuid = ctx.request().getFormAttribute("uuid");
             String packPath = ctx.request().getFormAttribute("path");
+            if (ctx.fileUploads().isEmpty()) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                        "A multipart/form-data body with the pack file is required"));
+                return;
+            }
             boolean added = libraryService.addPackFile(packPath, ctx.fileUploads().iterator().next().uploadedFileName());
             if (added) {
                 ctx.response()
@@ -147,10 +172,13 @@ public class LibraryController {
 
         // Local library pack conversion
         router.post("/convert").blockingHandler(ctx -> {
-            String uuid = ctx.getBodyAsJson().getString("uuid");
-            String packPath = ctx.getBodyAsJson().getString("path");
-            Boolean allowEnriched = ctx.getBodyAsJson().getBoolean("allowEnriched", false);
-            String format = ctx.getBodyAsJson().getString("format");
+            JsonObject body = DeviceController.jsonBody(ctx);
+            if (body == null) {
+                return;
+            }
+            String packPath = DeviceController.stringField(body, "path");
+            boolean allowEnriched = Boolean.parseBoolean(String.valueOf(body.getValue("allowEnriched")));
+            String format = DeviceController.stringField(body, "format");
             // The conversion runs right here, on the worker thread the blocking handler already
             // provides. It used to be handed to a new java.util.Timer per request, after a one
             // second delay: each Timer kept a thread alive for the rest of the session, and an
@@ -201,8 +229,12 @@ public class LibraryController {
         // The answer is a verdict and nothing else — no digest, no record, no path — because the
         // client has no use for them and no business deciding this for itself.
         router.post("/verify-conversion").blockingHandler(ctx -> {
-            String sourcePath = ctx.getBodyAsJson().getString("sourcePath");
-            String convertedPath = ctx.getBodyAsJson().getString("convertedPath");
+            JsonObject body = DeviceController.jsonBody(ctx);
+            if (body == null) {
+                return;
+            }
+            String sourcePath = DeviceController.stringField(body, "sourcePath");
+            String convertedPath = DeviceController.stringField(body, "convertedPath");
             try {
                 ProvenanceVerdict verdict = libraryService.verifyConversion(sourcePath, convertedPath);
                 ctx.response()
@@ -213,8 +245,11 @@ public class LibraryController {
                 // Answering UNKNOWN here would quietly accept a question that should be refused.
                 LOGGER.error("Refused a conversion verification request", e);
                 ctx.fail(400, e);
+            } catch (RuntimeException e) {
+                LOGGER.error("Failed to verify a conversion", e);
+                ApiErrors.respond(ctx, e);
             }
-        });
+        }, false);
 
         // Library entries that serve no purpose any more (see LibraryService.purgeCandidates).
         // Read-only. Reads artefacts in full when provenance or duplicates have to be established.
@@ -234,7 +269,7 @@ public class LibraryController {
                 LOGGER.error("Failed to list purge candidates", e);
                 ApiErrors.respond(ctx, e);
             }
-        });
+        }, false);
 
         // Remove purge candidates, named explicitly: {"paths": ["<library entry>", ...]}. Each one is
         // checked again against the candidates as they are now; anything else is left alone.
@@ -280,7 +315,11 @@ public class LibraryController {
 
         // Remove pack from device
         router.post("/remove").blockingHandler(ctx -> {
-            String packPath = ctx.getBodyAsJson().getString("path");
+            JsonObject body = DeviceController.jsonBody(ctx);
+            if (body == null) {
+                return;
+            }
+            String packPath = DeviceController.stringField(body, "path");
             boolean removed = libraryService.deletePack(packPath);
             if (removed) {
                 ctx.response()
