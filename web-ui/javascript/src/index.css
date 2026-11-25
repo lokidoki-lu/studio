@@ -8,7 +8,7 @@ html, body, #root {
     height: 100%;
 }
 
-/* Design tokens shared by the header and the library. Light by default, dark when the system asks for it. */
+/* Design tokens shared by the header and the library. Light by default, dark per the system or the header switch. */
 :root {
     --ui-bg: #f4f5f7;
     --ui-surface: #ffffff;
@@ -31,8 +31,9 @@ html, body, #root {
     --ui-shadow-hover: 0 4px 12px rgba(16, 24, 40, .12);
 }
 
+/* Dark: when the system asks for it, unless the header switch forces light; or when the switch forces dark. */
 @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
         --ui-bg: #14171f;
         --ui-surface: #1d212b;
         --ui-surface-muted: #232834;
@@ -50,6 +51,25 @@ html, body, #root {
         --ui-shadow: 0 1px 2px rgba(0, 0, 0, .4);
         --ui-shadow-hover: 0 4px 14px rgba(0, 0, 0, .5);
     }
+}
+
+:root[data-theme="dark"] {
+    --ui-bg: #14171f;
+    --ui-surface: #1d212b;
+    --ui-surface-muted: #232834;
+    --ui-border: #2f3542;
+    --ui-text: #e6e8ee;
+    --ui-text-muted: #9aa1b0;
+    --ui-accent: #6c9bff;
+    --ui-accent-hover: #8fb2ff;
+    --ui-accent-soft: rgba(108, 155, 255, .16);
+    --ui-danger: #f0776f;
+    --ui-header-bg: #0e1016;
+    --ui-format-archive: #e8b04a;
+    --ui-format-raw: #3cc2b7;
+    --ui-format-fs: #b37ee0;
+    --ui-shadow: 0 1px 2px rgba(0, 0, 0, .4);
+    --ui-shadow-hover: 0 4px 14px rgba(0, 0, 0, .5);
 }
 
 body {
