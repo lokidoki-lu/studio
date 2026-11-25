@@ -4,7 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-import {parseLinks, defaultForm, formProblem, buildRequest, isRunning, isFinished, progressPercent, lastLines} from './youtube';
+import {parseLinks, defaultForm, imageStyleSampleUrl, formProblem, buildRequest, isRunning, isFinished, progressPercent, lastLines} from './youtube';
 
 describe('YouTube dialog', () => {
 
@@ -49,7 +49,7 @@ describe('YouTube dialog', () => {
         expect(body).toEqual({
             urls: ['https://youtu.be/a'], title: 'Mes contes', voice: 'fr-FR-DeniseNeural',
             cleanTitles: true, sponsorBlock: true, seasons: true, autoplayNext: true, pauses: true,
-            minDuration: 90, maxDuration: 1800, menuSize: 8, bitrate: 128, maxVideos: 200
+            minDuration: 90, maxDuration: 1800, menuSize: 8, bitrate: 128, maxVideos: 200, imageStyle: 'color'
         });
         const plain = buildRequest({...defaultForm(null), links: 'x', bitrate: '100', menuSize: 'abc', minMinutes: '-3'});
         expect(plain.title).toBeUndefined();
@@ -70,5 +70,30 @@ describe('YouTube dialog', () => {
         expect(progressPercent({state: 'RUNNING'})).toBe(0);
         expect(lastLines({log: ['1', '2', '3']}, 2)).toEqual(['2', '3']);
         expect(lastLines({}, 2)).toEqual([]);
+    });
+});
+
+describe('picture style', () => {
+    afterEach(() => window.localStorage.clear());
+
+    it('defaults to colour, then to the backend default, then to the last choice', () => {
+        expect(defaultForm(null).imageStyle).toBe('color');
+        expect(defaultForm({imageStyles: ['color', 'drawing'], defaultImageStyle: 'drawing'}).imageStyle).toBe('drawing');
+        window.localStorage.setItem('youtubeImageStyle', 'negative');
+        expect(defaultForm(null).imageStyle).toBe('negative');
+        // A remembered style the backend no longer offers is not used
+        expect(defaultForm({imageStyles: ['color', 'gray']}).imageStyle).toBe('color');
+        window.localStorage.setItem('youtubeImageStyle', 'sepia');
+        expect(defaultForm(null).imageStyle).toBe('color');
+    });
+
+    it('sends only a known style', () => {
+        expect(buildRequest({...defaultForm(null), links: 'x', imageStyle: 'drawing'}).imageStyle).toBe('drawing');
+        expect(buildRequest({...defaultForm(null), links: 'x', imageStyle: 'sepia'}).imageStyle).toBe('color');
+    });
+
+    it('previews a style with a sample picture', () => {
+        expect(imageStyleSampleUrl('gray')).toBe('/api/youtube/image-styles/gray.png');
+        expect(imageStyleSampleUrl('../x')).toBe('/api/youtube/image-styles/color.png');
     });
 });

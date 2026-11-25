@@ -90,6 +90,7 @@
       "pauses": "Pause between two downloads (avoids being blocked by YouTube)"
     },
     "help": {
+      "imageStyle": "The video thumbnails, the cover and the menus are turned into this style. Titles stay readable.",
       "cleanTitles": "Titles are read aloud on the device: without this, they are kept as they are.",
       "sponsorBlock": "Parts flagged by SponsorBlock users are cut. The video id is sent to sponsor.ajay.app.",
       "seasons": "Episodes are sorted by season and number, one season per sub-menu.",
@@ -100,6 +101,14 @@
     "minMinutes": "Minimum duration (min)",
     "maxMinutes": "Maximum duration (min)",
     "menuSize": "Stories per menu",
+    "imageStyle": "Picture style",
+    "imageStylePreview": "Preview of the chosen style, on a sample picture",
+    "imageStyles": {
+      "color": "Colour (thumbnails as they are)",
+      "gray": "Black and white",
+      "drawing": "White drawing on black, like the official stories",
+      "negative": "Black and white negative"
+    },
     "bitrate": "Audio quality",
     "kbps": "{{value}} kbit/s",
     "maxVideos": "Videos at most",

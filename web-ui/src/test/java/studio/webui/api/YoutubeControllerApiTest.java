@@ -145,6 +145,22 @@ class YoutubeControllerApiTest {
         assertTrue(tools.getBoolean("ready"));
         assertEquals(96, tools.getInteger("defaultBitrate"));
         assertTrue(tools.getJsonArray("voices").contains("fr-FR-DeniseNeural"));
+        assertEquals(new JsonArray().add("color").add("gray").add("drawing").add("negative"), tools.getJsonArray("imageStyles"));
+        assertEquals("color", tools.getString("defaultImageStyle"));
+    }
+
+    @Test
+    void imageStyleSamples() throws Exception {
+        for (String style : new String[]{"color", "gray", "drawing.png", "negative.png"}) {
+            HttpResponse<byte[]> r = http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.actualPort()
+                    + "/api/youtube/image-styles/" + style)).GET().build(), HttpResponse.BodyHandlers.ofByteArray());
+            assertEquals(200, r.statusCode(), style);
+            assertEquals("image/png", r.headers().firstValue("content-type").orElse(""));
+            java.awt.image.BufferedImage img = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(r.body()));
+            assertEquals(320, img.getWidth());
+            assertEquals(240, img.getHeight());
+        }
+        assertEquals(404, get("/api/youtube/image-styles/sepia.png").statusCode());
     }
 
     @Test
