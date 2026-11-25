@@ -13,6 +13,33 @@ import {getTitleVoice} from "./titleAssets";
 
 export const BITRATES = [48, 64, 96, 128];
 
+// How the pictures of the pack look (see YoutubeImageStyle on the backend)
+export const IMAGE_STYLES = ['color', 'gray', 'drawing', 'negative'];
+const LOCAL_STORAGE_IMAGE_STYLE = 'youtubeImageStyle';
+
+// The style chosen last time, or null
+export function getImageStyle() {
+    try {
+        const value = window.localStorage.getItem(LOCAL_STORAGE_IMAGE_STYLE);
+        return IMAGE_STYLES.includes(value) ? value : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+export function setImageStyle(value) {
+    try {
+        window.localStorage.setItem(LOCAL_STORAGE_IMAGE_STYLE, value);
+    } catch (e) {
+        // Not remembered: the default is used next time.
+    }
+}
+
+// The picture the dialog shows for a style
+export function imageStyleSampleUrl(style) {
+    return '/api/youtube/image-styles/' + encodeURIComponent(IMAGE_STYLES.includes(style) ? style : 'color') + '.png';
+}
+
 // The links pasted in the text area: one per line, blank lines ignored
 export function parseLinks(text) {
     return (text || '')
@@ -24,6 +51,8 @@ export function parseLinks(text) {
 // Same defaults as Lunii Pack, or the backend's when it gives them
 export function defaultForm(tools) {
     const t = tools || {};
+    const styles = Array.isArray(t.imageStyles) ? t.imageStyles.filter(s => IMAGE_STYLES.includes(s)) : IMAGE_STYLES;
+    const remembered = getImageStyle();
     return {
         links: '',
         title: '',
@@ -39,7 +68,10 @@ export function defaultForm(tools) {
         maxMinutes: '',
         menuSize: t.defaultMenuSize !== undefined ? t.defaultMenuSize : 10,
         bitrate: t.defaultBitrate || 96,
-        maxVideos: t.defaultMaxVideos || 50
+        maxVideos: t.defaultMaxVideos || 50,
+        // The last style chosen, as one makes several packs the same way
+        imageStyle: (remembered && styles.includes(remembered)) ? remembered
+            : (styles.includes(t.defaultImageStyle) ? t.defaultImageStyle : 'color')
     };
 }
 
@@ -87,7 +119,8 @@ export function buildRequest(form) {
         maxDuration: minutes(form.maxMinutes),
         menuSize: Math.max(0, integer(form.menuSize, 10)),
         bitrate: BITRATES.includes(integer(form.bitrate, 96)) ? integer(form.bitrate, 96) : 96,
-        maxVideos: Math.min(200, Math.max(1, integer(form.maxVideos, 50)))
+        maxVideos: Math.min(200, Math.max(1, integer(form.maxVideos, 50))),
+        imageStyle: IMAGE_STYLES.includes(form.imageStyle) ? form.imageStyle : 'color'
     };
     const title = (form.title || '').trim();
     if (title) {

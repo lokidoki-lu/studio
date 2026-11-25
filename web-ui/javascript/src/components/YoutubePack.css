@@ -68,6 +68,26 @@
     margin: 10px 0;
 }
 
+.youtube-pack-image-style {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+}
+
+.youtube-pack-image-style select {
+    flex: 1 1 200px;
+    width: auto;
+}
+
+.youtube-pack-image-style img {
+    width: 160px;
+    height: 120px;
+    border: 1px solid var(--ui-border, #e3e6eb);
+    border-radius: var(--ui-radius-sm, 6px);
+    background-color: #000;
+}
+
 .youtube-pack-options {
     border: 1px solid var(--ui-border, #e3e6eb);
     border-radius: var(--ui-radius, 10px);

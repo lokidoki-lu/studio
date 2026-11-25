@@ -701,7 +701,7 @@ public class YoutubePackService {
             int[] done = {0};
             int[] voiceFailures = {0};
             YoutubePackBuilder.Settings settings = new YoutubePackBuilder.Settings(packTitle, req.description,
-                    packId(req), req.menuSize, req.autoplayNext);
+                    packId(req), req.menuSize, req.autoplayNext, req.imageStyle);
             Path packFile = work.resolve("pack.zip");
             YoutubePackBuilder.Result built = YoutubePackBuilder.build(stories, settings, text -> {
                 checkCancel(job);
@@ -1084,7 +1084,8 @@ public class YoutubePackService {
         }
         try {
             BufferedImage img = ImageIO.read(p.toFile());
-            return img == null ? null : YoutubePackBuilder.fit(img, YoutubePackBuilder.WIDTH, YoutubePackBuilder.HEIGHT);
+            return img == null ? null : YoutubePackBuilder.fit(YoutubePackBuilder.trimBars(img),
+                    YoutubePackBuilder.WIDTH, YoutubePackBuilder.HEIGHT);
         } catch (IOException | RuntimeException e) {
             LOGGER.warn("Unreadable thumbnail " + p + ": " + e.getMessage());
             return null;

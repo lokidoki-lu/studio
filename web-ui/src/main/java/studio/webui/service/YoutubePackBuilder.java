@@ -48,7 +48,6 @@ public final class YoutubePackBuilder {
 
     public static final int WIDTH = 320;
     public static final int HEIGHT = 240;
-    private static final Color BACKGROUND = new Color(30, 40, 80);
 
     /** One story of the pack. */
     public static final class Story {
@@ -77,13 +76,20 @@ public final class YoutubePackBuilder {
         final String packId;
         final int menuSize;
         final boolean autoplayNext;
+        final YoutubeImageStyle imageStyle;
 
         public Settings(String title, String description, String packId, int menuSize, boolean autoplayNext) {
+            this(title, description, packId, menuSize, autoplayNext, YoutubeImageStyle.DEFAULT);
+        }
+
+        public Settings(String title, String description, String packId, int menuSize, boolean autoplayNext,
+                        YoutubeImageStyle imageStyle) {
             this.title = title;
             this.description = description == null ? "" : description;
             this.packId = packId;
             this.menuSize = menuSize;
             this.autoplayNext = autoplayNext;
+            this.imageStyle = imageStyle == null ? YoutubeImageStyle.DEFAULT : imageStyle;
         }
     }
 
@@ -144,20 +150,21 @@ public final class YoutubePackBuilder {
             return assets.bytes(wave, ".wav");
         };
 
+        YoutubeImageStyle style = settings.imageStyle;
         // 1) Stories: audio, image, spoken title
         List<String> storyAudio = new ArrayList<>();
         List<String> storyImage = new ArrayList<>();
         List<String> storyVoice = new ArrayList<>();
         for (Story s : stories) {
             storyAudio.add(assets.file(s.audio, ".mp3"));
-            storyImage.add(assets.image(s.image != null ? fit(s.image, WIDTH, HEIGHT) : textImage(s.title)));
+            storyImage.add(assets.image(s.image != null ? style.apply(fit(s.image, WIDTH, HEIGHT)) : textImage(s.title, style)));
             storyVoice.add(voice.apply(s.title));
         }
 
         // 2) Cover
         List<BufferedImage> thumbs = new ArrayList<>();
         stories.forEach(s -> thumbs.add(s.image));
-        BufferedImage cover = mosaic(thumbs, settings.title);
+        BufferedImage cover = mosaic(thumbs, settings.title, style);
         byte[] coverPng = png(cover);
         String coverImage = assets.bytes(coverPng, ".png");
         String coverAudio = voice.apply(settings.title);
@@ -190,7 +197,7 @@ public final class YoutubePackBuilder {
                 String groupUuid = id.apply("group/" + m.name);
                 List<BufferedImage> groupThumbs = new ArrayList<>();
                 m.stories.forEach(i -> groupThumbs.add(stories.get(i).image));
-                String groupImage = assets.image(mosaic(groupThumbs, m.name));
+                String groupImage = assets.image(mosaic(groupThumbs, m.name, style));
                 stages.add(stage(groupUuid, m.name, groupImage, voice.apply(m.name), transition(menuId, 0), null,
                         true, true, true, false, false, 300, y));
                 rootOptions.add(groupUuid);
@@ -291,6 +298,40 @@ public final class YoutubePackBuilder {
 
     // -- images
 
+    /** Darkest a row may be (each channel, 0-255) to count as a letterbox bar. */
+    private static final int BAR_LEVEL = 16;
+
+    /**
+     * The picture without the black bars at its top and bottom, as an old 4:3 thumbnail of a 16:9
+     * video has: kept, they would become two white lines in the drawing style. The picture is left
+     * as it is when the bars would take more than half of it (a dark picture, not a letterbox).
+     */
+    public static BufferedImage trimBars(BufferedImage src) {
+        int h = src.getHeight();
+        int top = 0;
+        while (top < h && darkRow(src, top)) {
+            top++;
+        }
+        int bottom = h;
+        while (bottom > top && darkRow(src, bottom - 1)) {
+            bottom--;
+        }
+        if ((top == 0 && bottom == h) || bottom - top < h / 2) {
+            return src;
+        }
+        return src.getSubimage(0, top, src.getWidth(), bottom - top);
+    }
+
+    private static boolean darkRow(BufferedImage img, int y) {
+        for (int x = 0; x < img.getWidth(); x++) {
+            int p = img.getRGB(x, y);
+            if (((p >> 16) & 0xff) > BAR_LEVEL || ((p >> 8) & 0xff) > BAR_LEVEL || (p & 0xff) > BAR_LEVEL) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** Centre crop to the w:h ratio, then scaled to w x h. */
     public static BufferedImage fit(BufferedImage src, int w, int h) {
         double scale = Math.max((double) w / src.getWidth(), (double) h / src.getHeight());
@@ -311,9 +352,14 @@ public final class YoutubePackBuilder {
 
     /** The text on a plain background, for a story without a thumbnail. */
     public static BufferedImage textImage(String text) {
+        return textImage(text, YoutubeImageStyle.DEFAULT);
+    }
+
+    /** The text on the plain background of the style. */
+    public static BufferedImage textImage(String text, YoutubeImageStyle style) {
         BufferedImage img = new BufferedImage(WIDTH, HEIGHT, BufferedImage.TYPE_INT_RGB);
         Graphics2D g = img.createGraphics();
-        g.setColor(BACKGROUND);
+        g.setColor(style.background());
         g.fillRect(0, 0, WIDTH, HEIGHT);
         g.dispose();
         band(img, text);
@@ -322,9 +368,14 @@ public final class YoutubePackBuilder {
 
     /** Up to four thumbnails side by side, with the title across the middle. */
     public static BufferedImage mosaic(List<BufferedImage> images, String title) {
+        return mosaic(images, title, YoutubeImageStyle.DEFAULT);
+    }
+
+    /** The mosaic with each thumbnail in the style (styled at its own size, so outlines keep their width). */
+    public static BufferedImage mosaic(List<BufferedImage> images, String title, YoutubeImageStyle style) {
         BufferedImage img = new BufferedImage(WIDTH, HEIGHT, BufferedImage.TYPE_INT_RGB);
         Graphics2D g = img.createGraphics();
-        g.setColor(BACKGROUND);
+        g.setColor(style.background());
         g.fillRect(0, 0, WIDTH, HEIGHT);
         List<BufferedImage> thumbs = new ArrayList<>();
         for (BufferedImage i : images) {
@@ -344,7 +395,7 @@ public final class YoutubePackBuilder {
         }
         for (int k = 0; k < layout.length; k++) {
             int[] r = layout[k];
-            g.drawImage(fit(thumbs.get(k), r[2], r[3]), r[0], r[1], null);
+            g.drawImage(style.apply(fit(thumbs.get(k), r[2], r[3])), r[0], r[1], null);
         }
         g.dispose();
         band(img, title);
