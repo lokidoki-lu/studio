@@ -42,7 +42,76 @@ public class FsStoryPackWriter {
 
     // TODO Enriched metadata in a dedicated file (pack's title, description and thumbnail, nodes' name, group, type and position)
 
+    /**
+     * An asset as the FS format stores it: its mime type, the SHA-1 of its bytes (which identifies
+     * it in the pack: two nodes whose assets have the same digest share one file) and its bytes.
+     *
+     * <p>{@code data} may be {@code null} when the same source already returned an asset of that
+     * digest and kind: the writer then has the file already and does not need the bytes again.
+     */
+    public static final class StoredAsset {
+        private final String mimeType;
+        private final String sha1;
+        private final byte[] data;
+
+        public StoredAsset(String mimeType, String sha1, byte[] data) {
+            this.mimeType = mimeType;
+            this.sha1 = sha1;
+            this.data = data;
+        }
+
+        public String getMimeType() {
+            return mimeType;
+        }
+
+        public String getSha1() {
+            return sha1;
+        }
+
+        public byte[] getData() {
+            return data;
+        }
+    }
+
+    /**
+     * Where the writer gets the bytes of each node's assets, one asset at a time.
+     *
+     * <p>The writer asks for them in node order, writes each new asset to its file at once and keeps
+     * only its digest: with a source that reads or prepares the bytes on demand, the pack is written
+     * holding one asset in memory rather than all of them.
+     */
+    public interface AssetSource {
+        StoredAsset image(ImageAsset image) throws Exception;
+
+        StoredAsset audio(AudioAsset audio) throws Exception;
+    }
+
+    /** The bytes the assets of the pack carry, as they are. */
+    public static final AssetSource IN_MEMORY = new AssetSource() {
+        @Override
+        public StoredAsset image(ImageAsset image) {
+            return new StoredAsset(image.getMimeType(), DigestUtils.sha1Hex(image.getRawData()), image.getRawData());
+        }
+
+        @Override
+        public StoredAsset audio(AudioAsset audio) {
+            return new StoredAsset(audio.getMimeType(), DigestUtils.sha1Hex(audio.getRawData()), audio.getRawData());
+        }
+    };
+
     public Path write(StoryPack pack, Path outputFolder) throws Exception {
+        return write(pack, outputFolder, IN_MEMORY);
+    }
+
+    /**
+     * Writes the pack, taking the bytes of its assets from {@code assets}.
+     *
+     * <p>The files produced are the same, byte for byte, as when every asset is held in memory: the
+     * assets are numbered in the same order (first use, node by node, image then audio), shared by
+     * digest the same way, and checked against the same rules. Only the moment each asset file is
+     * written changes: as soon as the asset is met, instead of once every node has been visited.
+     */
+    public Path write(StoryPack pack, Path outputFolder, AssetSource assets) throws Exception {
         // Create pack folder: last 8 digits of uuid
         File packFolder = new File(outputFolder.toFile(), transformUuid(UUID.fromString(pack.getUuid())));
         packFolder.mkdirs();
@@ -55,9 +124,6 @@ public class FsStoryPackWriter {
         // Indicate that files are cleartext
         new File(packFolder, CLEARTEXT_FILENAME).createNewFile();
 
-        // Store assets bytes
-        TreeMap<String, byte[]> assets = new TreeMap<>();
-
         // Nodes index file 'ni': the stage nodes are serialized first, because the header must state
         // the number of entries actually written into 'ri' and 'si' (including the blank audio
         // placeholder), which is only known once every node has been visited.
@@ -68,17 +134,21 @@ public class FsStoryPackWriter {
         List<ActionNode> actionNodesOrdered = new ArrayList<>();
         Map<ActionNode, Integer> actionNodesIndexes = new HashMap<>();
         int nextActionNodeIndex = 0;
-        List<String> imageHashOrdered = new ArrayList<>();
-        List<String> audioHashOrdered = new ArrayList<>();
+        // Index of each asset digest in 'ri' / 'si', in the order the assets were first met
+        Map<String, Integer> imageIndexes = new HashMap<>();
+        Map<String, Integer> audioIndexes = new HashMap<>();
+        StoredAsset blankAudio = null;
         for (int i = 0; i < pack.getStageNodes().size(); i++) {
             StageNode node = pack.getStageNodes().get(i);
             int imageIndex = -1;
             ImageAsset image = node.getImage();
             if (image != null) {
-                byte[] imageData = image.getRawData();
-                String imageHash = DigestUtils.sha1Hex(imageData);
-                if (!imageHashOrdered.contains(imageHash)) {
-                    if (!"image/bmp".equals(image.getMimeType())) {
+                StoredAsset stored = assets.image(image);
+                String imageHash = stored.getSha1();
+                Integer known = imageIndexes.get(imageHash);
+                if (known == null) {
+                    byte[] imageData = requireData(stored);
+                    if (!"image/bmp".equals(stored.getMimeType())) {
                         throw new IllegalArgumentException("FS pack file requires image assets to be BMP.");
                     }
                     ByteBuffer bmpBuffer = ByteBuffer.wrap(imageData);
@@ -91,23 +161,31 @@ public class FsStoryPackWriter {
                     if (bmpBuffer.getInt(18) != 320 || bmpBuffer.getInt(22) != 240) {
                         throw new IllegalArgumentException("FS pack file requires image assets to be 320x240 pixels.");
                     }
-                    imageIndex = imageHashOrdered.size();
-                    imageHashOrdered.add(imageHash);
-                    assets.putIfAbsent(imageHash, imageData);
+                    imageIndex = imageIndexes.size();
+                    imageIndexes.put(imageHash, imageIndex);
+                    writeAssetFile(packFolder, IMAGE_FOLDER, imageIndex, imageData);
                 } else {
-                    imageIndex = imageHashOrdered.indexOf(imageHash);
+                    imageIndex = known;
                 }
             }
             int audioIndex = -1;
             AudioAsset audio = node.getAudio();
+            StoredAsset storedAudio;
             // If audio is missing, add a blank audio to satisfy the device
             if (audio == null) {
-                audio = new AudioAsset("audio/mp3", Hex.decodeHex(BLANK_MP3_FILE), "blank_audio_placeholder");
+                if (blankAudio == null) {
+                    byte[] blank = Hex.decodeHex(BLANK_MP3_FILE);
+                    blankAudio = new StoredAsset("audio/mp3", DigestUtils.sha1Hex(blank), blank);
+                }
+                storedAudio = blankAudio;
+            } else {
+                storedAudio = assets.audio(audio);
             }
-            byte[] audioData = audio.getRawData();
-            String audioHash = DigestUtils.sha1Hex(audioData);
-            if (!audioHashOrdered.contains(audioHash)) {
-                if (!"audio/mp3".equals(audio.getMimeType()) && !"audio/mpeg".equals(audio.getMimeType())) {
+            String audioHash = storedAudio.getSha1();
+            Integer knownAudio = audioIndexes.get(audioHash);
+            if (knownAudio == null) {
+                byte[] audioData = requireData(storedAudio);
+                if (!"audio/mp3".equals(storedAudio.getMimeType()) && !"audio/mpeg".equals(storedAudio.getMimeType())) {
                     throw new IllegalArgumentException("FS pack file requires audio assets to be MP3.");
                 } else {
                     // Check ID3 tags
@@ -121,11 +199,11 @@ public class FsStoryPackWriter {
                         throw new IllegalArgumentException("FS pack file requires MP3 audio assets to be MONO / 44100Hz.");
                     }
                 }
-                audioIndex = audioHashOrdered.size();
-                audioHashOrdered.add(audioHash);
-                assets.putIfAbsent(audioHash, audioData);
+                audioIndex = audioIndexes.size();
+                audioIndexes.put(audioHash, audioIndex);
+                writeAssetFile(packFolder, SOUND_FOLDER, audioIndex, audioData);
             } else {
-                audioIndex = audioHashOrdered.indexOf(audioHash);
+                audioIndex = knownAudio;
             }
             Transition okTransition = node.getOkTransition();
             requireActionNode(okTransition);
@@ -173,9 +251,9 @@ public class FsStoryPackWriter {
             // Number of stage nodes in this file
             bb.putInt(pack.getStageNodes().size());
             // Number of images (entries in RI file and rf/ folder)
-            bb.putInt(imageHashOrdered.size());
+            bb.putInt(imageIndexes.size());
             // Number of sounds (entries in SI file and sf/ folder, blank placeholder included)
-            bb.putInt(audioHashOrdered.size());
+            bb.putInt(audioIndexes.size());
             // Is factory pack (boolean) set to true to avoid pack inspection by official Luniistore application
             bb.put((byte) 1);
             // Jump to address 0x200 for actual list of nodes
@@ -208,29 +286,37 @@ public class FsStoryPackWriter {
 
         // Add images index file: ri
         // For each image asset: 12-bytes relative path (e.g. 000\11111111)
-        writeAssets(packFolder, IMAGE_INDEX_FILENAME, IMAGE_FOLDER, imageHashOrdered, assets);
+        writeIndex(packFolder, IMAGE_INDEX_FILENAME, imageIndexes.size());
 
         // Add sound index file: si
         // For each sound asset: 12-bytes relative path (e.g. 000\11111111)
-        writeAssets(packFolder, SOUND_INDEX_FILENAME, SOUND_FOLDER, audioHashOrdered, assets);
+        writeIndex(packFolder, SOUND_INDEX_FILENAME, audioIndexes.size());
 
         return packFolder.toPath();
     }
 
-    /** Writes the index file and the asset files it lists, in the order of {@code hashesOrdered}. */
-    private static void writeAssets(File packFolder, String indexFilename, String folder,
-                                    List<String> hashesOrdered, Map<String, byte[]> assets) throws IOException {
+    private static byte[] requireData(StoredAsset stored) {
+        if (stored.getData() == null) {
+            throw new IllegalStateException("FS pack file: the asset source gave no bytes for a new asset (" + stored.getSha1() + ")");
+        }
+        return stored.getData();
+    }
+
+    /** Writes the file of the asset at {@code index} in its folder (e.g. rf/000/00000003). */
+    private static void writeAssetFile(File packFolder, String folder, int index, byte[] data) throws IOException {
+        File assetFile = new File(packFolder, folder + assetPathFromIndex(index).replace('\\', '/'));
+        assetFile.getParentFile().mkdirs();
+        try (FileOutputStream assetFos = new FileOutputStream(assetFile)) {
+            assetFos.write(data);
+        }
+    }
+
+    /** Writes the index file listing {@code count} assets, in index order. */
+    private static void writeIndex(File packFolder, String indexFilename, int count) throws IOException {
         ByteArrayOutputStream indexBaos = new ByteArrayOutputStream();
-        for (int i = 0; i < hashesOrdered.size(); i++) {
-            String assetPath = assetPathFromIndex(i);
+        for (int i = 0; i < count; i++) {
             // Write asset path into index file
-            indexBaos.write(assetPath.getBytes(StandardCharsets.UTF_8));
-            // Write asset data into file
-            File assetFile = new File(packFolder, folder + assetPath.replace('\\', '/'));
-            assetFile.getParentFile().mkdirs();
-            try (FileOutputStream assetFos = new FileOutputStream(assetFile)) {
-                assetFos.write(assets.get(hashesOrdered.get(i)));
-            }
+            indexBaos.write(assetPathFromIndex(i).getBytes(StandardCharsets.UTF_8));
         }
         try (FileOutputStream indexFos = new FileOutputStream(new File(packFolder, indexFilename))) {
             indexBaos.writeTo(indexFos);

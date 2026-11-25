@@ -12,14 +12,18 @@ import studio.core.v1.model.metadata.StoryPackMetadata;
 import studio.core.v1.utils.BytesUtils;
 import studio.core.v1.utils.XXTEACipher;
 
+import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.SequenceInputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.logging.Logger;
@@ -67,6 +71,51 @@ public class FsStoryPackReader {
     }
 
     public StoryPack read(Path inputFolder) throws IOException {
+        return read(inputFolder, true);
+    }
+
+    /**
+     * A pack folder opened for a conversion that streams its assets one at a time.
+     *
+     * <p>{@link #getPack()} is what {@link #read(Path)} returns, except that the assets carry no
+     * bytes: each is named by its ri / si path (e.g. {@code 000\00000003}), and its cleartext bytes
+     * are read from its file with {@link #openImage} / {@link #openAudio}, the first block being
+     * deciphered on the fly for a pack stored ciphered.
+     */
+    public static final class OpenedFsPack {
+        private final StoryPack pack;
+        private final File packFolder;
+        private final boolean cleartext;
+
+        private OpenedFsPack(StoryPack pack, File packFolder, boolean cleartext) {
+            this.pack = pack;
+            this.packFolder = packFolder;
+            this.cleartext = cleartext;
+        }
+
+        public StoryPack getPack() {
+            return pack;
+        }
+
+        /** The cleartext bytes of an image of {@link #getPack()}. The caller closes the stream. */
+        public InputStream openImage(Asset image) throws IOException {
+            return openCleartext(assetFile(packFolder, IMAGE_FOLDER, image.getName()), cleartext);
+        }
+
+        /** The cleartext bytes of a sound of {@link #getPack()}. The caller closes the stream. */
+        public InputStream openAudio(Asset audio) throws IOException {
+            return openCleartext(assetFile(packFolder, SOUND_FOLDER, audio.getName()), cleartext);
+        }
+    }
+
+    /** Opens the pack folder for a streaming conversion. See {@link OpenedFsPack}. */
+    public OpenedFsPack open(Path inputFolder) throws IOException {
+        StoryPack pack = read(inputFolder, false);
+        boolean isCleartext = isCleartext(inputFolder, false) || looksCleartext(inputFolder.toFile());
+        return new OpenedFsPack(pack, inputFolder.toFile(), isCleartext);
+    }
+
+    private StoryPack read(Path inputFolder, boolean withAssetData) throws IOException {
         TreeMap<Integer, StageNode> stageNodes = new TreeMap<>();                   // Keep stage nodes
         TreeMap<Integer, Integer> actionNodesOptionsCount = new TreeMap<>();        // Keep action nodes' options count
         TreeMap<Integer, List<Transition>> transitionsWithAction = new TreeMap<>(); // Transitions must be updated with the actual ActionNode
@@ -171,7 +220,7 @@ public class FsStoryPackReader {
                     // Read image path
                     String path = assetPath(riContent, imageAssetIndexInRI, IMAGE_INDEX_FILENAME, i);
                     // Read image file
-                    byte[] rfContent = readCipheredFile(assetFile(packFolder, IMAGE_FOLDER, path), isCleartext);
+                    byte[] rfContent = assetContent(assetFile(packFolder, IMAGE_FOLDER, path), isCleartext, withAssetData);
                     image = new ImageAsset("image/bmp", rfContent, path);
                 }
                 AudioAsset audio = null;
@@ -179,7 +228,7 @@ public class FsStoryPackReader {
                     // Read audio path
                     String path = assetPath(siContent, soundAssetIndexInSI, SOUND_INDEX_FILENAME, i);
                     // Read audio file
-                    byte[] sfContent = readCipheredFile(assetFile(packFolder, SOUND_FOLDER, path), isCleartext);
+                    byte[] sfContent = assetContent(assetFile(packFolder, SOUND_FOLDER, path), isCleartext, withAssetData);
                     audio = new AudioAsset("audio/mpeg", sfContent, path);
                 }
 
@@ -287,6 +336,40 @@ public class FsStoryPackReader {
             throw new IOException("Invalid FS story pack: asset path escapes its folder: " + path);
         }
         return file;
+    }
+
+    /**
+     * The bytes of an asset file, or {@code null} without reading it when the pack is opened for
+     * streaming: the file must exist all the same, as reading it would have required.
+     */
+    private byte[] assetContent(Path path, boolean isCleartext, boolean withAssetData) throws IOException {
+        if (withAssetData) {
+            return readCipheredFile(path, isCleartext);
+        }
+        if (!Files.isRegularFile(path)) {
+            throw new NoSuchFileException(path.toString());
+        }
+        return null;
+    }
+
+    /**
+     * The cleartext content of a file of the pack, as a stream: the first block (at most 512 bytes)
+     * is deciphered when the pack is ciphered, everything after it is read straight from the file.
+     * Same bytes as {@link #decipherFirstBlockCommonKey} on the whole file, which only ever changes
+     * that first block.
+     */
+    static InputStream openCleartext(Path path, boolean isCleartext) throws IOException {
+        InputStream in = Files.newInputStream(path);
+        if (isCleartext) {
+            return in;
+        }
+        try {
+            byte[] head = in.readNBytes(512);
+            return new SequenceInputStream(new ByteArrayInputStream(decipherFirstBlockCommonKey(head)), in);
+        } catch (IOException | RuntimeException e) {
+            in.close();
+            throw e;
+        }
     }
 
     private byte[] readCipheredFile(Path path, boolean isCleartext) throws IOException {

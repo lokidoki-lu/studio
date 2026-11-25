@@ -1229,30 +1229,27 @@ public class FsStoryTellerAsyncDriver {
                         ensureSamePartition(session, partitionChanged);
                         LOGGER.finer("Copying file " + s.toString() + " to " + d.toString() + " (" + fileSize + " bytes)");
 
+                        // Only the first block of a file is ciphered: it is transformed in memory and
+                        // the rest of the file is copied as is, without loading the file (see
+                        // CipherUtils.transformFirstBlock).
                         if (CipherUtils.shouldBeCiphered(s)) {
                             if (deviceInfos.getFirmwareMajor() == 2) {
                                 if (isUpload) {
                                     if (isCleartext) {
-                                        byte[] ciphered = CipherUtils.cipherFirstBlockCommonKey(Files.readAllBytes(s));
-                                        Files.write(d, ciphered, EXCLUSIVE);
+                                        CipherUtils.transformFirstBlock(s, d, CipherUtils::cipherFirstBlockCommonKey, EXCLUSIVE);
                                     } else {
                                         Files.copy(s, d);
                                     }
                                 } else {    // Download
-                                    byte[] deciphered = CipherUtils.decipherFirstBlockCommonKey(Files.readAllBytes(s));
-                                    Files.write(d, deciphered, EXCLUSIVE);
+                                    CipherUtils.transformFirstBlock(s, d, CipherUtils::decipherFirstBlockCommonKey, EXCLUSIVE);
                                 }
                             } else {    // V3
+                                FsDeviceKeyV3 deviceKeyV3 = deviceInfos.getDeviceKeyV3();
                                 if (isUpload) {
-                                    byte[] data = Files.readAllBytes(s);
-                                    if (!isCleartext) {
-                                        data = CipherUtils.decipherFirstBlockCommonKey(data);
-                                    }
-                                    byte[] ciphered = CipherUtils.cipherFirstBlockSpecificKeyV3(data, deviceInfos.getDeviceKeyV3());
-                                    Files.write(d, ciphered, EXCLUSIVE);
+                                    CipherUtils.transformFirstBlock(s, d, head -> CipherUtils.cipherFirstBlockSpecificKeyV3(
+                                            isCleartext ? head : CipherUtils.decipherFirstBlockCommonKey(head), deviceKeyV3), EXCLUSIVE);
                                 } else {    // Download
-                                    byte[] deciphered = CipherUtils.decipherFirstBlockSpecificKeyV3(Files.readAllBytes(s), deviceInfos.getDeviceKeyV3());
-                                    Files.write(d, deciphered, EXCLUSIVE);
+                                    CipherUtils.transformFirstBlock(s, d, head -> CipherUtils.decipherFirstBlockSpecificKeyV3(head, deviceKeyV3), EXCLUSIVE);
                                 }
                             }
                         } else {
