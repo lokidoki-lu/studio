@@ -201,8 +201,23 @@ public class FsDeviceDiagnosis {
         /** No pack folder and only an unfinished new copy: nothing to save, the leftover can be removed. */
         ABANDONED_COPY,
         /**
-         * Anything else (a pack folder with both leftovers, or no complete copy to keep): STUdio cannot
-         * tell which copy holds the pack, and touches nothing.
+         * The pack folder is complete but fails the integrity check; the new copy next to it is complete
+         * and passes it: the new copy can be put in place, the pack folder being only moved aside.
+         */
+        NEW_REPLACES_DAMAGED,
+        /**
+         * The pack folder is complete but fails the integrity check; the previous version next to it is
+         * complete and passes it: it can be put back, the pack folder being only moved aside.
+         */
+        PREVIOUS_REPLACES_DAMAGED,
+        /**
+         * The pack folder is incomplete and no leftover is a complete copy: there is nothing to keep.
+         * The pack can only be removed from the index, with its incomplete folders, and sent again.
+         */
+        NO_COMPLETE_COPY,
+        /**
+         * A pack folder with both leftovers, at least one of them complete: STUdio cannot tell which
+         * copy holds the pack, and touches nothing.
          */
         CONFLICT,
         /** Leftovers for a pack the index does not reference any more. */

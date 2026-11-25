@@ -42,6 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class FsStoryTellerAsyncDriver {
@@ -645,6 +646,10 @@ public class FsStoryTellerAsyncDriver {
                     ensureSamePartition(session, "the folder was not removed");
                     LOGGER.info("Removing unreferenced pack content folder: " + target);
                     try {
+                        // Leftovers of an update of it may be the same folder on the card (a rename cut short)
+                        for (String prefix : List.of(FsDeviceMaintenance.STAGING_NEW_PREFIX, FsDeviceMaintenance.STAGING_OLD_PREFIX)) {
+                            requireDistinct(session, contentFolder.resolve(prefix + wanted), target);
+                        }
                         org.apache.commons.io.FileUtils.deleteDirectory(target.toFile());
                     } catch (IOException e) {
                         throw new StoryTellerException("Failed to remove pack content folder " + target, e);
@@ -838,6 +843,17 @@ public class FsStoryTellerAsyncDriver {
      * replaced, or re-detected elsewhere while the operation was running — including when another
      * card was mounted on the same path meanwhile, which only the generation can tell apart.
      */
+    /** The packs of the index whose content folder is {@code folderName} (case ignored). Reads only. */
+    public CompletableFuture<List<UUID>> packsUsingFolder(String folderName) {
+        PartitionSession session = currentPartition();
+        if (session == null) {
+            return CompletableFuture.failedFuture(noDevice());
+        }
+        return readPackIndex(session.mountPoint).thenApply(uuids -> uuids.stream().distinct()
+                .filter(u -> folderName != null && folderNameOf(u).equalsIgnoreCase(folderName))
+                .collect(Collectors.toList()));
+    }
+
     private void ensureSamePartition(PartitionSession session, String consequence) {
         if (!isCurrent(session)) {
             PartitionSession current = currentPartition();
@@ -945,8 +961,9 @@ public class FsStoryTellerAsyncDriver {
         }
         return CompletableFuture.supplyAsync(() -> {
             byte[] index = readValidIndexBytes(session.mountPoint);
+            FsDeviceInfos infos = deviceInfosOrNull(session);
             try {
-                FsDeviceDiagnosis diagnosis = FsDeviceMaintenance.diagnose(Paths.get(session.mountPoint), index);
+                FsDeviceDiagnosis diagnosis = FsDeviceMaintenance.diagnose(Paths.get(session.mountPoint), index, infos);
                 diagnosis.setDeviceToken(deviceToken(session));
                 return diagnosis;
             } catch (IOException e) {
@@ -1034,12 +1051,19 @@ public class FsStoryTellerAsyncDriver {
      * <ul>
      *     <li>a copy is only put in place when it is complete;</li>
      *     <li>a complete copy is only removed once the pack folder left in place is complete and passes
-     *     the integrity check, and never when both hold exactly the same files (possibly the same
-     *     entries, after a rename cut short);</li>
+     *     the integrity check;</li>
+     *     <li>no folder is removed while another name of the pack is the same folder on the card (an
+     *     interrupted rename on FAT can leave two entries on the same clusters): the alias probe
+     *     ({@link #sameFolderOnCard}) is run before every such removal, and two distinct copies that
+     *     merely hold the same files can be cleaned up;</li>
+     *     <li>a damaged pack folder (complete, failing the integrity check) next to a healthy copy is
+     *     only moved aside, by a rename, for that copy to take its place;</li>
+     *     <li>a pack none of whose folders is a complete copy ({@code NO_COMPLETE_COPY}) is removed from
+     *     the index, then its incomplete folders;</li>
      *     <li>a pack folder next to both leftovers ({@code CONFLICT}) is never touched.</li>
      * </ul>
      * Every move is a rename, done before any removal, so an interruption leaves a state the check
-     * recognises again. The pack index is not touched.
+     * recognises again. The pack index is only touched for {@code NO_COMPLETE_COPY}.
      */
     public CompletableFuture<Boolean> resolveInterruptedUpdate(String folderName, String expectedState, String deviceToken) {
         PartitionSession session = currentPartition();
@@ -1063,21 +1087,16 @@ public class FsStoryTellerAsyncDriver {
             }
             List<UUID> packUUIDs = readPackIndex(session.mountPoint).join();
             boolean referenced = packUUIDs.stream().anyMatch(u -> folderNameOf(u).equalsIgnoreCase(hex));
-            FsDeviceDiagnosis.InterruptedUpdateState state = FsDeviceMaintenance.interruptedState(content, hex, referenced);
+            FsDeviceInfos infos = deviceInfosOrNull(session);
+            FsDeviceDiagnosis.InterruptedUpdateState state = FsDeviceMaintenance.interruptedState(content, hex, referenced, infos);
             if (expectedState == null || !expectedState.equals(state.name())) {
                 throw new StoryTellerException(StoryTellerException.Reason.DEVICE_STATE_CHANGED, "The leftovers of " + hex
                         + " are now in the state " + state + ", not " + expectedState + " as checked: nothing was done."
                         + " Check the device again.");
             }
             ensureSamePartition(session, "the interrupted update was left as it is");
-            FsDeviceInfos infos;
             try {
-                infos = getDeviceInfos(session.mountPoint).join();
-            } catch (RuntimeException e) {
-                infos = null;
-            }
-            try {
-                resolveInterruptedState(state, hex, content, folder, fresh, previous, infos);
+                resolveInterruptedState(session, state, hex, content, folder, fresh, previous, infos, packUUIDs);
             } catch (IOException e) {
                 throw new StoryTellerException("Failed to resolve the interrupted update of " + hex, e);
             }
@@ -1086,26 +1105,65 @@ public class FsStoryTellerAsyncDriver {
         });
     }
 
-    private void resolveInterruptedState(FsDeviceDiagnosis.InterruptedUpdateState state, String hex, Path content,
-                                         Path folder, Path fresh, Path previous, FsDeviceInfos infos) throws IOException {
+    private FsDeviceInfos deviceInfosOrNull(PartitionSession session) {
+        try {
+            return getDeviceInfos(session.mountPoint).join();
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private void resolveInterruptedState(PartitionSession session, FsDeviceDiagnosis.InterruptedUpdateState state,
+                                         String hex, Path content, Path folder, Path fresh, Path previous,
+                                         FsDeviceInfos infos, List<UUID> packUUIDs) throws IOException {
         switch (state) {
             case COPY_INTERRUPTED:
-                // The pack folder is complete; the new copy, finished or not, is not in use.
-                requireHealthy(folder, infos, "the unfinished copy " + fresh.getFileName() + " was kept");
+                // The pack folder is complete; the new copy, finished or not, is not in use. An
+                // unfinished copy holds nothing to keep; a complete one is only removed once the pack
+                // folder passes the integrity check.
+                if (FsDeviceMaintenance.FolderState.of(fresh) == FsDeviceMaintenance.FolderState.COMPLETE) {
+                    requireHealthy(folder, infos, "the complete new copy " + fresh.getFileName() + " was kept"
+                            + " (it is put in place instead when it passes the check). If neither passes it, copy both"
+                            + " folders off the card to keep them, move " + fresh.getFileName() + " out of .content,"
+                            + " check the Lunii again, then update the story from the library");
+                }
+                requireDistinct(session, folder, fresh);
                 LOGGER.info("Removing the unfinished copy of " + hex);
                 removeFolder(fresh);
                 break;
             case CLEANUP_INTERRUPTED:
-                requireHealthy(folder, infos, "the previous version " + previous.getFileName() + " was kept");
-                requireDistinct(folder, previous);
+                if (FsDeviceMaintenance.FolderState.of(previous) == FsDeviceMaintenance.FolderState.COMPLETE) {
+                    requireHealthy(folder, infos, "the previous version " + previous.getFileName() + " was kept"
+                            + " (it is put back instead when it passes the check). If neither passes it, copy both"
+                            + " folders off the card to keep them, move " + previous.getFileName() + " out of .content,"
+                            + " check the Lunii again, then update the story from the library");
+                }
+                requireDistinct(session, folder, previous);
                 LOGGER.info("Removing the previous version of " + hex);
                 removeFolder(previous);
+                break;
+            case NEW_REPLACES_DAMAGED:
+                // Renames only: the damaged pack folder is kept as the previous version, which leaves
+                // CLEANUP_INTERRUPTED (or SWAP_INTERRUPTED if cut between the two renames). Nothing is
+                // removed, so there is no alias probe here: the removal offered next is preceded by one.
+                LOGGER.info("Putting the healthy new copy of " + hex + " in place of a pack folder that fails the integrity check");
+                renameFolder(folder, previous);
+                renameFolder(fresh, folder);
+                break;
+            case PREVIOUS_REPLACES_DAMAGED:
+                // Renames only: the damaged pack folder is kept as a new copy, which leaves
+                // COPY_INTERRUPTED (or SWAP_INTERRUPTED, which puts the healthy version back, if cut short).
+                LOGGER.info("Putting the healthy previous version of " + hex + " back in place of a pack folder that fails the integrity check");
+                renameFolder(folder, fresh);
+                renameFolder(previous, folder);
                 break;
             case SWAP_INTERRUPTED:
                 // The new copy is complete (that is what makes the state). It goes in place if it passes
                 // the integrity check, and the previous version is then removed; otherwise the previous
                 // version goes back in place and the new copy is kept, for the check to report again.
-                if (isHealthy(fresh, infos)) {
+                if (FsDeviceMaintenance.isHealthy(fresh, infos)) {
+                    // Two names for the same folder stay so after a rename: checked before anything moves.
+                    requireDistinct(session, fresh, previous);
                     LOGGER.info("Completing the interrupted update of " + hex);
                     renameFolder(fresh, folder);
                     FsSync.forceDirectoryBestEffort(content);
@@ -1115,17 +1173,24 @@ public class FsStoryTellerAsyncDriver {
                     renameFolder(previous, folder);
                 }
                 break;
-            case PREVIOUS_ONLY:
+            case PREVIOUS_ONLY: {
+                // An unfinished copy (never a complete one, by the state) is all that may be left.
+                boolean removeFresh = FsDeviceMaintenance.FolderState.of(fresh) == FsDeviceMaintenance.FolderState.INCOMPLETE;
+                if (removeFresh) {
+                    requireDistinct(session, previous, fresh);
+                }
                 LOGGER.info("Restoring the previous content of " + hex);
                 renameFolder(previous, folder);
                 FsSync.forceDirectoryBestEffort(content);
-                // An unfinished copy (never a complete one, by the state) is all that may be left.
-                if (FsDeviceMaintenance.FolderState.of(fresh) == FsDeviceMaintenance.FolderState.INCOMPLETE) {
+                if (removeFresh) {
                     removeFolder(fresh);
                 }
                 break;
+            }
             case NEW_ONLY:
-                // A rename, nothing removed: the only copy left becomes the pack folder.
+                // A rename, nothing removed: the only copy left becomes the pack folder. A rename cut
+                // short here can leave both names on the same entries (COPY_INTERRUPTED): the removal
+                // offered then is preceded by the alias probe (requireDistinct).
                 LOGGER.info("Putting the new copy of " + hex + " in place");
                 renameFolder(fresh, folder);
                 break;
@@ -1136,6 +1201,7 @@ public class FsStoryTellerAsyncDriver {
             case PROMOTE_NEW:
                 // The pack folder is incomplete, the new copy complete: the incomplete folder is moved
                 // aside first (a rename), so an interruption leaves SWAP_INTERRUPTED.
+                requireDistinct(session, fresh, folder);
                 LOGGER.info("Putting the complete new copy of " + hex + " in place of an incomplete folder");
                 renameFolder(folder, previous);
                 renameFolder(fresh, folder);
@@ -1145,6 +1211,7 @@ public class FsStoryTellerAsyncDriver {
                 }
                 break;
             case RESTORE_PREVIOUS:
+                requireDistinct(session, previous, folder);
                 LOGGER.info("Putting the previous version of " + hex + " back in place of an incomplete folder");
                 renameFolder(folder, fresh);
                 renameFolder(previous, folder);
@@ -1153,15 +1220,50 @@ public class FsStoryTellerAsyncDriver {
                     removeFolder(fresh);
                 }
                 break;
+            case NO_COMPLETE_COPY:
+                removeWithoutCompleteCopy(session, hex, content, folder, fresh, previous, packUUIDs);
+                break;
             case UNREFERENCED:
-                resolveUnreferenced(hex, content, folder, fresh, previous);
+                resolveUnreferenced(session, hex, content, folder, fresh, previous);
                 break;
             case CONFLICT:
             default:
                 throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "The pack folder " + hex
                         + " and the leftovers of its update cannot be told apart safely (" + state + "): nothing was"
-                        + " done. No copy is removed or moved while it is not certain which one holds the pack.");
+                        + " done. No copy is removed or moved while it is not certain which one holds the pack. To get"
+                        + " out of it: check the card for errors (chkdsk on Windows, fsck or First Aid elsewhere), copy"
+                        + " the three folders off the card to keep them, move the leftovers " + fresh.getFileName()
+                        + " and " + previous.getFileName() + " out of .content (do not delete them), then check the"
+                        + " Lunii again.");
         }
+    }
+
+    /**
+     * {@code NO_COMPLETE_COPY}: no folder of the pack is a complete copy, so nothing can be kept. The
+     * pack is removed from the index first (so an interruption leaves only unreferenced leftovers),
+     * then every incomplete folder of it; a complete one, should it have appeared since, is never
+     * removed. Refused if another indexed pack uses the same folder.
+     */
+    private void removeWithoutCompleteCopy(PartitionSession session, String hex, Path content, Path folder, Path fresh,
+                                           Path previous, List<UUID> packUUIDs) throws IOException {
+        Set<UUID> named = packUUIDs.stream().filter(u -> folderNameOf(u).equalsIgnoreCase(hex))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (named.size() != 1) {
+            throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "The content folder " + hex
+                    + " is the folder of " + named.size() + " packs of the index (" + named + "): nothing was done");
+        }
+        List<UUID> remaining = new ArrayList<>(packUUIDs);
+        remaining.removeIf(named::contains);
+        LOGGER.info("Removing " + named + " from the index: none of its folders (" + hex + ") is a complete copy");
+        writePackIndex(session, remaining).join();
+        FsSync.forceDirectoryBestEffort(Paths.get(session.mountPoint));
+        for (Path p : List.of(fresh, previous, folder)) {
+            if (FsDeviceMaintenance.FolderState.of(p) == FsDeviceMaintenance.FolderState.INCOMPLETE) {
+                ensureSamePartition(session, "the incomplete folder " + p.getFileName() + " was left on the card");
+                removeFolder(p);
+            }
+        }
+        FsSync.forceDirectoryBestEffort(content);
     }
 
     /**
@@ -1169,11 +1271,17 @@ public class FsStoryTellerAsyncDriver {
      * put back under the pack folder name when that name is free (it then shows as an orphan folder,
      * which the user may keep or remove); a complete one that cannot be is left as it is.
      */
-    private void resolveUnreferenced(String hex, Path content, Path folder, Path fresh, Path previous) throws IOException {
+    private void resolveUnreferenced(PartitionSession session, String hex, Path content, Path folder, Path fresh,
+                                     Path previous) throws IOException {
         boolean changed = false;
         for (Path leftover : List.of(fresh, previous)) {
             FsDeviceMaintenance.FolderState leftoverState = FsDeviceMaintenance.FolderState.of(leftover);
             if (leftoverState == FsDeviceMaintenance.FolderState.INCOMPLETE) {
+                for (Path other : List.of(folder, fresh, previous)) {
+                    if (!other.equals(leftover)) {
+                        requireDistinct(session, other, leftover);
+                    }
+                }
                 removeFolder(leftover);
                 changed = true;
             } else if (leftoverState == FsDeviceMaintenance.FolderState.COMPLETE && !Files.exists(folder, LinkOption.NOFOLLOW_LINKS)) {
@@ -1189,27 +1297,88 @@ public class FsStoryTellerAsyncDriver {
         }
     }
 
-    private static boolean isHealthy(Path folder, FsDeviceInfos infos) {
-        if (infos == null || !FsDeviceMaintenance.isCompletePackFolder(folder)) {
+    private static void requireHealthy(Path folder, FsDeviceInfos infos, String consequence) {
+        if (!FsDeviceMaintenance.isHealthy(folder, infos)) {
+            throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "The folder " + folder.getFileName()
+                    + " is not a complete pack that passes the integrity check: " + consequence + ". Nothing was removed.");
+        }
+    }
+
+    /**
+     * Refuses, removing nothing, when {@code kept} and {@code removed} are the same folder on the card
+     * (see {@link #sameFolderOnCard}). Two distinct folders holding the very same files pass.
+     */
+    private void requireDistinct(PartitionSession session, Path kept, Path removed) throws IOException {
+        if (sameFolderOnCard(session, kept, removed)) {
+            throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "The folders " + kept.getFileName()
+                    + " and " + removed.getFileName() + " are two names for the same folder on the card (a rename cut"
+                    + " short on FAT can leave that): removing one would remove the other. Nothing was removed (CONFLICT)."
+                    + " Check the card for errors (chkdsk on Windows, fsck or First Aid elsewhere), then check the Lunii again.");
+        }
+    }
+
+    /** Prefix of the marker file the alias probe writes, for a moment, in a folder of {@code .content}. */
+    static final String ALIAS_PROBE_PREFIX = ".studio-probe-";
+
+    /**
+     * The alias probe: whether {@code a} and {@code b} are two directory entries for the same folder on
+     * the card — which an interrupted rename on FAT can leave, both names pointing at the same
+     * clusters, so that removing one removes the other's files. Comparing contents cannot tell that
+     * from two copies that are merely identical; writing can. A marker file with a unique name is
+     * created in {@code b}, looked for in {@code a}, and removed, even if the probe fails.
+     *
+     * <p>It writes on the card: callers run it inside the device operation queue, and the partition
+     * session is checked first. If the marker cannot be removed afterwards, the probe fails (nothing
+     * is removed by the caller) and says where the marker is. A seam: tests stand in for an alias.
+     *
+     * @return {@code false} when either folder is absent
+     */
+    boolean sameFolderOnCard(PartitionSession session, Path a, Path b) throws IOException {
+        if (!Files.isDirectory(a, LinkOption.NOFOLLOW_LINKS) || !Files.isDirectory(b, LinkOption.NOFOLLOW_LINKS)) {
             return false;
         }
-        return FsDeviceMaintenance.checkPack(null, folder, infos, null).isOk();
-    }
-
-    private static void requireHealthy(Path folder, FsDeviceInfos infos, String consequence) {
-        if (!isHealthy(folder, infos)) {
-            throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "The folder " + folder.getFileName()
-                    + " is not a complete pack that passes the integrity check: " + consequence + ", nothing was removed.");
+        ensureSamePartition(session, "nothing was written or removed");
+        String name = ALIAS_PROBE_PREFIX + UUID.randomUUID().toString().replace("-", "");
+        Path marker = b.resolve(name);
+        Path mirror = a.resolve(name);
+        if (Files.exists(mirror, LinkOption.NOFOLLOW_LINKS) || Files.exists(marker, LinkOption.NOFOLLOW_LINKS)) {
+            throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "A probe file " + name
+                    + " is already there: nothing was removed");
         }
-    }
-
-    private static void requireDistinct(Path folder, Path other) throws IOException {
-        if (FsDeviceMaintenance.sameFiles(folder, other)) {
-            throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "The folders " + folder.getFileName()
-                    + " and " + other.getFileName() + " hold exactly the same files: they may be the same entries on the"
-                    + " card (a rename cut short), and removing one could destroy the other. Nothing was removed; check"
-                    + " the card for errors (chkdsk, fsck) first.");
+        boolean alias;
+        IOException failure = null;
+        try {
+            Files.createFile(marker);
+            FsSync.forceDirectoryBestEffort(b);
+            alias = Files.exists(mirror, LinkOption.NOFOLLOW_LINKS);
+        } catch (IOException | RuntimeException e) {
+            failure = e instanceof IOException ? (IOException) e : new IOException(e);
+            alias = false;
+        } finally {
+            try {
+                Files.deleteIfExists(marker);
+                Files.deleteIfExists(mirror);
+                FsSync.forceDirectoryBestEffort(b);
+            } catch (IOException | RuntimeException cleanup) {
+                if (failure == null) {
+                    failure = new IOException("Could not remove the probe file " + marker, cleanup);
+                } else {
+                    failure.addSuppressed(cleanup);
+                }
+            }
         }
+        if (failure == null && (Files.exists(marker, LinkOption.NOFOLLOW_LINKS) || Files.exists(mirror, LinkOption.NOFOLLOW_LINKS))) {
+            failure = new IOException("The probe file " + marker + " is still there");
+        }
+        if (failure != null) {
+            throw new StoryTellerException(StoryTellerException.Reason.UNKNOWN, "Could not tell whether " + a.getFileName()
+                    + " and " + b.getFileName() + " are the same folder on the card (probe file " + name + "): nothing"
+                    + " was removed. If a file named " + name + " is left in either folder, it can be deleted.", failure);
+        }
+        if (alias) {
+            LOGGER.warning(a + " and " + b + " are the same folder on the card");
+        }
+        return alias;
     }
 
     /**
@@ -1316,9 +1485,9 @@ public class FsStoryTellerAsyncDriver {
             Path source = Paths.get(libraryFolder);
             try {
                 return sameContent(source, deviceFolder, infos);
-            } catch (IOException | RuntimeException e) {
-                LOGGER.log(Level.FINE, "Could not compare " + source + " with " + deviceFolder, e);
-                return false;
+            } catch (IOException e) {
+                // Not an answer: "different" would be remembered as such by the caller.
+                throw new StoryTellerException("Could not compare " + source + " with " + deviceFolder, e);
             }
         });
     }
@@ -1505,7 +1674,12 @@ public class FsStoryTellerAsyncDriver {
                 Throwable cause = (failure instanceof CompletionException && failure.getCause() != null) ? failure.getCause() : failure;
                 if (!swapped.get() && Files.exists(fresh) && Files.isDirectory(folder) && isCurrent(session)) {
                     try {
-                        removeFolder(fresh);
+                        // A rename cut short may have left both names on the same folder: never removed then.
+                        if (sameFolderOnCard(session, folder, fresh)) {
+                            LOGGER.severe(fresh + " is the same folder as " + folder + " on the card: it was not removed");
+                        } else {
+                            removeFolder(fresh);
+                        }
                     } catch (IOException | RuntimeException cleanup) {
                         cause.addSuppressed(cleanup);
                     }

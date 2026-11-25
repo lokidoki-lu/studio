@@ -41,6 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * The device check, its repairs, the integrity check and the in-place update, on a simulated
@@ -187,6 +188,28 @@ class DeviceMaintenanceTest {
     private static void partialFolder(Path folder) throws IOException {
         Files.createDirectories(folder);
         Files.write(folder.resolve("ni"), new byte[600]);
+    }
+
+    private static long probeFilesUnder(Path folder) throws IOException {
+        try (java.util.stream.Stream<Path> files = Files.walk(folder)) {
+            return files.filter(f -> f.getFileName().toString().startsWith(FsStoryTellerAsyncDriver.ALIAS_PROBE_PREFIX)).count();
+        }
+    }
+
+    /** A directory junction {@code link} to {@code target}, or false where there are none (not Windows). */
+    private static boolean junction(Path link, Path target) throws IOException {
+        if (!System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win")) {
+            return false;
+        }
+        Process p = new ProcessBuilder("cmd", "/c", "mklink", "/J", link.toString(), target.toString())
+                .redirectErrorStream(true).start();
+        try {
+            p.getInputStream().readAllBytes();
+            return p.waitFor() == 0 && Files.isDirectory(link);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     private static long filesUnder(Path folder) throws IOException {
@@ -495,6 +518,8 @@ class DeviceMaintenanceTest {
     static class SeamDriver extends FsStoryTellerAsyncDriver {
         int failRenameAt = -1;
         boolean failRemove;
+        /** Stands in for an alias on the card: every pair of existing folders is the same folder. */
+        boolean allAliased;
         final AtomicInteger renames = new AtomicInteger();
 
         SeamDriver() {
@@ -517,6 +542,12 @@ class DeviceMaintenanceTest {
                 throw new IOException("simulated failure while removing " + folder);
             }
             super.removeFolder(folder);
+        }
+
+        @Override
+        boolean sameFolderOnCard(PartitionSession session, Path a, Path b) throws IOException {
+            boolean real = super.sameFolderOnCard(session, a, b);
+            return real || (allAliased && Files.isDirectory(a) && Files.isDirectory(b));
         }
 
         void unplug() {
@@ -740,30 +771,95 @@ class DeviceMaintenanceTest {
             assertTrue(driver.packContentMatches(PACK_A.toString(), oldA.toString()).join());
             assertEquals(0, driver.diagnose().join().problemCount());
 
-            // Both incomplete: nothing to keep for sure, nothing is done
+            // Both incomplete: nothing can be kept. Not a CONFLICT: the pack is removed from the index,
+            // with its incomplete folders, to be sent again.
+            upload(driver, PACK_B, "b", (byte) 2);
             partialFolder(staging(".studio-new-", PACK_A));
             org.apache.commons.io.FileUtils.deleteDirectory(folderOf(PACK_A).toFile());
             partialFolder(folderOf(PACK_A));
             FsDeviceDiagnosis d2 = driver.diagnose().join();
-            assertEquals(InterruptedUpdateState.CONFLICT, d2.getInterruptedUpdates().get(0).getState());
-            assertThrows(CompletionException.class, () -> driver.resolveInterruptedUpdate(hex, "CONFLICT", d2.getDeviceToken()).join());
-            assertTrue(Files.isDirectory(staging(".studio-new-", PACK_A)));
+            assertEquals(InterruptedUpdateState.NO_COMPLETE_COPY, d2.getInterruptedUpdates().get(0).getState());
+            assertEquals(List.of(PACK_A, PACK_B), installedIndex());
+            assertTrue(driver.resolveInterruptedUpdate(hex, "NO_COMPLETE_COPY", d2.getDeviceToken()).join());
+            assertEquals(List.of(PACK_B), installedIndex());
+            assertFalse(Files.exists(staging(".studio-new-", PACK_A)));
+            assertFalse(Files.exists(folderOf(PACK_A)));
+            assertEquals(0, driver.diagnose().join().problemCount());
         }
 
         @Test
-        @DisplayName("a new copy next to a complete pack folder that fails the check: the copy is kept")
-        void copyNextToDamagedFolder() throws IOException {
+        @DisplayName("no complete copy: a complete one that appeared since the check is never removed nor unindexed")
+        void noCompleteCopyRecheckedAtResolution() throws IOException {
             FsStoryTellerAsyncDriver driver = driver();
             upload(driver, PACK_A, "a", (byte) 1);
+            String hex = FsDeviceMaintenance.folderNameOf(PACK_A);
+            Path aside = partition.resolve("aside");
+            Files.move(folderOf(PACK_A), aside);
+            partialFolder(folderOf(PACK_A));
+            partialFolder(staging(".studio-new-", PACK_A));
+            FsDeviceDiagnosis d = driver.diagnose().join();
+            assertEquals(InterruptedUpdateState.NO_COMPLETE_COPY, d.getInterruptedUpdates().get(0).getState());
+            // A complete copy is back meanwhile
+            org.apache.commons.io.FileUtils.deleteDirectory(staging(".studio-new-", PACK_A).toFile());
+            Files.move(aside, staging(".studio-new-", PACK_A));
+            CompletionException e = assertThrows(CompletionException.class,
+                    () -> driver.resolveInterruptedUpdate(hex, "NO_COMPLETE_COPY", d.getDeviceToken()).join());
+            assertEquals(StoryTellerException.Reason.DEVICE_STATE_CHANGED, reasonOf(e));
+            assertEquals(List.of(PACK_A), installedIndex());
+            assertTrue(FsDeviceMaintenance.isCompletePackFolder(staging(".studio-new-", PACK_A)));
+        }
+
+        @Test
+        @DisplayName("a healthy new copy next to a complete pack folder that fails the check: the copy is put in place, the folder only moved aside")
+        void copyNextToDamagedFolder() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            Path oldA = upload(driver, PACK_A, "a", (byte) 1);
             copyDeviceFolder(PACK_A, staging(".studio-new-", PACK_A));
-            Files.delete(folderOf(PACK_A).resolve("sf").resolve("000").resolve("00000001"));
+            Path damagedSound = folderOf(PACK_A).resolve("sf").resolve("000").resolve("00000001");
+            Files.write(damagedSound, new byte[0]);
+            String hex = FsDeviceMaintenance.folderNameOf(PACK_A);
+            FsDeviceDiagnosis d = driver.diagnose().join();
+            assertEquals(InterruptedUpdateState.NEW_REPLACES_DAMAGED, d.getInterruptedUpdates().get(0).getState());
+            // Asked as the plain removal of the copy: refused, the state is not that one
+            CompletionException stale = assertThrows(CompletionException.class,
+                    () -> driver.resolveInterruptedUpdate(hex, "COPY_INTERRUPTED", d.getDeviceToken()).join());
+            assertEquals(StoryTellerException.Reason.DEVICE_STATE_CHANGED, reasonOf(stale));
+
+            assertTrue(driver.resolveInterruptedUpdate(hex, "NEW_REPLACES_DAMAGED", d.getDeviceToken()).join());
+            assertTrue(driver.packContentMatches(PACK_A.toString(), oldA.toString()).join());
+            // The damaged folder is kept, as the previous version
+            Path kept = staging(".studio-old-", PACK_A);
+            assertTrue(FsDeviceMaintenance.isCompletePackFolder(kept));
+            assertEquals(0, Files.size(kept.resolve("sf").resolve("000").resolve("00000001")));
+            assertFalse(Files.exists(staging(".studio-new-", PACK_A)));
+            assertEquals(InterruptedUpdateState.CLEANUP_INTERRUPTED, driver.diagnose().join().getInterruptedUpdates().get(0).getState());
+        }
+
+        @Test
+        @DisplayName("a damaged pack folder next to a copy that fails the check too: nothing is removed, and the refusal says what to do")
+        void copyNextToDamagedFolderBothDamaged() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            Files.write(folderOf(PACK_A).resolve("sf").resolve("000").resolve("00000001"), new byte[0]);
+            copyDeviceFolder(PACK_A, staging(".studio-new-", PACK_A));
             String hex = FsDeviceMaintenance.folderNameOf(PACK_A);
             FsDeviceDiagnosis d = driver.diagnose().join();
             assertEquals(InterruptedUpdateState.COPY_INTERRUPTED, d.getInterruptedUpdates().get(0).getState());
             CompletionException e = assertThrows(CompletionException.class,
                     () -> driver.resolveInterruptedUpdate(hex, "COPY_INTERRUPTED", d.getDeviceToken()).join());
             assertEquals(StoryTellerException.Reason.INVALID_REQUEST, reasonOf(e));
+            assertTrue(e.getCause().getMessage().contains("out of .content"), e.getCause().getMessage());
             assertTrue(FsDeviceMaintenance.isCompletePackFolder(staging(".studio-new-", PACK_A)));
+
+            // An unfinished copy next to the damaged folder holds nothing to keep: it can be removed,
+            // and the pack updated from the library afterwards
+            org.apache.commons.io.FileUtils.deleteDirectory(staging(".studio-new-", PACK_A).toFile());
+            partialFolder(staging(".studio-new-", PACK_A));
+            FsDeviceDiagnosis d2 = driver.diagnose().join();
+            assertEquals(InterruptedUpdateState.COPY_INTERRUPTED, d2.getInterruptedUpdates().get(0).getState());
+            assertTrue(driver.resolveInterruptedUpdate(hex, "COPY_INTERRUPTED", d2.getDeviceToken()).join());
+            assertFalse(Files.exists(staging(".studio-new-", PACK_A)));
+            assertTrue(FsDeviceMaintenance.isCompletePackFolder(folderOf(PACK_A)));
         }
 
         @Test
@@ -783,22 +879,107 @@ class DeviceMaintenanceTest {
         }
 
         @Test
-        @DisplayName("the previous version next to a pack folder that fails the check, or that holds the same files: kept")
+        @DisplayName("the previous version next to a pack folder that fails the check: put back, the folder only moved aside")
         void cleanupRefusedWhenInDoubt() throws IOException {
             FsStoryTellerAsyncDriver driver = driver();
-            upload(driver, PACK_A, "a", (byte) 1);
+            Path oldA = upload(driver, PACK_A, "a", (byte) 1);
             String hex = FsDeviceMaintenance.folderNameOf(PACK_A);
-            // The same files: possibly the same entries on the card
+            copyDeviceFolder(PACK_A, staging(".studio-old-", PACK_A));
+            // A damaged pack folder
+            Files.write(folderOf(PACK_A).resolve("rf").resolve("000").resolve("00000001"), new byte[0]);
+            FsDeviceDiagnosis d = driver.diagnose().join();
+            assertEquals(InterruptedUpdateState.PREVIOUS_REPLACES_DAMAGED, d.getInterruptedUpdates().get(0).getState());
+            assertThrows(CompletionException.class, () -> driver.resolveInterruptedUpdate(hex, "CLEANUP_INTERRUPTED", d.getDeviceToken()).join());
+            assertTrue(FsDeviceMaintenance.isCompletePackFolder(staging(".studio-old-", PACK_A)));
+
+            assertTrue(driver.resolveInterruptedUpdate(hex, "PREVIOUS_REPLACES_DAMAGED", d.getDeviceToken()).join());
+            assertTrue(driver.packContentMatches(PACK_A.toString(), oldA.toString()).join());
+            Path kept = staging(".studio-new-", PACK_A);
+            assertTrue(FsDeviceMaintenance.isCompletePackFolder(kept));
+            assertEquals(0, Files.size(kept.resolve("rf").resolve("000").resolve("00000001")));
+            assertFalse(Files.exists(staging(".studio-old-", PACK_A)));
+        }
+
+        @Test
+        @DisplayName("P3: two distinct folders holding the very same files can be cleaned up; the probe leaves nothing behind")
+        void identicalDistinctCopyCleanedUp() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            Path oldA = upload(driver, PACK_A, "a", (byte) 1);
+            String hex = FsDeviceMaintenance.folderNameOf(PACK_A);
+            copyDeviceFolder(PACK_A, staging(".studio-old-", PACK_A));
+            FsDeviceDiagnosis d = driver.diagnose().join();
+            assertEquals(InterruptedUpdateState.CLEANUP_INTERRUPTED, d.getInterruptedUpdates().get(0).getState());
+            assertTrue(driver.resolveInterruptedUpdate(hex, "CLEANUP_INTERRUPTED", d.getDeviceToken()).join());
+            assertFalse(Files.exists(staging(".studio-old-", PACK_A)));
+            assertTrue(driver.packContentMatches(PACK_A.toString(), oldA.toString()).join());
+            assertEquals(0, probeFilesUnder(partition));
+
+            // The same with a complete new copy next to a healthy pack folder
+            copyDeviceFolder(PACK_A, staging(".studio-new-", PACK_A));
+            FsDeviceDiagnosis d2 = driver.diagnose().join();
+            assertEquals(InterruptedUpdateState.COPY_INTERRUPTED, d2.getInterruptedUpdates().get(0).getState());
+            assertTrue(driver.resolveInterruptedUpdate(hex, "COPY_INTERRUPTED", d2.getDeviceToken()).join());
+            assertFalse(Files.exists(staging(".studio-new-", PACK_A)));
+            assertTrue(driver.packContentMatches(PACK_A.toString(), oldA.toString()).join());
+            assertEquals(0, probeFilesUnder(partition));
+            assertEquals(0, driver.diagnose().join().problemCount());
+        }
+
+        @Test
+        @DisplayName("P1: a pack folder and a new copy that are the same folder on the card (a junction here): nothing is removed")
+        void copyInterruptedOnAliasIsRefused() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            Path oldA = upload(driver, PACK_A, "a", (byte) 1);
+            String hex = FsDeviceMaintenance.folderNameOf(PACK_A);
+            Path alias = staging(".studio-new-", PACK_A);
+            assumeTrue(junction(alias, folderOf(PACK_A)), "directory junctions (Windows) stand in for a FAT alias");
+            try {
+                long before = filesUnder(folderOf(PACK_A));
+                FsDeviceDiagnosis d = driver.diagnose().join();
+                assertEquals(InterruptedUpdateState.COPY_INTERRUPTED, d.getInterruptedUpdates().get(0).getState());
+                CompletionException e = assertThrows(CompletionException.class,
+                        () -> driver.resolveInterruptedUpdate(hex, "COPY_INTERRUPTED", d.getDeviceToken()).join());
+                assertEquals(StoryTellerException.Reason.INVALID_REQUEST, reasonOf(e));
+                assertTrue(e.getCause().getMessage().contains("same folder"), e.getCause().getMessage());
+                assertEquals(before, filesUnder(folderOf(PACK_A)));
+                assertTrue(driver.packContentMatches(PACK_A.toString(), oldA.toString()).join());
+                assertEquals(0, probeFilesUnder(folderOf(PACK_A)));
+            } finally {
+                Files.deleteIfExists(alias);
+            }
+        }
+
+        @Test
+        @DisplayName("P1: every removal next to another name of the pack is refused when the probe says they are the same folder")
+        void everyRemovalIsProbed() throws IOException {
+            SeamDriver driver = seamDriver();
+            Path oldA = upload(driver, PACK_A, "a", (byte) 1);
+            String hex = FsDeviceMaintenance.folderNameOf(PACK_A);
+            driver.allAliased = true;
+
+            // CLEANUP_INTERRUPTED
             copyDeviceFolder(PACK_A, staging(".studio-old-", PACK_A));
             FsDeviceDiagnosis d = driver.diagnose().join();
             assertEquals(InterruptedUpdateState.CLEANUP_INTERRUPTED, d.getInterruptedUpdates().get(0).getState());
             assertThrows(CompletionException.class, () -> driver.resolveInterruptedUpdate(hex, "CLEANUP_INTERRUPTED", d.getDeviceToken()).join());
             assertTrue(FsDeviceMaintenance.isCompletePackFolder(staging(".studio-old-", PACK_A)));
 
-            // A damaged pack folder
-            Files.write(folderOf(PACK_A).resolve("rf").resolve("000").resolve("00000001"), new byte[0]);
-            assertThrows(CompletionException.class, () -> driver.resolveInterruptedUpdate(hex, "CLEANUP_INTERRUPTED", d.getDeviceToken()).join());
+            // SWAP_INTERRUPTED: nothing moves either
+            copyDeviceFolder(PACK_A, staging(".studio-new-", PACK_A));
+            org.apache.commons.io.FileUtils.deleteDirectory(folderOf(PACK_A).toFile());
+            FsDeviceDiagnosis d2 = driver.diagnose().join();
+            assertEquals(InterruptedUpdateState.SWAP_INTERRUPTED, d2.getInterruptedUpdates().get(0).getState());
+            assertThrows(CompletionException.class, () -> driver.resolveInterruptedUpdate(hex, "SWAP_INTERRUPTED", d2.getDeviceToken()).join());
+            assertTrue(FsDeviceMaintenance.isCompletePackFolder(staging(".studio-new-", PACK_A)));
             assertTrue(FsDeviceMaintenance.isCompletePackFolder(staging(".studio-old-", PACK_A)));
+            assertFalse(Files.exists(folderOf(PACK_A)));
+
+            // Not aliased: it completes
+            driver.allAliased = false;
+            assertTrue(driver.resolveInterruptedUpdate(hex, "SWAP_INTERRUPTED", token(driver)).join());
+            assertTrue(driver.packContentMatches(PACK_A.toString(), oldA.toString()).join());
+            assertEquals(0, driver.diagnose().join().problemCount());
+            assertEquals(0, probeFilesUnder(partition));
         }
 
         @Test

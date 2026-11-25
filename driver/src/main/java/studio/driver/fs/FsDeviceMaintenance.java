@@ -133,6 +133,15 @@ final class FsDeviceMaintenance {
      * @param indexBytes the content of {@code .pi}, already validated by the caller
      */
     static FsDeviceDiagnosis diagnose(Path mountPoint, byte[] indexBytes) throws IOException {
+        return diagnose(mountPoint, indexBytes, null);
+    }
+
+    /**
+     * As {@link #diagnose(Path, byte[])}; with the device's {@code infos}, the state of an
+     * interrupted update also tells a damaged pack folder next to a healthy copy (see
+     * {@link #interruptedState(Path, String, boolean, FsDeviceInfos)}).
+     */
+    static FsDeviceDiagnosis diagnose(Path mountPoint, byte[] indexBytes, FsDeviceInfos infos) throws IOException {
         List<UUID> index = parseIndex(indexBytes);
         FsDeviceDiagnosis diagnosis = new FsDeviceDiagnosis();
         diagnosis.setIndexedPacks(index.size());
@@ -195,7 +204,7 @@ final class FsDeviceMaintenance {
             String hex = leftovers.getKey();
             UUID uuid = referenced.get(hex);
             diagnosis.getInterruptedUpdates().add(new FsDeviceDiagnosis.InterruptedUpdate(hex, uuid,
-                    interruptedState(content, hex, uuid != null), leftovers.getValue()));
+                    interruptedState(content, hex, uuid != null, infos), leftovers.getValue()));
         }
 
         Path pending = mountPoint.resolve(".pi" + TemporaryFilePackIndexWriter.TEMPORARY_SUFFIX);
@@ -226,12 +235,41 @@ final class FsDeviceMaintenance {
     }
 
     /**
+     * As {@link #interruptedState(Path, String, boolean)}, telling apart, when {@code infos} is
+     * known, a complete pack folder that fails the integrity check next to a complete copy that passes
+     * it ({@code NEW_REPLACES_DAMAGED}, {@code PREVIOUS_REPLACES_DAMAGED}): that copy can be put in
+     * place, the pack folder being moved aside (never removed). Reads only.
+     */
+    static InterruptedUpdateState interruptedState(Path content, String hex, boolean referenced, FsDeviceInfos infos) {
+        InterruptedUpdateState state = interruptedState(content, hex, referenced);
+        if (infos == null || (state != InterruptedUpdateState.COPY_INTERRUPTED && state != InterruptedUpdateState.CLEANUP_INTERRUPTED)) {
+            return state;
+        }
+        Path folder = content.resolve(hex);
+        Path copy = content.resolve((state == InterruptedUpdateState.COPY_INTERRUPTED ? STAGING_NEW_PREFIX : STAGING_OLD_PREFIX) + hex);
+        if (FolderState.of(copy) != FolderState.COMPLETE || isHealthy(folder, infos) || !isHealthy(copy, infos)) {
+            return state;
+        }
+        return state == InterruptedUpdateState.COPY_INTERRUPTED
+                ? InterruptedUpdateState.NEW_REPLACES_DAMAGED : InterruptedUpdateState.PREVIOUS_REPLACES_DAMAGED;
+    }
+
+    /** Whether {@code folder} is a complete pack folder that passes the integrity check. Reads only. */
+    static boolean isHealthy(Path folder, FsDeviceInfos infos) {
+        if (infos == null || !isCompletePackFolder(folder)) {
+            return false;
+        }
+        return checkPack(null, folder, infos, null).isOk();
+    }
+
+    /**
      * Where an interrupted update stopped. The rule behind every state: a state is only given a
      * repair when the copy it keeps is complete, and it never removes a complete copy unless the pack
-     * folder left in place is itself complete. A pack folder next to both leftovers is never
-     * resolved automatically: an interrupted rename on FAT can leave two entries for the same
-     * clusters, and an upload sent while leftovers were there can leave a partial folder between two
-     * complete copies.
+     * folder left in place is itself complete. A pack folder next to both leftovers, one of them at
+     * least complete, is never resolved automatically ({@code CONFLICT}): an interrupted rename on
+     * FAT can leave two entries for the same clusters, and an upload sent while leftovers were there
+     * can leave a partial folder between two complete copies. When no folder of the pack is complete
+     * ({@code NO_COMPLETE_COPY}) there is nothing to keep.
      */
     static InterruptedUpdateState interruptedState(boolean referenced, FolderState folder, FolderState fresh,
                                                    FolderState previous) {
@@ -239,7 +277,8 @@ final class FsDeviceMaintenance {
             return InterruptedUpdateState.UNREFERENCED;
         }
         if (folder.present() && fresh.present() && previous.present()) {
-            return InterruptedUpdateState.CONFLICT;
+            return folder != FolderState.COMPLETE && fresh != FolderState.COMPLETE && previous != FolderState.COMPLETE
+                    ? InterruptedUpdateState.NO_COMPLETE_COPY : InterruptedUpdateState.CONFLICT;
         }
         if (folder == FolderState.COMPLETE) {
             return fresh.present() ? InterruptedUpdateState.COPY_INTERRUPTED : InterruptedUpdateState.CLEANUP_INTERRUPTED;
@@ -251,67 +290,14 @@ final class FsDeviceMaintenance {
             if (previous == FolderState.COMPLETE) {
                 return InterruptedUpdateState.RESTORE_PREVIOUS;
             }
-            return InterruptedUpdateState.CONFLICT;
+            // Neither the pack folder nor any leftover is a complete copy: nothing can be kept.
+            return InterruptedUpdateState.NO_COMPLETE_COPY;
         }
         // No pack folder
         if (previous.present()) {
             return fresh == FolderState.COMPLETE ? InterruptedUpdateState.SWAP_INTERRUPTED : InterruptedUpdateState.PREVIOUS_ONLY;
         }
         return fresh == FolderState.COMPLETE ? InterruptedUpdateState.NEW_ONLY : InterruptedUpdateState.ABANDONED_COPY;
-    }
-
-    /**
-     * Whether two folders hold the very same files, byte for byte. Two folders that are the same
-     * entries (a rename cut short on FAT can leave both names pointing at the same clusters) look
-     * exactly like this, and removing one would then destroy the other: such a pair is never
-     * cleaned up automatically.
-     */
-    static boolean sameFiles(Path a, Path b) throws IOException {
-        Map<String, Path> left = filesUnder(a);
-        Map<String, Path> right = filesUnder(b);
-        if (!left.keySet().equals(right.keySet())) {
-            return false;
-        }
-        for (Map.Entry<String, Path> file : left.entrySet()) {
-            if (Files.size(file.getValue()) != Files.size(right.get(file.getKey()))) {
-                return false;
-            }
-        }
-        for (Map.Entry<String, Path> file : left.entrySet()) {
-            if (!sameBytes(file.getValue(), right.get(file.getKey()))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean sameBytes(Path a, Path b) throws IOException {
-        try (InputStream left = Files.newInputStream(a); InputStream right = Files.newInputStream(b)) {
-            byte[] l = new byte[64 * 1024];
-            byte[] r = new byte[64 * 1024];
-            while (true) {
-                int n = left.readNBytes(l, 0, l.length);
-                int m = right.readNBytes(r, 0, r.length);
-                if (n != m || !Arrays.equals(l, 0, n, r, 0, m)) {
-                    return false;
-                }
-                if (n < l.length) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    private static Map<String, Path> filesUnder(Path root) throws IOException {
-        Map<String, Path> files = new TreeMap<>();
-        try (Stream<Path> paths = Files.walk(root)) {
-            for (Path p : (Iterable<Path>) paths::iterator) {
-                if (Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS)) {
-                    files.put(root.relativize(p).toString().replace('\\', '/').toUpperCase(Locale.ROOT), p);
-                }
-            }
-        }
-        return files;
     }
 
     /**

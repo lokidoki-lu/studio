@@ -687,7 +687,7 @@
     "interrupted": {
       "title": "Interrupted story update",
       "states": {
-        "COPY_INTERRUPTED": "{{folder}}: an unfinished update copy was left next to the story, whose folder is complete.",
+        "COPY_INTERRUPTED": "{{folder}}: an update copy, unfinished or not yet put in place, was left next to the story, whose folder is complete.",
         "PROMOTE_NEW": "{{folder}}: the story's folder is incomplete, but a complete copy of the new version is there.",
         "SWAP_INTERRUPTED": "{{folder}}: interrupted while switching; the story's folder is missing, the new version is complete.",
         "CLEANUP_INTERRUPTED": "{{folder}}: the new version is in place; the previous one was not completely removed.",
@@ -695,11 +695,14 @@
         "PREVIOUS_ONLY": "{{folder}}: the story's folder is missing; the previous version is left, under a temporary name.",
         "NEW_ONLY": "{{folder}}: the story's folder is missing; only a complete copy of the new version is left.",
         "ABANDONED_COPY": "{{folder}}: the story's folder is missing and the only copy left is unfinished: it cannot be used.",
-        "CONFLICT": "{{folder}}: several copies of this story are there, or none is complete, and STUdio cannot tell safely which one to keep. Nothing is changed: leave the folders as they are and check the card (disk check tool).",
-        "UNREFERENCED": "{{folder}}: leftovers of an update of a story no longer on the Lunii."
+        "CONFLICT": "{{folder}}: the story's folder and both leftovers of its update are there, at least one of them a complete copy, and STUdio cannot tell safely which one to keep. Nothing is changed. To get out of it: check the card (chkdsk on Windows, Disk Utility on a Mac), copy the three folders of .content to the computer to keep them, move .studio-new-{{folder}} and .studio-old-{{folder}} out of .content (do not delete them), then check again.",
+        "UNREFERENCED": "{{folder}}: leftovers of an update of a story no longer on the Lunii.",
+        "NEW_REPLACES_DAMAGED": "{{folder}}: the story's folder is complete but fails the integrity check; the copy of the new version next to it is complete and passes it.",
+        "PREVIOUS_REPLACES_DAMAGED": "{{folder}}: the story's folder is complete but fails the integrity check; the previous version next to it is complete and passes it.",
+        "NO_COMPLETE_COPY": "{{folder}}: neither the story's folder nor the leftovers of its update are a complete copy: there is nothing to keep on the Lunii."
       },
       "actions": {
-        "COPY_INTERRUPTED": "Remove the unfinished copy",
+        "COPY_INTERRUPTED": "Remove the update copy",
         "PROMOTE_NEW": "Put the complete copy in place",
         "SWAP_INTERRUPTED": "Finish the update",
         "CLEANUP_INTERRUPTED": "Remove the previous version",
@@ -707,18 +710,24 @@
         "PREVIOUS_ONLY": "Put the story back",
         "NEW_ONLY": "Put the copy in place",
         "ABANDONED_COPY": "Remove the unfinished copy",
-        "UNREFERENCED": "Tidy up the leftovers"
+        "UNREFERENCED": "Tidy up the leftovers",
+        "NEW_REPLACES_DAMAGED": "Put the healthy copy in place",
+        "PREVIOUS_REPLACES_DAMAGED": "Put the healthy previous version back",
+        "NO_COMPLETE_COPY": "Remove the story and its leftovers"
       },
       "confirm": {
-        "COPY_INTERRUPTED": "Remove the unfinished copy of {{folder}}? STUdio first checks the integrity of the story in place, and removes nothing if it is not intact.",
+        "COPY_INTERRUPTED": "Remove the update copy of {{folder}}? An unfinished copy holds nothing usable; a complete copy is only removed if the story in place passes the integrity check. STUdio also checks, by writing a small marker file it removes at once, that both names are not the same folder on the card.",
         "PROMOTE_NEW": "Put the complete copy of {{folder}} in place of the incomplete folder? Only the incomplete folder is removed.",
         "SWAP_INTERRUPTED": "Put the new version of {{folder}} in place (one rename), then remove the previous one? If the new one fails the integrity check, the previous one is put back and nothing is removed.",
-        "CLEANUP_INTERRUPTED": "Remove the previous version of {{folder}}? STUdio first checks the integrity of the new one, and removes nothing if it is not intact.",
+        "CLEANUP_INTERRUPTED": "Remove the previous version of {{folder}}? STUdio first checks the integrity of the new one, and removes nothing if it is not intact. It also checks, by writing a small marker file it removes at once, that both names are not the same folder on the card.",
         "RESTORE_PREVIOUS": "Put the previous version of {{folder}} back in place of the incomplete folder? Only the incomplete folder is removed.",
         "PREVIOUS_ONLY": "Put the previous version of {{folder}} back in place (one rename)?",
         "NEW_ONLY": "Put the copy of {{folder}} in place (one rename)?",
         "ABANDONED_COPY": "Remove the unfinished copy of {{folder}}? The story will have no content: send it again afterwards.",
-        "UNREFERENCED": "Tidy up the leftovers of {{folder}}? Unfinished copies are removed; a complete copy is put back under the name {{folder}} (it then shows as an orphan folder) and is not removed."
+        "UNREFERENCED": "Tidy up the leftovers of {{folder}}? Unfinished copies are removed; a complete copy is put back under the name {{folder}} (it then shows as an orphan folder) and is not removed.",
+        "NEW_REPLACES_DAMAGED": "Put the healthy copy of {{folder}} in place? The damaged folder is not removed: it is only renamed as the previous version, which you can remove afterwards.",
+        "PREVIOUS_REPLACES_DAMAGED": "Put the healthy previous version of {{folder}} back? The damaged folder is not removed: it is only renamed as an update copy, which you can remove afterwards.",
+        "NO_COMPLETE_COPY": "Remove {{folder}} from the Lunii? The story is removed from the Lunii's list, then its incomplete folders are removed (no complete copy exists). Send it again from the library afterwards."
       }
     },
     "orphans": {
