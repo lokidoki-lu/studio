@@ -35,6 +35,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -59,6 +60,8 @@ class DeviceControllerApiTest {
     private final HttpClient http = HttpClient.newHttpClient();
     private final Map<String, String> previousProperties = new HashMap<>();
     private final FakeService service = new FakeService();
+    /** Packs the metadata database says are official. */
+    private final Set<String> officialUuids = new java.util.HashSet<>();
 
     @BeforeEach
     void start() throws Exception {
@@ -69,7 +72,12 @@ class DeviceControllerApiTest {
         setProperty(LibraryService.LOCAL_LIBRARY_PROP, root.resolve("library") + File.separator);
         setProperty(LibraryService.TMP_DIR_PROP, root.resolve("tmp") + File.separator);
         setProperty(DatabaseMetadataService.UNOFFICIAL_DB_PROP, db.resolve("unofficial.json").toString());
-        LibraryService library = new LibraryService(new DatabaseMetadataService(true));
+        LibraryService library = new LibraryService(new DatabaseMetadataService(true) {
+            @Override
+            public boolean isOfficialPack(String uuid) {
+                return officialUuids.contains(uuid);
+            }
+        });
 
         vertx = Vertx.vertx();
         Router router = Router.router(vertx);
@@ -178,8 +186,15 @@ class DeviceControllerApiTest {
         assertEquals(new JsonArray().add("0A0B0C0D"),
                 new JsonObject(get("/api/device/orphans").body()).getJsonArray("folders"));
 
-        HttpResponse<String> removed = post("/api/device/orphans/remove",
+        // Without the token of the device check: refused, nothing removed
+        HttpResponse<String> noToken = post("/api/device/orphans/remove",
                 new JsonObject().put("folders", new JsonArray().add("0A0B0C0D")));
+        assertEquals(400, noToken.statusCode());
+        assertEquals("INVALID_REQUEST", new JsonObject(noToken.body()).getString("error"));
+        assertTrue(service.removedFolders.isEmpty());
+
+        HttpResponse<String> removed = post("/api/device/orphans/remove",
+                new JsonObject().put("folders", new JsonArray().add("0A0B0C0D")).put("deviceToken", "t"));
         assertEquals(200, removed.statusCode());
         JsonObject body = new JsonObject(removed.body());
         assertTrue(body.getBoolean("success"));
@@ -243,6 +258,62 @@ class DeviceControllerApiTest {
         assertEquals(400, post("/api/device/orphans/remove", new JsonObject().put("folders", 1)).statusCode());
     }
 
+    /** A folder pack of the library, as the listing reads it: its name starts with its UUID. */
+    private void libraryFolder(String name) throws Exception {
+        Path folder = root.resolve("library").resolve(name);
+        Files.createDirectories(folder);
+        Files.write(folder.resolve("ni"), new byte[512]);
+    }
+
+    private static final String OTHER = "11111111-2222-3333-4444-555566667777";
+
+    @Test
+    @DisplayName("an official pack is refused by the server, for an add and for an update")
+    void officialPacksRefused() throws Exception {
+        officialUuids.add(U);
+        libraryFolder(U);
+        service.addPack = () -> CompletableFuture.completedFuture(Optional.of("t"));
+        for (String route : List.of("addFromLibrary", "updateFromLibrary")) {
+            HttpResponse<String> response = post("/api/device/" + route, new JsonObject().put("uuid", U).put("path", U));
+            assertEquals(400, response.statusCode(), route);
+            assertEquals("INVALID_REQUEST", new JsonObject(response.body()).getString("error"), route);
+            assertTrue(new JsonObject(response.body()).getString("message").contains("official"), route);
+        }
+        assertEquals(null, service.lastPackFile);
+        assertEquals(null, service.lastUpdate);
+    }
+
+    @Test
+    @DisplayName("a path whose pack is not the uuid asked is refused: {uuid: A, path: B} never replaces A by B")
+    void uuidMustMatchThePack() throws Exception {
+        libraryFolder(OTHER);
+        libraryFolder(U + ".converted_1");
+        service.addPack = () -> CompletableFuture.completedFuture(Optional.of("t"));
+        for (String route : List.of("addFromLibrary", "updateFromLibrary")) {
+            HttpResponse<String> response = post("/api/device/" + route, new JsonObject().put("uuid", U).put("path", OTHER));
+            assertEquals(400, response.statusCode(), route);
+            assertTrue(new JsonObject(response.body()).getString("message").contains(OTHER), route);
+        }
+        assertEquals(null, service.lastPackFile);
+        assertEquals(null, service.lastUpdate);
+
+        // The pack named by the uuid goes through
+        assertEquals(200, post("/api/device/updateFromLibrary", new JsonObject().put("uuid", U).put("path", U + ".converted_1")).statusCode());
+        assertEquals(U, service.lastUpdate);
+    }
+
+    @Test
+    @DisplayName("repairs require the device token (and the state) the check answered with")
+    void repairsRequireTheToken() throws Exception {
+        assertEquals(400, post("/api/device/repair/pendingIndex", new JsonObject().put("action", "discard").put("fingerprint", "f")).statusCode());
+        assertEquals(400, post("/api/device/repair/interruptedUpdate", new JsonObject().put("folder", "AABBCCDD").put("deviceToken", "t")).statusCode());
+        assertEquals(400, post("/api/device/repair/missingContent", new JsonObject().put("uuid", U)).statusCode());
+        assertEquals(200, post("/api/device/repair/missingContent", new JsonObject().put("uuid", U).put("deviceToken", "t")).statusCode());
+        assertEquals(List.of(U + "@t"), service.removedMissing);
+        assertEquals(200, post("/api/device/orphans/remove", new JsonObject().put("folders", new JsonArray().add("0A0B0C0D")).put("deviceToken", "t")).statusCode());
+        assertEquals("t", service.lastOrphanToken);
+    }
+
     @Test
     @DisplayName("dump writes under STUdio's temporary folder, whatever path the client sends")
     void dumpIsConfined() throws Exception {
@@ -260,6 +331,21 @@ class DeviceControllerApiTest {
         File lastPackFile;
         File lastExtractDestination;
         List<String> lastReorder;
+        String lastUpdate;
+        String lastOrphanToken;
+        final List<String> removedMissing = new ArrayList<>();
+
+        @Override
+        public CompletableFuture<Optional<String>> updatePack(String uuid, File packFile) {
+            lastUpdate = uuid;
+            return CompletableFuture.completedFuture(Optional.of("u"));
+        }
+
+        @Override
+        public CompletableFuture<Boolean> removeMissingContentEntry(String uuid, String deviceToken) {
+            removedMissing.add(uuid + "@" + deviceToken);
+            return CompletableFuture.completedFuture(true);
+        }
 
         @Override
         public CompletableFuture<Optional<JsonObject>> deviceInfos() {
@@ -310,7 +396,8 @@ class DeviceControllerApiTest {
         }
 
         @Override
-        public CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames) {
+        public CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames, String deviceToken) {
+            lastOrphanToken = deviceToken;
             removedFolders.addAll(folderNames);
             JsonArray results = new JsonArray();
             folderNames.forEach(n -> results.add(new JsonObject().put("folder", n).put("removed", true)));

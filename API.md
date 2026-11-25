@@ -94,13 +94,93 @@ reference. It takes space and makes any later upload of the same pack refuse wit
 
 - `GET /orphans` → `{"folders": ["0A0B0C0D", …]}`. Listed in the device queue, so an upload in
   progress is never reported as an orphan.
-- `POST /orphans/remove` `{"folders": ["0A0B0C0D"]}` → `{"success": true, "results": [{"folder":
+- `POST /orphans/remove` `{"folders": ["0A0B0C0D"], "deviceToken"}` (the token of the device check,
+  required: 400 `INVALID_REQUEST` without it) → `{"success": true, "results": [{"folder":
   "0A0B0C0D", "removed": true}]}`. Only folders named explicitly are removed, and only if the index,
   re-read at that moment, does not reference them. **Removal is permanent.**
 
 A typical recovery: an upload fails with `CONTENT_FOLDER_EXISTS` for pack `…5555aaaabbbb`; its
 folder is the last eight hex digits, upper case (`AAAABBBB`). If `GET /orphans` lists it, remove it
 and upload again.
+
+## Device check and repairs
+
+Lunii 2.x / 3.x only; on a 1.x Lunii (`driver: "raw"`) `GET /diagnosis` answers
+`{"supported": false}` and the other routes refuse with `UNSUPPORTED_ON_DEVICE` (400). Every route
+runs in the device queue and re-reads the card before acting. New error codes: `PACK_INDEX_PENDING`
+(409: a `.pi.new` left by an interrupted index write blocks adds, removals and reorders; the upload
+refusal and the index writer now carry it), `DEVICE_STATE_CHANGED` (409: the card changed since the
+check, nothing done), `UNSUPPORTED_ON_DEVICE` (400).
+
+- `GET /diagnosis` → `{"supported", "indexedPacks", "problems", "deviceToken", "orphans": [{"folder",
+  "sizeInBytes", "complete", "referencedByPendingIndex"}], "missingContent": [{"uuid", "folder",
+  "folderPresent"}], "interruptedUpdates": [{"folder", "uuid", "state", "leftovers"}], "pendingIndex":
+  null | {"kind", "safeToDiscard", "canAdopt", "fingerprint", "currentCount", "pendingCount", "added",
+  "removed", "incomplete"}}`. Read only. `deviceToken` (serial number and plug session) must be sent
+  back with every repair: a repair asked on another Lunii, or after the Lunii was plugged again, is
+  refused with `DEVICE_STATE_CHANGED`. `kind`: `TORN` (also an empty `.pi.new` next to a non-empty
+  `.pi`), `IDENTICAL`, `ADD_INCOMPLETE` (safe to discard), `ADD`, `REMOVE`, `REORDER`, `OTHER` (a
+  choice). `canAdopt` is false as soon as one pack the pending index names (`incomplete`) has no
+  complete folder on the card, whatever the kind. An orphan with `referencedByPendingIndex` is refused
+  by `POST /orphans/remove` (`FOLDER_STILL_REFERENCED`), which also takes the `deviceToken`.
+- `POST /repair/pendingIndex` `{"action": "discard"|"adopt", "fingerprint", "deviceToken"}` →
+  `{"success": true}`. `discard` deletes `.pi.new` (the installed index stays); `adopt` copies `.pi`
+  to `.pi.bak`, then moves `.pi.new` onto `.pi` atomically; refused unless `canAdopt`. Refused with
+  `DEVICE_STATE_CHANGED` if the fingerprint no longer matches.
+- `POST /repair/interruptedUpdate` `{"folder": "AAAABBBB", "state", "deviceToken"}` →
+  `{"success": true}`, refused with `DEVICE_STATE_CHANGED` if the leftovers are no longer in `state`.
+  "Complete" means every file STUdio writes is there; a complete copy is only ever removed once the
+  pack folder left in place is complete and passes the integrity check, and no folder is removed while
+  another name of the pack is the same folder on the card (a FAT rename cut short): before every such
+  removal, a marker file is created in one, looked for in the other and removed (the alias probe);
+  an alias is refused (`INVALID_REQUEST`), and two distinct copies holding the same files can be
+  cleaned up. `COPY_INTERRUPTED` (complete pack folder + new copy): the new copy is removed (a
+  complete one only if the pack folder passes the integrity check). `NEW_REPLACES_DAMAGED` /
+  `PREVIOUS_REPLACES_DAMAGED` (complete pack folder failing the integrity check + a new copy /
+  old version that passes it): that copy is renamed into place, the damaged folder only renamed
+  aside (to the old version / new copy name), never removed. `PROMOTE_NEW` (incomplete pack folder + complete
+  new copy): the new copy replaces it. `SWAP_INTERRUPTED` (no pack folder, complete new copy + old
+  version): the new copy is renamed into place and the old version removed, or, if the new copy fails
+  the integrity check, the old version is put back. `CLEANUP_INTERRUPTED` (complete pack folder + old
+  version): the old version is removed. `RESTORE_PREVIOUS`
+  (incomplete pack folder + complete old version): the old version replaces it. `PREVIOUS_ONLY`: the
+  old version is put back. `NEW_ONLY`: the complete new copy is put in place. `ABANDONED_COPY`: the
+  unfinished copy, all that is left, is removed. `NO_COMPLETE_COPY` (an incomplete pack folder and
+  no complete leftover): the pack is removed from the index, then its incomplete folders. `CONFLICT`
+  (a pack folder next to both leftovers, one at least complete): always refused, nothing is touched;
+  the way out is manual (check the card, move the leftovers out of `.content`, check again).
+  `UNREFERENCED`: unfinished copies are removed, a complete one is renamed to the pack folder name if
+  it is free. The index is only touched by `NO_COMPLETE_COPY`.
+- `POST /repair/missingContent` `{"uuid", "deviceToken"}` → `{"success": true}`: removes from the
+  index an entry the check reported without content, only if its folder is still absent or without
+  `ni` and no leftover of an update of it is there (`DEVICE_STATE_CHANGED` otherwise).
+- `POST /integrity` → `{"checkId"}`, then `GET /integrity/:id` → `{"done", "checked", "total",
+  "success", "packs": [{"uuid", "title", "official", "ok", "stageNodes", "images", "sounds",
+  "structureOnly", "problems": [{"code", "detail"}]}]}`. Read only: index files in full, the first
+  block of each asset. Official packs are checked for their structure only (`structureOnly`: files
+  present, node index, no empty asset), their ciphered parts may use a key of their own. Codes: `FOLDER_MISSING`, `FILE_MISSING`, `FILE_UNREADABLE`, `NODE_INDEX_INVALID`,
+  `ASSET_INDEX_INVALID`, `LIST_INDEX_INVALID`, `COUNT_MISMATCH`, `ASSET_REFERENCE_OUT_OF_RANGE`,
+  `TRANSITION_OUT_OF_RANGE`, `ASSET_MISSING`, `ASSET_EMPTY`, `ASSET_HEADER_INVALID`,
+  `BOOT_FILE_INVALID`.
+
+## In-place update of a pack
+
+- `GET /updates` → `{"supported", "packs": [{"uuid", "status", "basis", "deviceVersion",
+  "libraryVersion", "path"}]}` for each device pack the library holds. `status`: `UPDATE_AVAILABLE`,
+  `UP_TO_DATE`, `UNKNOWN`, `OFFICIAL`. The criterion is content, not the version: STUdio records
+  (`~/.studio/db/device-packs.json`, per Lunii serial) the origin digest of what it wrote — the
+  source's SHA-256 for a proven conversion, the artefact's own otherwise — and compares it with the
+  origin of the library's most recent artefact. Without a record, the card is compared byte for byte
+  with the library's folders (and recorded on a match); then a higher library version (`basis:
+  "version"`).
+- `POST /updateFromLibrary` `{"uuid", "path"}` → `{"transferId"}` (operation `update`, followed like
+  an add). `path` must be a folder (`fs`) of the library: convert first. The pack keeps its place:
+  the new version is copied to `.content/.studio-new-XXXXXXXX`, then two renames swap it with the
+  old one (`.studio-old-XXXXXXXX`, removed last); the index is not rewritten. Refused with
+  `PACK_NOT_ON_DEVICE` if the pack is not there, `CONTENT_FOLDER_EXISTS` while leftovers of an
+  interrupted update remain, `UNSUPPORTED_ON_DEVICE` on a 1.x Lunii. `POST /addFromLibrary` is refused
+  with `CONTENT_FOLDER_EXISTS` too while such leftovers remain. Both routes refuse (400
+  `INVALID_REQUEST`) an official pack, and an entry whose own UUID is not `uuid`.
 
 ## Old packs in the library
 
@@ -133,6 +213,20 @@ content differs, a conversion whose provenance is unknown or cannot be checked (
 before records existed, unreadable), a conversion when the modification time and its name disagree
 on which is older, anything that would leave a pack with no entry, and entries that are not
 readable packs.
+
+## Space a pack takes on the device (library)
+
+`POST http://localhost:8080/api/library/estimate` `{"paths": ["<library entry>", …], "format": "fs"|"raw"}`
+(or `"path"` for one) → `{"format", "clusterSize", "clusterSizeSource", "total", "method", "packs":
+[{"path", "bytes", "method"}], "errors": [{"path", "message"}]}`. Read-only and fast: nothing is
+converted, only sizes and audio headers are read. `bytes` is what the pack will occupy once in that
+format: for `fs` (V2/V3) MP3 audio and RLE images, each file rounded up to the cluster
+(`clusterSizeSource`: `device` when the partition reports a plausible one, else `default`, 32 KiB);
+for `raw` (V1) 32 kHz WAV (about 230 MB an hour), rounded to the 512-byte sector. `method` is
+`measured` (already in that format), `estimated` (sizes predicted from durations) or `rough` (from the
+pack size alone); the top-level one is the least precise of all. Compare `total` with
+`storage.free` of `GET /api/device/infos`. Unknown names are listed in `errors` and left out of the
+total; 1 to 500 paths per request, else 400 `INVALID_REQUEST`.
 
 ## Spoken titles (editor)
 

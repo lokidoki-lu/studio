@@ -217,4 +217,28 @@ class DeviceOperationQueueTest {
         assertEquals(0, started.get());
         assertEquals(0, queue.pending());
     }
+
+    @Test
+    @DisplayName("submitIfIdle runs at once on an idle queue, refuses without queueing behind another operation")
+    void submitIfIdle() throws Exception {
+        DeviceOperationQueue queue = new DeviceOperationQueue();
+        assertEquals("idle", queue.submitIfIdle(() -> CompletableFuture.completedFuture("idle")).get(1, TimeUnit.SECONDS));
+
+        CompletableFuture<String> transfer = new CompletableFuture<>();
+        CompletableFuture<String> running = queue.submit(() -> transfer);
+        AtomicInteger started = new AtomicInteger();
+        CompletableFuture<String> refused = queue.submitIfIdle(() -> {
+            started.incrementAndGet();
+            return CompletableFuture.completedFuture("read");
+        });
+        assertTrue(refused.isCompletedExceptionally());
+        java.util.concurrent.ExecutionException e = org.junit.jupiter.api.Assertions.assertThrows(
+                java.util.concurrent.ExecutionException.class, refused::get);
+        assertTrue(e.getCause() instanceof DeviceOperationQueue.QueueBusyException);
+        transfer.complete("done");
+        assertEquals("done", running.get(1, TimeUnit.SECONDS));
+        Thread.sleep(50);
+        assertEquals(0, started.get(), "never queued");
+        assertEquals(0, queue.pending());
+    }
 }

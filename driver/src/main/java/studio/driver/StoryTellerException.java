@@ -21,7 +21,13 @@ public class StoryTellerException extends RuntimeException {
         CONTENT_FOLDER_EXISTS,
         FOLDER_STILL_REFERENCED,
         INVALID_REQUEST,
-        LIBRARY_PACK_NOT_FOUND
+        LIBRARY_PACK_NOT_FOUND,
+        /** A {@code .pi.new} left by an interrupted index write blocks every index change. */
+        PACK_INDEX_PENDING,
+        /** What a repair was asked for no longer matches what is on the device. */
+        DEVICE_STATE_CHANGED,
+        /** The operation does not exist for this kind of device (e.g. a firmware 1.x Lunii). */
+        UNSUPPORTED_ON_DEVICE
     }
 
     private final Reason reason;

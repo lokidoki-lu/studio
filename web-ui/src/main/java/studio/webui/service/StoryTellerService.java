@@ -174,6 +174,11 @@ public class StoryTellerService implements IStoryTellerService {
                 "The device was unplugged before the transfer ended"));
     }
 
+    @Override
+    public OptionalLong deviceBlockSize() {
+        return fsDevice != null ? fsDriver.partitionBlockSize() : OptionalLong.empty();
+    }
+
     public CompletableFuture<Optional<JsonObject>> deviceInfos() {
         if (device != null) {
             // A 1.x device is read over USB, which must not overlap a transfer.
@@ -332,7 +337,8 @@ public class StoryTellerService implements IStoryTellerService {
 
     private CompletableFuture<Void> runAddPack(String transferId, String uuid, File packFile) {
         notifier.started(transferId);
-        CompletableFuture<Void> outcome = isPackOnDevice(uuid)
+        CompletableFuture<Void> outcome = checkedAgain(uuid, packFile)
+                .thenCompose(ignored -> isPackOnDevice(uuid))
                 .thenCompose(present -> {
                     if (present) {
                         throw alreadyOnDevice(uuid);
@@ -341,7 +347,11 @@ public class StoryTellerService implements IStoryTellerService {
                         return uploadPackV1(transferId, packFile);
                     } else if (fsDevice != null) {
                         LOGGER.info("Transferring pack folder to device: " + packFile.getAbsolutePath());
-                        return fsDriver.uploadPack(uuid, packFile.getAbsolutePath(), notifier.listener(transferId));
+                        return fsDeviceKey().thenCompose(key -> fsDriver.uploadPack(uuid, packFile.getAbsolutePath(), notifier.listener(transferId))
+                                .thenApply(status -> {
+                                    key.ifPresent(k -> notifyWritten(k, uuid, packFile));
+                                    return status;
+                                }));
                     } else {
                         throw noDevice();
                     }
@@ -356,6 +366,33 @@ public class StoryTellerService implements IStoryTellerService {
                 notifier.succeeded(transferId);
             }
         });
+    }
+
+    private volatile SendGuard sendGuard;
+
+    @Override
+    public void setSendGuard(SendGuard guard) {
+        this.sendGuard = guard;
+    }
+
+    /**
+     * The send guard, checked again when the transfer starts (in the device queue): the library
+     * entry checked when the request was accepted may have been replaced by another pack, or found
+     * official, while the transfer waited. A guard that fails refuses the transfer.
+     */
+    private CompletableFuture<Void> checkedAgain(String uuid, File packFile) {
+        SendGuard guard = sendGuard;
+        if (guard == null) {
+            return CompletableFuture.completedFuture(null);
+        }
+        Optional<StoryTellerException> refused;
+        try {
+            refused = guard.refusal(uuid, packFile);
+        } catch (RuntimeException e) {
+            refused = Optional.of(new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                    "The library entry " + packFile.getName() + " could not be checked again before the transfer: nothing was sent", e));
+        }
+        return refused.isPresent() ? CompletableFuture.failedFuture(refused.get()) : CompletableFuture.completedFuture(null);
     }
 
     private CompletableFuture<TransferStatus> uploadPackV1(String transferId, File packFile) {
@@ -406,7 +443,12 @@ public class StoryTellerService implements IStoryTellerService {
             if (device != null) {
                 return driver.deletePack(uuid);
             } else if (fsDevice != null) {
-                return fsDriver.deletePack(uuid);
+                return fsDeviceKey().thenCompose(key -> fsDriver.deletePack(uuid).thenApply(removed -> {
+                    if (Boolean.TRUE.equals(removed)) {
+                        key.ifPresent(k -> notifyRemoved(k, uuid));
+                    }
+                    return removed;
+                }));
             } else {
                 return CompletableFuture.failedFuture(noDevice());
             }
@@ -446,7 +488,12 @@ public class StoryTellerService implements IStoryTellerService {
      * Removes the named unreferenced folders, one after the other, and reports each outcome. A
      * folder that is referenced by the index, or that is not there, is left alone and reported.
      */
-    public CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames) {
+    @Override
+    public CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames, String deviceToken) {
+        if (deviceToken == null || deviceToken.isEmpty()) {
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                    "The 'deviceToken' the device check answered with is required: nothing was removed"));
+        }
         return queue.submit(() -> {
             if (fsDevice == null) {
                 return CompletableFuture.failedFuture(device != null
@@ -454,7 +501,7 @@ public class StoryTellerService implements IStoryTellerService {
                         : noDevice());
             }
             JsonArray results = new JsonArray();
-            CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
+            CompletableFuture<Void> chain = fsDriver.requireDeviceToken(deviceToken);
             for (String name : folderNames) {
                 chain = chain.thenCompose(ignored -> fsDriver.removeUnreferencedPackContentFolder(name)
                         .handle((removed, t) -> {
@@ -572,6 +619,255 @@ public class StoryTellerService implements IStoryTellerService {
             new File(outputPath).mkdirs();
             return driver.dump(outputPath);
         });
+    }
+
+    // ================================================================== device check, repairs, updates
+
+    private volatile DevicePackListener devicePackListener;
+
+    @Override
+    public void setDevicePackListener(DevicePackListener listener) {
+        this.devicePackListener = listener;
+    }
+
+    private static StoryTellerException notOnRawDevice(String what) {
+        return new StoryTellerException(StoryTellerException.Reason.UNSUPPORTED_ON_DEVICE, what
+                + " is not available on a Lunii with firmware 1.x: its packs are stored in raw sectors, not in folders");
+    }
+
+    @Override
+    public CompletableFuture<Optional<String>> fsDeviceKey() {
+        if (fsDevice == null) {
+            return CompletableFuture.completedFuture(Optional.empty());
+        }
+        return fsDriver.getDeviceInfos().thenApply(StoryTellerService::deviceKeyOf).exceptionally(e -> Optional.empty());
+    }
+
+    static Optional<String> deviceKeyOf(studio.driver.model.fs.FsDeviceInfos infos) {
+        String serial = infos.getSerialNumber() == null ? "" : infos.getSerialNumber().trim();
+        if (!serial.isEmpty() && serial.chars().allMatch(c -> c >= 0x20 && c < 0x7f)) {
+            return Optional.of(serial);
+        }
+        return infos.getUuid() == null ? Optional.empty() : Optional.of(Hex.encodeHexString(infos.getUuid()));
+    }
+
+    /**
+     * The device check. Run in the device queue, like the orphan listing, so that a folder an upload
+     * has created but not yet indexed is never reported.
+     */
+    @Override
+    public CompletableFuture<JsonObject> diagnosis() {
+        if (device != null && fsDevice == null) {
+            return CompletableFuture.completedFuture(new JsonObject().put("supported", false).put("driver", "raw"));
+        }
+        return queue.submit(() -> {
+            if (fsDevice == null) {
+                return CompletableFuture.failedFuture(noDevice());
+            }
+            return fsDriver.diagnose().thenApply(DeviceRepairJson::diagnosis);
+        });
+    }
+
+    @Override
+    public CompletableFuture<Boolean> resolvePendingIndex(boolean adopt, String fingerprint, String deviceToken) {
+        return queue.submit(() -> {
+            if (fsDevice == null) {
+                return CompletableFuture.failedFuture(device != null ? notOnRawDevice("Resolving a pending index") : noDevice());
+            }
+            return fsDriver.resolvePendingIndex(adopt, fingerprint, deviceToken);
+        });
+    }
+
+    @Override
+    public CompletableFuture<Boolean> resolveInterruptedUpdate(String folder, String state, String deviceToken) {
+        return queue.submit(() -> {
+            if (fsDevice == null) {
+                return CompletableFuture.failedFuture(device != null ? notOnRawDevice("Resolving an interrupted update") : noDevice());
+            }
+            if (!"NO_COMPLETE_COPY".equals(state)) {
+                return fsDriver.resolveInterruptedUpdate(folder, state, deviceToken);
+            }
+            // That repair removes the pack from the index: what is known to be on this Lunii forgets it too.
+            return fsDeviceKey().thenCompose(key -> fsDriver.packsUsingFolder(folder)
+                    .thenCompose(removed -> fsDriver.resolveInterruptedUpdate(folder, state, deviceToken).thenApply(done -> {
+                        if (Boolean.TRUE.equals(done)) {
+                            key.ifPresent(k -> removed.forEach(uuid -> notifyRemoved(k, uuid.toString())));
+                        }
+                        return done;
+                    })));
+        });
+    }
+
+    @Override
+    public CompletableFuture<Boolean> removeMissingContentEntry(String uuid, String deviceToken) {
+        return queue.submit(() -> {
+            if (fsDevice == null) {
+                return CompletableFuture.failedFuture(device != null ? notOnRawDevice("Removing an entry without content") : noDevice());
+            }
+            return fsDeviceKey().thenCompose(key -> fsDriver.removeMissingContentEntry(uuid, deviceToken).thenApply(removed -> {
+                if (Boolean.TRUE.equals(removed)) {
+                    key.ifPresent(k -> notifyRemoved(k, uuid));
+                }
+                return removed;
+            }));
+        });
+    }
+
+    /** Integrity checks, by id: their progress, then their results. The last few are kept. */
+    private final Map<String, JsonObject> integrityChecks = Collections.synchronizedMap(new LinkedHashMap<String, JsonObject>() {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, JsonObject> eldest) {
+            return size() > 10;
+        }
+    });
+
+    @Override
+    public CompletableFuture<String> startIntegrityCheck() {
+        if (fsDevice == null) {
+            return CompletableFuture.failedFuture(device != null ? notOnRawDevice("The integrity check") : noDevice());
+        }
+        String id = UUID.randomUUID().toString();
+        JsonObject state = new JsonObject().put("id", id).put("done", false).put("checked", 0).put("total", 0);
+        integrityChecks.put(id, state);
+        // In the queue: the check reads while nothing writes, so a pack being replaced is never
+        // reported as damaged. It only reads index files and the first block of each asset.
+        queue.submit(() -> {
+            if (fsDevice == null) {
+                return CompletableFuture.<List<studio.driver.model.fs.FsPackIntegrity>>failedFuture(noDevice());
+            }
+            // Official packs: structure only, their ciphered parts may use a key of their own.
+            return fsDriver.checkIntegrity((checked, total) -> {
+                synchronized (state) {
+                    state.put("checked", checked).put("total", total);
+                }
+            }, uuid -> databaseMetadataService.getPackMetadata(uuid.toString()).map(m -> m.isOfficial()).orElse(false));
+        }).whenComplete((results, e) -> {
+            synchronized (state) {
+                state.put("done", true);
+                if (e != null) {
+                    state.mergeIn(ApiErrors.body(e));
+                } else {
+                    JsonArray packs = new JsonArray();
+                    results.forEach(r -> packs.add(DeviceRepairJson.integrity(r, databaseMetadataService)));
+                    state.put("success", true).put("packs", packs).put("checked", state.getInteger("total"));
+                }
+            }
+        });
+        return CompletableFuture.completedFuture(id);
+    }
+
+    @Override
+    public Optional<JsonObject> integrityCheck(String id) {
+        JsonObject state = id == null ? null : integrityChecks.get(id);
+        if (state == null) {
+            return Optional.empty();
+        }
+        synchronized (state) {
+            return Optional.of(state.copy());
+        }
+    }
+
+    @Override
+    public CompletableFuture<Boolean> packContentMatches(String uuid, File packFolder) {
+        if (fsDevice == null) {
+            return CompletableFuture.failedFuture(noDevice());
+        }
+        if (packFolder == null || !packFolder.isDirectory()) {
+            return CompletableFuture.completedFuture(false);
+        }
+        // In the device queue: the pack is read in full, and must not be read while it is being
+        // replaced (nor hold handles that would make the rename of an update fail on Windows). Only
+        // when the queue is idle, so that the caller never waits behind a transfer. An error is a
+        // failure, never "different": only a difference may be remembered by the caller.
+        return queue.submitIfIdle(() -> fsDevice == null
+                ? CompletableFuture.<Boolean>failedFuture(noDevice())
+                : fsDriver.packContentMatches(uuid, packFolder.getAbsolutePath()));
+    }
+
+    @Override
+    public boolean deviceBusy() {
+        return queue.pending() > 0;
+    }
+
+    /**
+     * Queues the in-place replacement of a pack, as a transfer whose operation is {@code update}.
+     * Only on a 2.x+ device: a 1.x device stores packs in contiguous raw sectors, and rewriting one
+     * of a different size in place could overwrite its neighbours.
+     */
+    @Override
+    public CompletableFuture<Optional<String>> updatePack(String uuid, File packFile) {
+        try {
+            UUID.fromString(uuid);
+        } catch (RuntimeException e) {
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "Invalid pack UUID: " + uuid, e));
+        }
+        if (device != null && fsDevice == null) {
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.UNSUPPORTED_ON_DEVICE,
+                    "Updating a pack in place is not supported on a Lunii with firmware 1.x: its packs are stored in"
+                            + " contiguous sectors, and writing a new version over one could overwrite the packs after it."
+                            + " Remove the pack from the Lunii, then send it again."));
+        }
+        if (fsDevice == null) {
+            return CompletableFuture.failedFuture(noDevice());
+        }
+        if (packFile == null || !packFile.isDirectory()) {
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.LIBRARY_PACK_NOT_FOUND,
+                    "Not a pack folder of the library: " + (packFile == null ? null : packFile.getName())
+                            + ". A pack must be converted for this Lunii before it can replace the one on it."));
+        }
+        if (notifier.registry().hasUnfinished(uuid, "update") || notifier.registry().hasUnfinished(uuid, "add")) {
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.PACK_ALREADY_ON_DEVICE,
+                    "The pack " + uuid + " is already being transferred to the device"));
+        }
+        String transferId = notifier.create(uuid, "update");
+        queue.submit(() -> runUpdatePack(transferId, uuid, packFile))
+                .whenComplete((ignored, t) -> settleQueued(transferId, t));
+        return CompletableFuture.completedFuture(Optional.of(transferId));
+    }
+
+    private CompletableFuture<Void> runUpdatePack(String transferId, String uuid, File packFile) {
+        notifier.started(transferId);
+        if (fsDevice == null) {
+            notifier.failed(transferId, noDevice());
+            return CompletableFuture.failedFuture(noDevice());
+        }
+        CompletableFuture<Optional<String>> key = checkedAgain(uuid, packFile).thenCompose(ignored -> fsDeviceKey());
+        return key.thenCompose(deviceKey -> fsDriver.updatePack(uuid, packFile.getAbsolutePath(), notifier.listener(transferId))
+                .thenApply(status -> {
+                    deviceKey.ifPresent(k -> notifyWritten(k, uuid, packFile));
+                    return (Void) null;
+                }))
+                .whenComplete((ignored, t) -> {
+                    if (t != null) {
+                        LOGGER.error("Failed to update pack on device", t);
+                        notifier.failed(transferId, t);
+                    } else {
+                        LOGGER.info("Pack updated.");
+                        notifier.succeeded(transferId);
+                    }
+                });
+    }
+
+    private void notifyWritten(String deviceKey, String uuid, File packFile) {
+        DevicePackListener listener = devicePackListener;
+        if (listener != null) {
+            try {
+                listener.onWritten(deviceKey, uuid, packFile);
+            } catch (RuntimeException e) {
+                LOGGER.warn("Failed to record the pack written to the device", e);
+            }
+        }
+    }
+
+    private void notifyRemoved(String deviceKey, String uuid) {
+        DevicePackListener listener = devicePackListener;
+        if (listener != null) {
+            try {
+                listener.onRemoved(deviceKey, uuid);
+            } catch (RuntimeException e) {
+                LOGGER.warn("Failed to forget the pack removed from the device", e);
+            }
+        }
     }
 
     private JsonObject getRawPackMetadata(RawStoryPackInfos pack) {

@@ -31,6 +31,8 @@ public final class ApiErrors {
             case PACK_ALREADY_ON_DEVICE:
             case CONTENT_FOLDER_EXISTS:
             case FOLDER_STILL_REFERENCED:
+            case PACK_INDEX_PENDING:
+            case DEVICE_STATE_CHANGED:
                 return 409;
             case PACK_NOT_ON_DEVICE:
             case LIBRARY_PACK_NOT_FOUND:
@@ -38,6 +40,7 @@ public final class ApiErrors {
             case NOT_ENOUGH_SPACE:
                 return 507;
             case INVALID_REQUEST:
+            case UNSUPPORTED_ON_DEVICE:
                 return 400;
             default:
                 return 500;

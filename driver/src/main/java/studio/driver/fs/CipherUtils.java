@@ -17,11 +17,14 @@ import java.io.OutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.UnaryOperator;
 
 /*
 On firmware V2:
@@ -78,6 +81,15 @@ public class CipherUtils {
         }
     }
 
+    /**
+     * The {@code bt} file {@link #addBootFileV2} writes for a pack whose {@code ri}, as stored on the
+     * card, is {@code riStored}: lets a check compare without writing anything.
+     */
+    static byte[] expectedBootFileV2(byte[] riStored, byte[] deviceUuid) {
+        byte[] block = Arrays.copyOfRange(riStored, 0, Math.min(CIPHER_BLOCK_SIZE_BOOT_V2, riStored.length));
+        return cipherFirstBlockSpecificKeyV2(block, computeSpecificKeyV2FromUUID(deviceUuid));
+    }
+
     static void addBootFileV3(Path packFolder, FsDeviceKeyV3 deviceKeyV3) throws IOException {
         addBootFileV3(packFolder, deviceKeyV3, new OpenOption[0]);
     }
@@ -86,6 +98,82 @@ public class CipherUtils {
     static void addBootFileV3(Path packFolder, FsDeviceKeyV3 deviceKeyV3, OpenOption... btOptions) throws IOException {
         // Add boot file: bt
         Files.write(packFolder.resolve(BOOT_FILENAME), deviceKeyV3.getBt(), btOptions);
+    }
+
+    /**
+     * Bytes of a file the transforms below may change: the first block of every format (XXTEA for
+     * firmware 2, AES for firmware 3) fits in it, and nothing after it is ever touched.
+     */
+    static final int TRANSFORMED_HEAD_SIZE = Math.max(CIPHER_BLOCK_SIZE_ASSETS_V2, CIPHER_BLOCK_SIZE_ASSETS_V3);
+
+    /**
+     * Writes to {@code target} what {@code transform} applied to the whole of {@code source} would
+     * give, without reading the file into memory.
+     *
+     * <p>Every first-block transform of this class ({@code cipherFirstBlock...},
+     * {@code decipherFirstBlock...}, and chains of them) changes at most the first
+     * {@link #TRANSFORMED_HEAD_SIZE} bytes, and copies every following byte verbatim: applying it to
+     * that head alone and appending the rest of the file gives the same bytes. The head is read and
+     * transformed in memory; the rest is copied through a buffer of {@link #COPY_BUFFER_SIZE} bytes.
+     *
+     * <p>Not with {@code FileChannel.transferTo}: between two files, the JDK does it on Windows by
+     * mapping the source in memory, and a card pulled out during the copy then faults on the mapped
+     * pages, which surfaces as a {@code java.lang.InternalError} rather than an {@link IOException}:
+     * an {@code Error}, which the transfer's {@code catch (Exception)} let through, and the failure
+     * read as an unexpected one instead of an unplugged device. A plain read and write fails with an
+     * {@link IOException}; an {@code InternalError} that would still be raised from here is turned
+     * into one as well.
+     *
+     * @param options how {@code target} is opened (must allow writing)
+     */
+    static void transformFirstBlock(Path source, Path target, UnaryOperator<byte[]> transform, OpenOption... options) throws IOException {
+        try {
+            transformFirstBlockUnguarded(source, target, transform, options);
+        } catch (InternalError e) {
+            throw new IOException("Unexpected fault while copying " + source + " to " + target
+                    + " (device unplugged during the copy?)", e);
+        }
+    }
+
+    /** What the tail of a file is copied through, in {@link #transformFirstBlock}. */
+    static final int COPY_BUFFER_SIZE = 64 * 1024;
+
+    private static void transformFirstBlockUnguarded(Path source, Path target, UnaryOperator<byte[]> transform, OpenOption... options) throws IOException {
+        OpenOption[] targetOptions = options.length == 0
+                ? new OpenOption[]{StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE}
+                : options;
+        try (FileChannel in = FileChannel.open(source, StandardOpenOption.READ)) {
+            long size = in.size();
+            ByteBuffer head = ByteBuffer.allocate((int) Math.min(TRANSFORMED_HEAD_SIZE, size));
+            while (head.hasRemaining()) {
+                if (in.read(head) < 0) {
+                    throw new IOException("File shrank while being read: " + source);
+                }
+            }
+            // Transformed before the target is created: a transform that fails leaves no file
+            // behind, as when the whole file was transformed before being written.
+            ByteBuffer transformed = ByteBuffer.wrap(transform.apply(head.array()));
+            try (FileChannel out = FileChannel.open(target, targetOptions)) {
+                while (transformed.hasRemaining()) {
+                    out.write(transformed);
+                }
+                long position = head.capacity();
+                ByteBuffer buffer = ByteBuffer.allocate((int) Math.min(COPY_BUFFER_SIZE, Math.max(size - position, 1)));
+                while (position < size) {
+                    buffer.clear();
+                    buffer.limit((int) Math.min(buffer.capacity(), size - position));
+                    int read = in.read(buffer, position);
+                    if (read <= 0) {
+                        throw new IOException("Could not copy " + source + " past byte " + position);
+                    }
+                    buffer.flip();
+                    while (buffer.hasRemaining()) {
+                        out.write(buffer);
+                    }
+                    position += read;
+                }
+            }
+        }
     }
 
     static byte[] cipherFirstBlockCommonKey(byte[] data) {

@@ -633,6 +633,229 @@
       "announceOptOut": "Opt out of announces: ",
       "allowEnriched": "Allow enriched binary format (includes metadata): "
     }
+  },
+  "deviceRepair": {
+    "button": "Check / repair the Lunii",
+    "title": "Check / repair the Lunii",
+    "checking": "Checking the Lunii…",
+    "recheck": "Check again",
+    "confirm": "Confirm",
+    "done": "Repair done.",
+    "failed": "Failed: {{message}}",
+    "unsupported": "Not supported on a Lunii 1.x: its stories are stored in sectors, not in folders, so this check does not apply.",
+    "problems": "{{count}} problem found.",
+    "problems_plural": "{{count}} problems found.",
+    "noProblem": "No problem: the Lunii's index and folders are consistent ({{count}} story).",
+    "noProblem_plural": "No problem: the Lunii's index and folders are consistent ({{count}} stories).",
+    "offer": {
+      "text": "Checking the Lunii can resolve this."
+    },
+    "pendingIndex": {
+      "title": "Interrupted index write (.pi.new)",
+      "kinds": {
+        "TORN": "A new index started being written and was interrupted: it is incomplete or empty.",
+        "IDENTICAL": "The pending index is identical to the installed one.",
+        "ADD_INCOMPLETE": "The pending index added a story whose copy did not finish.",
+        "ADD": "The pending index adds {{added}} story(ies).",
+        "REMOVE": "The pending index removes {{removed}} story(ies): a removal was interrupted.",
+        "REORDER": "The pending index lists the same stories in another order: a reordering was interrupted.",
+        "OTHER": "The pending index differs from the installed one ({{current}} installed, {{pending}} pending; {{added}} added, {{removed}} removed)."
+      },
+      "safe": "Removing it loses nothing: the Lunii keeps using its current index. While it is there, no story can be added, removed or reordered.",
+      "discard": "Remove the pending file",
+      "confirmDiscard": "Remove the .pi.new file? The Lunii's current index stays as it is.",
+      "choice": "STUdio cannot decide on its own: choose which index the Lunii keeps.",
+      "keep": "Keep the current index",
+      "adopt": "Adopt the new index",
+      "confirmKeep": "Keep the current index and remove the pending file?",
+      "confirmAdopt": "Replace the current index by the new one?",
+      "keepMeans": {
+        "ADD": "The added stories will not show on the Lunii; their folders stay on the card (orphan folders). Do not remove them if you may want them back.",
+        "REMOVE": "The removed stories stay on the Lunii, as before the removal.",
+        "REORDER": "The Lunii keeps the previous order.",
+        "OTHER": "The Lunii keeps the list of stories it uses today."
+      },
+      "adoptMeans": {
+        "ADD": "The added stories show on the Lunii, at the end of the list.",
+        "REMOVE": "The removed stories disappear from the Lunii's list; their folders stay on the card, and the current index is kept as .pi.bak.",
+        "REORDER": "The Lunii adopts the new order.",
+        "OTHER": "The Lunii uses the new list; the current index is kept as .pi.bak."
+      },
+      "cannotAdopt": "The pending index cannot be adopted: it names {{count}} story(ies) whose folder is not a complete copy on the Lunii. Only the current index can be kept.",
+      "confirmAdoptRemoving": "Replace the current index by the new one? These stories will no longer be listed on the Lunii: {{titles}}. Their folders stay on the card, and the current index is kept as .pi.bak."
+    },
+    "interrupted": {
+      "title": "Interrupted story update",
+      "states": {
+        "COPY_INTERRUPTED": "{{folder}}: an update copy, unfinished or not yet put in place, was left next to the story, whose folder is complete.",
+        "PROMOTE_NEW": "{{folder}}: the story's folder is incomplete, but a complete copy of the new version is there.",
+        "SWAP_INTERRUPTED": "{{folder}}: interrupted while switching; the story's folder is missing, the new version is complete.",
+        "CLEANUP_INTERRUPTED": "{{folder}}: the new version is in place; the previous one was not completely removed.",
+        "RESTORE_PREVIOUS": "{{folder}}: the story's folder is incomplete, but the previous version, complete, is there.",
+        "PREVIOUS_ONLY": "{{folder}}: the story's folder is missing; the previous version is left, under a temporary name.",
+        "NEW_ONLY": "{{folder}}: the story's folder is missing; only a complete copy of the new version is left.",
+        "ABANDONED_COPY": "{{folder}}: the story's folder is missing and the only copy left is unfinished: it cannot be used.",
+        "CONFLICT": "{{folder}}: the story's folder and both leftovers of its update are there, at least one of them a complete copy, and STUdio cannot tell safely which one to keep. Nothing is changed. To get out of it: check the card (chkdsk on Windows, Disk Utility on a Mac), copy the three folders of .content to the computer to keep them, move .studio-new-{{folder}} and .studio-old-{{folder}} out of .content (do not delete them), then check again.",
+        "UNREFERENCED": "{{folder}}: leftovers of an update of a story no longer on the Lunii.",
+        "NEW_REPLACES_DAMAGED": "{{folder}}: the story's folder is complete but fails the integrity check; the copy of the new version next to it is complete and passes it.",
+        "PREVIOUS_REPLACES_DAMAGED": "{{folder}}: the story's folder is complete but fails the integrity check; the previous version next to it is complete and passes it.",
+        "NO_COMPLETE_COPY": "{{folder}}: neither the story's folder nor the leftovers of its update are a complete copy: there is nothing to keep on the Lunii."
+      },
+      "actions": {
+        "COPY_INTERRUPTED": "Remove the update copy",
+        "PROMOTE_NEW": "Put the complete copy in place",
+        "SWAP_INTERRUPTED": "Finish the update",
+        "CLEANUP_INTERRUPTED": "Remove the previous version",
+        "RESTORE_PREVIOUS": "Put the previous version back",
+        "PREVIOUS_ONLY": "Put the story back",
+        "NEW_ONLY": "Put the copy in place",
+        "ABANDONED_COPY": "Remove the unfinished copy",
+        "UNREFERENCED": "Tidy up the leftovers",
+        "NEW_REPLACES_DAMAGED": "Put the healthy copy in place",
+        "PREVIOUS_REPLACES_DAMAGED": "Put the healthy previous version back",
+        "NO_COMPLETE_COPY": "Remove the story and its leftovers"
+      },
+      "confirm": {
+        "COPY_INTERRUPTED": "Remove the update copy of {{folder}}? An unfinished copy holds nothing usable; a complete copy is only removed if the story in place passes the integrity check. STUdio also checks, by writing a small marker file it removes at once, that both names are not the same folder on the card.",
+        "PROMOTE_NEW": "Put the complete copy of {{folder}} in place of the incomplete folder? Only the incomplete folder is removed.",
+        "SWAP_INTERRUPTED": "Put the new version of {{folder}} in place (one rename), then remove the previous one? If the new one fails the integrity check, the previous one is put back and nothing is removed.",
+        "CLEANUP_INTERRUPTED": "Remove the previous version of {{folder}}? STUdio first checks the integrity of the new one, and removes nothing if it is not intact. It also checks, by writing a small marker file it removes at once, that both names are not the same folder on the card.",
+        "RESTORE_PREVIOUS": "Put the previous version of {{folder}} back in place of the incomplete folder? Only the incomplete folder is removed.",
+        "PREVIOUS_ONLY": "Put the previous version of {{folder}} back in place (one rename)?",
+        "NEW_ONLY": "Put the copy of {{folder}} in place (one rename)?",
+        "ABANDONED_COPY": "Remove the unfinished copy of {{folder}}? The story will have no content: send it again afterwards.",
+        "UNREFERENCED": "Tidy up the leftovers of {{folder}}? Unfinished copies are removed; a complete copy is put back under the name {{folder}} (it then shows as an orphan folder) and is not removed.",
+        "NEW_REPLACES_DAMAGED": "Put the healthy copy of {{folder}} in place? The damaged folder is not removed: it is only renamed as the previous version, which you can remove afterwards.",
+        "PREVIOUS_REPLACES_DAMAGED": "Put the healthy previous version of {{folder}} back? The damaged folder is not removed: it is only renamed as an update copy, which you can remove afterwards.",
+        "NO_COMPLETE_COPY": "Remove {{folder}} from the Lunii? The story is removed from the Lunii's list, then its incomplete folders are removed (no complete copy exists). Send it again from the library afterwards."
+      }
+    },
+    "orphans": {
+      "title": "Orphan folders",
+      "intro": "Story folders the Lunii's index does not reference (interrupted copy or removal): they take up space and can block sending the same story again. A complete copy may be the only copy of a story: remove it only if you no longer need it.",
+      "complete": "complete copy",
+      "partial": "partial copy",
+      "remove": "Remove the selected folder",
+      "remove_plural": "Remove the {{count}} selected folders",
+      "confirm": "Permanently remove this folder from the Lunii?",
+      "confirm_plural": "Permanently remove these {{count}} folders from the Lunii?",
+      "pending": "named by the pending index: resolve it first"
+    },
+    "missing": {
+      "title": "Stories listed without content",
+      "remove": "Remove from the index",
+      "confirm": "Remove this story from the Lunii's index? STUdio first checks that its content is still missing; you can send it again afterwards."
+    },
+    "integrity": {
+      "title": "Story integrity",
+      "intro": "Reads the indexes and the header of every image and sound, writing nothing on the Lunii. May take a while on a full Lunii.",
+      "start": "Check story integrity",
+      "running": "Checking…",
+      "progress": "{{checked}} / {{total}} files",
+      "damaged": "{{count}} damaged story out of {{total}}.",
+      "damaged_plural": "{{count}} damaged stories out of {{total}}.",
+      "allOk": "{{count}} story checked: all is well.",
+      "allOk_plural": "{{count}} stories checked: all is well.",
+      "codes": {
+        "FOLDER_MISSING": "Pack folder missing",
+        "FILE_MISSING": "Index file missing",
+        "FILE_UNREADABLE": "Unreadable file",
+        "NODE_INDEX_INVALID": "Invalid node index (ni)",
+        "ASSET_INDEX_INVALID": "Image or sound index (ri/si) invalid, or not deciphering with this Lunii's key",
+        "LIST_INDEX_INVALID": "Invalid menu index (li)",
+        "COUNT_MISMATCH": "Counts in ni and ri/si do not match",
+        "ASSET_REFERENCE_OUT_OF_RANGE": "A node refers to an image or sound that does not exist",
+        "TRANSITION_OUT_OF_RANGE": "A menu or transition leads to a node that does not exist",
+        "ASSET_MISSING": "Image or sound missing",
+        "ASSET_EMPTY": "Empty image or sound (zero size)",
+        "ASSET_HEADER_INVALID": "Ciphered header that does not decipher with this Lunii's key",
+        "BOOT_FILE_INVALID": "Boot file (bt) not made for this Lunii"
+      },
+      "official": "Official story: reinstall it from the Luniistore.",
+      "resend": "Send again from the library",
+      "notInLibrary": "This story is not in the library: it cannot be sent again from here.",
+      "folderMissing": "This story's folder is missing: remove it from the index (\"Stories listed without content\"), then send it again.",
+      "structureOnly": "Official story: only the files and the structure are checked, as its ciphered parts may use a key of their own.",
+      "confirmResend": "Send \"{{title}}\" again from the library? The Lunii's version (v{{device}}) is replaced by the library's (v{{library}}), in the same place.",
+      "confirmResendNoVersion": "Send \"{{title}}\" again from the library? The Lunii's version is replaced by the library's, in the same place.",
+      "resendStarted": "Sending started: follow it in the notifications."
+    }
+  },
+  "deviceUpdate": {
+    "available": "Update available",
+    "update": "Update on the Lunii",
+    "updating": "Updating…",
+    "basis": {
+      "version": "The library has a newer version (v{{library}}, v{{device}} on the Lunii).",
+      "content": "The library's content differs from what was sent to the Lunii."
+    },
+    "toasts": {
+      "updating": "Updating the story on the Lunii…",
+      "updated": "Story updated on the Lunii, in the same place.",
+      "failed": "Failed to update the story on the Lunii"
+    },
+    "confirm": {
+      "title": "Update on the Lunii",
+      "text": "Replace the Lunii's version (v{{device}}) by the library's (v{{library}})? The story keeps its place; the previous version is only removed once the new one is copied.",
+      "textNoVersion": "Replace the story on the Lunii by the library's version? It keeps its place; the previous version is only removed once the new one is copied.",
+      "yes": "Update"
+    }
+  },
+  "sendQueue": {
+    "selection": "{{count}} pack selected",
+    "selection_plural": "{{count}} packs selected",
+    "select": "Select “{{title}}” to send it to the Lunii",
+    "selectAll": "Select all",
+    "clear": "Deselect all",
+    "send": "Send the selection to the Lunii",
+    "progress": "Pack {{current}}/{{total}}: {{title}}",
+    "overall": "Sending progress: {{percent}} %",
+    "cancel": "Cancel the rest",
+    "cancelling": "Stopping after this pack…",
+    "appliesToAll": "This answer will also apply to the other packs of the selection.",
+    "phases": {
+      "preparing": "preparing",
+      "verifying": "checking",
+      "converting": "converting",
+      "transferring": "transferring"
+    },
+    "reasons": {
+      "official": "official story, not transferable",
+      "onDevice": "already on the Lunii",
+      "cancelled": "sending cancelled",
+      "declined": "left out when asked",
+      "nothing": "nothing to send",
+      "space": "not enough space",
+      "conversion": "the conversion failed",
+      "busy": "the Lunii stayed busy",
+      "incompatible": "format not compatible with the Lunii",
+      "transfer": "the transfer failed",
+      "unknown": "outcome unknown (tracking lost)",
+      "error": "unexpected error",
+      "noDevice": "Lunii unplugged"
+    },
+    "summary": {
+      "title": "Sending of the selection finished",
+      "counts": "Sent: {{sent}} · Skipped: {{skipped}} · Failed: {{failed}}",
+      "sent": "Sent",
+      "skipped": "Skipped",
+      "failed": "Failed"
+    }
+  },
+  "spaceEstimate": {
+    "summary": "Space needed: {{required}} · Space free: {{free}}",
+    "rough": "(rough estimate)",
+    "estimating": "Estimating the space needed…",
+    "plugFirst": "Plug the Lunii in to estimate the space and send",
+    "tooBig": "It does not fit: {{missing}} short. Remove packs from the selection, or free some space on the Lunii.",
+    "blocked": "Not enough space on the Lunii for this selection",
+    "refusal": {
+      "title": "Not enough space on the Lunii",
+      "content": "This pack will take about {{required}} once in the Lunii's format, but it only has {{free}} free: {{missing}} short.",
+      "content_plural": "These {{count}} packs will take about {{required}} once in the Lunii's format, but it only has {{free}} free: {{missing}} short.",
+      "explain": "Nothing was converted nor sent. Free some space by removing stories from the Lunii, or send fewer packs at a time. The estimate counts the conversion (MP3 and images for recent Lunii, WAV for the first Lunii) and the minimum space each file takes on the card.",
+      "sendAnyway": "Send anyway",
+      "sendAnywayExplain": "The free space seems too small, but going by a high estimate: it may still fit. \"Send anyway\" tries the transfer; if it really does not fit, the Lunii will refuse it by itself."
+    }
   }
-
 }
