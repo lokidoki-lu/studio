@@ -173,3 +173,102 @@ in a UTF-8 file, never on a command line; each run is killed after the time limi
 
 `GET /api/tts/engines` → `{"edge": true, "system": true, "defaultEngine": "auto",
 "defaultVoice": "fr-FR-DeniseNeural", "voices": […], "maxLength": 500}`.
+
+## Packs from YouTube (library)
+
+`/api/youtube` makes a pack from YouTube links, as Lunii Pack does, and adds it to the library. Same
+request rules as above (`Host`/`Origin` checked, `POST` in JSON only, body ≤ 1 MiB). The creation
+runs in the background, one at a time; the library dialog polls its state.
+
+**What it needs.** `yt-dlp` and `ffmpeg`:
+
+- yt-dlp is looked for as a Python module first, with the same interpreters as the spoken titles
+  (`-Dstudio.tts.python=<python.exe>`, then `STUDIO_TTS_PYTHON`, then `python` / `python3`): Lunii
+  Pack's virtual environment has it. Otherwise a `yt-dlp` program (`-Dstudio.youtube.ytdlp=<path>`,
+  or on the `PATH`).
+- ffmpeg: `-Dstudio.youtube.ffmpeg=<path>`, or `ffmpeg` on the `PATH`.
+- Deno, Node or Bun, found beside that Python or on the `PATH`, are handed to yt-dlp
+  (`--js-runtimes`): YouTube's protections need one of them.
+
+**What it sends out.** yt-dlp downloads from YouTube. With `sponsorBlock`, each video id is sent to
+`sponsor.ajay.app`. Titles are spoken by `/api/tts`'s engines (the online voice sends the text to
+Microsoft).
+
+`GET /api/youtube/tools` (`?refresh=true` to probe again) →
+
+```json
+{"ready": true, "ytDlp": true, "ytDlpVersion": "2026.11.23", "ffmpeg": true, "jsRuntime": true,
+ "message": null, "voices": […], "defaultVoice": "fr-FR-DeniseNeural", "bitrates": [48, 64, 96, 128],
+ "defaultBitrate": 96, "defaultMenuSize": 10, "defaultMaxVideos": 50, "maxLinks": 20}
+```
+
+`message` says what is missing, in French, when `ready` is false.
+
+`POST /api/youtube/jobs` starts a creation and answers `202` with the job (below):
+
+```json
+{"urls": ["https://www.youtube.com/playlist?list=…"], "title": "Les Dalton", "description": "",
+ "voice": "fr-FR-DeniseNeural", "engine": "auto", "cleanTitles": true, "sponsorBlock": true,
+ "seasons": true, "autoplayNext": false, "pauses": true, "minDuration": 0, "maxDuration": 0,
+ "menuSize": 10, "bitrate": 96, "maxVideos": 50}
+```
+
+- `urls`: required, 1 to 20 links (an array, or one string with one link per line). Only YouTube
+  hosts (`youtube.com`, `www.`, `m.`, `music.`, `youtu.be`); a bare 11-character video id is
+  accepted. A `watch?v=…&list=…` link is the video alone, a `playlist?list=…` link the whole
+  playlist.
+- `title`: the pack title (≤ 100); default: the playlist title, the video title, or "Mes histoires".
+- `voice`, `engine`: as for `/api/tts`.
+- `cleanTitles`: Lunii Pack's title clean-up (emojis, `[HD]`, hashtags, channel name, the series
+  prefix shared by a playlist, duplicates numbered).
+- `sponsorBlock`: cut what SponsorBlock users flagged (sponsor, self-promotion, intro, credits…).
+- `seasons`: when most titles of a playlist carry `S01E05`, `Saison 1 Épisode 5` or `1x05`, sort by
+  season and episode, one group per season.
+- `autoplayNext`: at the end of a story, play the next one.
+- `pauses`: wait 10 to 30 s between two downloads (`-Dstudio.youtube.pauseMinSeconds`,
+  `pauseMaxSeconds`), because YouTube blocks bursts.
+- `minDuration`, `maxDuration`: seconds, 0 = no bound.
+- `menuSize`: beyond this many stories, one sub-menu per playlist (or season), cut into balanced
+  slices; 0 = never.
+- `bitrate`: story audio, 48, 64, 96 or 128 kbit/s.
+- `maxVideos`: 1 to 200; videos beyond are left out, with a warning.
+
+The pack is the one Lunii Pack writes: a cover (mosaic of up to four thumbnails with the title), an
+optional main menu of sub-menus, and for each video a title stage (thumbnail cropped to 320×240,
+spoken title) then the story (mono MP3, 44.1 kHz, loudness normalised, autoplay). Node uuids derive
+from the title and the video ids, so making the same pack again gives the same uuids. It is added to
+the library under `<title>.zip`, or `<title> (2).zip`… when that name is taken: an existing pack is
+never replaced. When YouTube asks to prove one is not a robot, downloads stop and the pack is made
+with the videos already downloaded (`result.blocked`).
+
+`GET /api/youtube/jobs/{id}`, `GET /api/youtube/jobs/current` (the running creation, else the last
+one; `404` when there has been none) →
+
+```json
+{"id": "…", "state": "RUNNING", "step": "DOWNLOADING", "progress": 0.42, "current": 3, "total": 8,
+ "currentTitle": "Le magot", "warnings": 0, "startedAt": 1795359228662, "cancelRequested": false,
+ "log": ["Analyse de https://…", "…"]}
+```
+
+- `state`: `RUNNING`, `DONE`, `FAILED`, `CANCELLED`.
+- `step`: `CHECKING`, `ANALYSING`, `DOWNLOADING`, `CONVERTING`, `VOICES`, `WRITING`, `FINISHED`.
+- `progress`: 0 to 1, over the whole creation.
+- Finished: `result` (`DONE`: `{"path", "uuid", "title", "stories", "skipped", "silentTitles",
+  "blocked"}`), or `error` and `message` (`FAILED`, `CANCELLED`).
+
+`POST /api/youtube/jobs/{id}/cancel` `{}` asks the creation to stop: the running program is killed,
+the temporary files removed, nothing is added to the library. Answers the job.
+
+| Status | `error` | Meaning |
+| --- | --- | --- |
+| 400 | `INVALID_REQUEST` | no link, a link that is not YouTube, a value out of range |
+| 404 | `NOT_FOUND` | unknown job |
+| 409 | `BUSY` | a creation is already running |
+| 503 | `TOOLS_MISSING` | yt-dlp or ffmpeg not found (`message` says which) |
+
+A finished job's `error`: `BLOCKED` (YouTube refused every download), `NOTHING_DOWNLOADED`,
+`CANCELLED`, `FAILED`.
+
+Processes are started from an argument list, never through a shell; the link comes after `--` so
+it can never be read as an option; each run has a time limit (60 min per download,
+`-Dstudio.youtube.downloadTimeoutMinutes`; 30 min per conversion) and is killed on cancel.
