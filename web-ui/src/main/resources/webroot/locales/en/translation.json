@@ -133,7 +133,17 @@
     "background": "You may close this window: the creation goes on, and the \"From YouTube\" button follows its progress.",
     "toasts": {
       "done": "Pack \"{{title}}\" created from YouTube: {{count}} story(ies).",
-      "failed": "Creating the pack from YouTube failed: {{message}}"
+      "failed": "Creating the pack from YouTube failed: {{message}}",
+      "interrupted": "The YouTube pack creation was interrupted (did STUdio restart?).",
+      "unreachable": "STUdio is not answering: the YouTube pack creation is no longer followed. Open the library again to find it."
+    },
+    "errors": {
+      "BUSY": "A pack is already being created.",
+      "TOOLS_MISSING": "yt-dlp or ffmpeg cannot be found.",
+      "BLOCKED": "YouTube blocked the downloads: try again in a few hours.",
+      "NOTHING_DOWNLOADED": "No video could be downloaded.",
+      "CANCELLED": "Creation cancelled.",
+      "NOT_FOUND": "Unknown creation (did STUdio restart?)."
     }
   },
 

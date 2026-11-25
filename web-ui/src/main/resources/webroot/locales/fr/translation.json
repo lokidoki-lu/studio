@@ -133,7 +133,17 @@
     "background": "Vous pouvez fermer cette fenêtre : la création continue, le bouton « Depuis YouTube » suit sa progression.",
     "toasts": {
       "done": "Pack « {{title}} » créé depuis YouTube : {{count}} histoire(s).",
-      "failed": "La création du pack depuis YouTube a échoué : {{message}}"
+      "failed": "La création du pack depuis YouTube a échoué : {{message}}",
+      "interrupted": "La création du pack depuis YouTube a été interrompue (STUdio a redémarré ?).",
+      "unreachable": "STUdio ne répond plus : la création du pack depuis YouTube n'est plus suivie. Rouvrez la bibliothèque pour la retrouver."
+    },
+    "errors": {
+      "BUSY": "Un pack est déjà en cours de création.",
+      "TOOLS_MISSING": "yt-dlp ou ffmpeg est introuvable.",
+      "BLOCKED": "YouTube a bloqué les téléchargements : réessayez dans quelques heures.",
+      "NOTHING_DOWNLOADED": "Aucune vidéo n'a pu être téléchargée.",
+      "CANCELLED": "Création annulée.",
+      "NOT_FOUND": "Création introuvable (STUdio a redémarré ?)."
     }
   },
 
