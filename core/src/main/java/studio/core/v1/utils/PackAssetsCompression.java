@@ -160,12 +160,7 @@ public class PackAssetsCompression {
                 byte[] imageData = node.getImage().getRawData();
                 String assetHash = DigestUtils.sha1Hex(imageData);
                 if (assets.get(assetHash) == null) {
-                    // Convert to 4-bits depth / RLE encoding BMP
-                    if (!"image/bmp".equals(node.getImage().getMimeType()) || imageData[28] != 0x04 || imageData[30] != 0x02) {
-                        LOGGER.fine("Converting image asset `" + node.getImage().getName() + "` into 4-bits/RLE BMP");
-                        imageData = ImageConversion.anyToRLECompressedBitmap(imageData);
-                    }
-                    assets.put(assetHash, imageData);
+                    assets.put(assetHash, prepareImageFirmware2dot4(imageData, node.getImage().getMimeType(), node.getImage().getName()));
                 }
                 // Use asset (already compressed) bytes from map
                 node.getImage().setRawData(assets.get(assetHash));
@@ -177,22 +172,7 @@ public class PackAssetsCompression {
                 byte[] audioData = node.getAudio().getRawData();
                 String assetHash = DigestUtils.sha1Hex(audioData);
                 if (assets.get(assetHash) == null) {
-                    if (!"audio/mp3".equals(node.getAudio().getMimeType()) && !"audio/mpeg".equals(node.getAudio().getMimeType())) {
-                        LOGGER.fine("Converting audio asset `" + node.getAudio().getName() + "` into MP3");
-                        audioData = AudioConversion.anyToMp3(audioData);
-                    } else {
-                        // Remove potential ID3 tags
-                        audioData = ID3Tags.removeID3v1Tag(audioData);
-                        audioData = ID3Tags.removeID3v2Tag(audioData);
-                        // Check that the file is MONO / 44100Hz
-                        AudioFileFormat audioFileFormat = AudioSystem.getAudioFileFormat(new ByteArrayInputStream(audioData));
-                        if (audioFileFormat.getFormat().getChannels() != AudioConversion.CHANNELS
-                                || audioFileFormat.getFormat().getSampleRate() != AudioConversion.MP3_SAMPLE_RATE) {
-                            LOGGER.fine("Re-encoding MP3 audio asset `" + node.getAudio().getName() + "`");
-                            audioData = AudioConversion.anyToMp3(audioData);
-                        }
-                    }
-                    assets.put(assetHash, audioData);
+                    assets.put(assetHash, prepareAudioFirmware2dot4(audioData, node.getAudio().getMimeType(), node.getAudio().getName()));
                 }
                 // Use asset (already compressed) bytes from map
                 node.getAudio().setRawData(assets.get(assetHash));
@@ -201,5 +181,40 @@ public class PackAssetsCompression {
         }
 
         return pack;
+    }
+
+    /**
+     * One image as firmware 2.4 wants it: a 4-bits depth / RLE encoded BMP (mime type
+     * {@code image/bmp}). An image that already is one is returned as is.
+     */
+    public static byte[] prepareImageFirmware2dot4(byte[] imageData, String mimeType, String name) throws Exception {
+        // Convert to 4-bits depth / RLE encoding BMP
+        if (!"image/bmp".equals(mimeType) || imageData[28] != 0x04 || imageData[30] != 0x02) {
+            LOGGER.fine("Converting image asset `" + name + "` into 4-bits/RLE BMP");
+            return ImageConversion.anyToRLECompressedBitmap(imageData);
+        }
+        return imageData;
+    }
+
+    /**
+     * One sound as firmware 2.4 wants it: a mono 44100 Hz MP3 without ID3 tags (mime type
+     * {@code audio/mpeg}). An MP3 in that format only loses its tags; anything else is re-encoded.
+     */
+    public static byte[] prepareAudioFirmware2dot4(byte[] audioData, String mimeType, String name) throws Exception {
+        if (!"audio/mp3".equals(mimeType) && !"audio/mpeg".equals(mimeType)) {
+            LOGGER.fine("Converting audio asset `" + name + "` into MP3");
+            return AudioConversion.anyToMp3(audioData);
+        }
+        // Remove potential ID3 tags
+        audioData = ID3Tags.removeID3v1Tag(audioData);
+        audioData = ID3Tags.removeID3v2Tag(audioData);
+        // Check that the file is MONO / 44100Hz
+        AudioFileFormat audioFileFormat = AudioSystem.getAudioFileFormat(new ByteArrayInputStream(audioData));
+        if (audioFileFormat.getFormat().getChannels() != AudioConversion.CHANNELS
+                || audioFileFormat.getFormat().getSampleRate() != AudioConversion.MP3_SAMPLE_RATE) {
+            LOGGER.fine("Re-encoding MP3 audio asset `" + name + "`");
+            audioData = AudioConversion.anyToMp3(audioData);
+        }
+        return audioData;
     }
 }

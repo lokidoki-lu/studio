@@ -21,6 +21,7 @@ import studio.core.v1.reader.archive.ArchiveStoryPackReader;
 import studio.core.v1.reader.binary.BinaryStoryPackReader;
 import studio.core.v1.reader.fs.FsStoryPackReader;
 import studio.core.v1.utils.PackAssetsCompression;
+import studio.core.v1.utils.StreamingPackConversion;
 import studio.core.v1.writer.archive.ArchiveStoryPackWriter;
 import studio.core.v1.writer.binary.BinaryStoryPackWriter;
 import studio.core.v1.writer.fs.FsStoryPackWriter;
@@ -467,9 +468,19 @@ public class LibraryService {
             throw new RuntimeException("Pack is already in archive format");
         }
         boolean fromRaw = packPath.endsWith(".pack");
-        return convert(packPath, fromRaw ? "raw" : "FS", "archive", ".zip", "archive",
-                fromRaw ? binaryReader() : fsReader(),
-                fromRaw ? this::compressAssets : this::leaveAssetsAlone,
+        if (!fromRaw) {
+            // An FS source already carries the assets an archive wants: they are streamed from
+            // their files into the archive, one at a time, never all held in memory.
+            return convert(packPath, "FS", "archive", ".zip", "archive", (source, target) -> {
+                try (FileOutputStream fos = new FileOutputStream(target.toFile())) {
+                    String uuid = StreamingPackConversion.fsToArchive(source, fos);
+                    return new Converted(uuid, target);
+                }
+            });
+        }
+        return convert(packPath, "raw", "archive", ".zip", "archive",
+                binaryReader(),
+                this::compressAssets,
                 archiveWriter());
     }
 
@@ -480,8 +491,18 @@ public class LibraryService {
             LOGGER.error("Pack is already in FS format");
             throw new RuntimeException("Pack is already in FS format");
         }
-        return convert(packPath, fromArchive ? "archive" : "raw", "FS", null, "fs",
-                fromArchive ? archiveReader() : binaryReader(),
+        if (fromArchive) {
+            // Each asset is read from the archive, prepared (ID3 tags removed, re-encoded if need
+            // be) and written to its file before the next one is read: the memory used no longer
+            // grows with the pack. Same files, byte for byte, as the in-memory conversion.
+            return convert(packPath, "archive", "FS", null, "fs", (source, target) -> {
+                LOGGER.info("Converting assets if necessary, one at a time");
+                StreamingPackConversion.Result result = StreamingPackConversion.archiveToFs(source, target);
+                return new Converted(result.getUuid(), result.getProduced());
+            });
+        }
+        return convert(packPath, "raw", "FS", null, "fs",
+                binaryReader(),
                 this::prepareAssetsForFirmware2dot4,
                 fsWriter());
     }
@@ -508,6 +529,24 @@ public class LibraryService {
     private Optional<Path> convert(String packPath, String sourceLabel, String targetLabel,
                                    String extension, String provenanceKind,
                                    PackReader reader, AssetTransform transform, PackWriter writer) {
+        return convert(packPath, sourceLabel, targetLabel, extension, provenanceKind, (source, target) -> {
+            LOGGER.info("Reading " + sourceLabel + " format pack");
+            StoryPack storyPack = reader.read(source);
+
+            StoryPack converted = transform.apply(storyPack);
+
+            LOGGER.info("Writing " + targetLabel + " format pack");
+            Path produced = writer.write(converted, target);
+            return new Converted(converted.getUuid(), produced);
+        });
+    }
+
+    /**
+     * Same, with a conversion that reads the source and writes the target in one step (the
+     * streaming conversions, which never hold the whole pack).
+     */
+    private Optional<Path> convert(String packPath, String sourceLabel, String targetLabel,
+                                   String extension, String provenanceKind, PackConversion conversion) {
         Path tmp = null;
         try {
             // Observed before the conversion reads it; observed again afterwards, and
@@ -520,15 +559,10 @@ public class LibraryService {
                     + " format and storing in temporary " + (producesFolder ? "folder: " : "file: ")
                     + tmp.toAbsolutePath());
 
-            LOGGER.info("Reading " + sourceLabel + " format pack");
-            StoryPack storyPack = reader.read(requireLibraryEntry(packPath));
+            Converted converted = conversion.convert(requireLibraryEntry(packPath), tmp);
+            Path produced = converted.produced;
 
-            StoryPack converted = transform.apply(storyPack);
-
-            LOGGER.info("Writing " + targetLabel + " format pack");
-            Path produced = writer.write(converted, tmp);
-
-            String destinationName = requirePackUuid(converted.getUuid()) + ".converted_"
+            String destinationName = requirePackUuid(converted.uuid) + ".converted_"
                     + System.currentTimeMillis() + (producesFolder ? "" : extension);
             Path destinationPath = requireLibraryEntry(destinationName);
             LOGGER.info("Moving " + targetLabel + " format pack into local library: " + destinationPath);
@@ -625,6 +659,23 @@ public class LibraryService {
                 || path.getFileName().toString().startsWith(".part-"));
     }
 
+    /** What a conversion produced: the uuid of the pack and what must be moved into the library. */
+    private static final class Converted {
+        private final String uuid;
+        private final Path produced;
+
+        private Converted(String uuid, Path produced) {
+            this.uuid = uuid;
+            this.produced = produced;
+        }
+    }
+
+    @FunctionalInterface
+    private interface PackConversion {
+        /** Converts {@code source}, writing under {@code target} (the temporary file or folder). */
+        Converted convert(Path source, Path target) throws Exception;
+    }
+
     @FunctionalInterface
     private interface PackReader {
         StoryPack read(Path source) throws Exception;
@@ -672,11 +723,6 @@ public class LibraryService {
     private StoryPack compressAssets(StoryPack pack) throws Exception {
         LOGGER.info("Compressing pack assets");
         return PackAssetsCompression.withCompressedAssets(pack);
-    }
-
-    /** An FS source already carries the assets an archive wants, so nothing is done to them. */
-    private StoryPack leaveAssetsAlone(StoryPack pack) {
-        return pack;
     }
 
     private StoryPack prepareAssetsForFirmware2dot4(StoryPack pack) throws Exception {

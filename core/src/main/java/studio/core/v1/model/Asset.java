@@ -6,4 +6,13 @@
 
 package studio.core.v1.model;
 
-public interface Asset {}
+/** An image or a sound of a stage node: its mime type, its bytes and its name in the source pack. */
+public interface Asset {
+
+    String getMimeType();
+
+    /** The bytes of the asset, or {@code null} for a pack read without them (streaming conversions). */
+    byte[] getRawData();
+
+    String getName();
+}
