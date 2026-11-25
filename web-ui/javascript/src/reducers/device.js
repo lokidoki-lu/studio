@@ -6,17 +6,21 @@
 
 const initialState = {
     metadata: null,
-    packs: []
+    packs: [],
+    // True from the moment a Lunii is plugged until its story list has been read (or failed to)
+    packsLoading: false
 };
 
 const device = (state = initialState, action) => {
     switch (action.type) {
         case 'DEVICE_PLUGGED':
-            return { ...state, metadata: action.metadata };
+            return { ...state, metadata: action.metadata, packsLoading: action.loadingPacks === true };
         case 'DEVICE_UNPLUGGED':
-            return { ...state, metadata: null, packs: [] };
+            return { ...state, metadata: null, packs: [], packsLoading: false };
         case 'SET_DEVICE_PACKS':
-            return { ...state, packs: action.packs };
+            return { ...state, packs: action.packs, packsLoading: false };
+        case 'DEVICE_PACKS_FAILED':
+            return { ...state, packsLoading: false };
         default:
             return state
     }

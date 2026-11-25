@@ -54,6 +54,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -61,6 +62,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.Enumeration;
@@ -179,6 +181,9 @@ public class LibraryService {
 
     private final ConversionProvenanceStore provenanceStore = new ConversionProvenanceStore();
 
+    /** UUIDs of packs that may come from a Lunii: never proof of a pack of the user's own. */
+    private final DeviceSourcedPackStore deviceSourced = new DeviceSourcedPackStore();
+
     public LibraryService(DatabaseMetadataService databaseMetadataService) {
         this.databaseMetadataService = databaseMetadataService;
 
@@ -216,8 +221,9 @@ public class LibraryService {
         if (!libraryFolder.exists() || !libraryFolder.isDirectory()) {
             return new JsonArray();
         } else {
-            // First, refresh unofficial database with metadata from archive packs
-            try (Stream<Path> paths = Files.walk(Paths.get(libraryPath()), 1)) {
+            // First, refresh unofficial database with metadata from archive packs. Files.list, not
+            // Files.walk: see the second pass.
+            try (Stream<Path> paths = Files.list(Paths.get(libraryPath()))) {
                 paths
                         .filter(Files::isRegularFile)
                         .filter(path -> !isStagingEntry(path))
@@ -245,9 +251,10 @@ public class LibraryService {
                                     )
                             );
                         });
-            } catch (IOException e) {
+            } catch (IOException | UncheckedIOException e) {
+                // UncheckedIOException: the folder could not be read further while listing it.
+                // Only the refresh of the unofficial database is lost, not the listing.
                 LOGGER.error("Failed to read packs from local library", e);
-                throw new RuntimeException(e);
             }
 
             // List pack files in library folder. Files.list, not Files.walk: walk stats each entry
@@ -610,11 +617,33 @@ public class LibraryService {
             String destinationName = requirePackUuid(converted.uuid) + ".converted_"
                     + System.currentTimeMillis() + (producesFolder ? "" : extension);
             Path destinationPath = requireLibraryEntry(destinationName);
+            // Before the artefact is installed, so that there is no moment when an archive of a
+            // pack from a Lunii is in the library unmarked: see isKnownHomemadePack. A mark that
+            // cannot be stored stops the conversion.
+            if (!packPath.endsWith(".zip")) {
+                markUnlessHomemade(converted.uuid, DeviceSourcedPackStore.Reason.CONVERTED,
+                        requireLibraryEntry(packPath), produced);
+            }
             LOGGER.info("Moving " + targetLabel + " format pack into local library: " + destinationPath);
             installIntoLibrary(produced, destinationPath);
-            recordProvenance(packPath, sourceBefore, destinationPath, provenanceKind);
+            Optional<ConversionRecord> recorded = recordProvenance(packPath, sourceBefore, destinationPath, provenanceKind);
+            if (recorded.isPresent()) {
+                rememberMatch(packPath, destinationName, recorded.get());
+            } else if (packPath.endsWith(".zip")) {
+                // Without its record, the conversion of an archive is never sent to a Lunii (see
+                // isProvenSendSource): kept, it would be a copy of the pack refused at each try
+                deleteQuietly(destinationPath);
+                throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                        "La conversion de " + packPath + " n'a pas pu être enregistrée dans "
+                                + ConversionProvenanceStore.storePath().toAbsolutePath()
+                                + " : elle a été annulée, faute de quoi elle ne pourrait pas être envoyée sur la Lunii."
+                                + proofDatabaseProblem().map(p -> " " + p).orElse(""));
+            }
 
             return Optional.of(Paths.get(destinationName));
+        } catch (StoryTellerException e) {
+            LOGGER.error("Conversion of " + packPath + " cancelled", e);
+            throw e;
         } catch (Exception e) {
             String message = "Failed to convert " + sourceLabel + " format pack to " + targetLabel + " format";
             LOGGER.error(message, e);
@@ -812,6 +841,18 @@ public class LibraryService {
      *                                  folder. That is a malformed request, not an uncertainty.
      */
     public ProvenanceVerdict verifyConversion(String sourcePath, String convertedPath) {
+        return verifyConversion(sourcePath, convertedPath, false);
+    }
+
+    /**
+     * Same, reusing a MATCH established earlier while neither side has changed by size and
+     * modification time (see {@link #matchKey}) when {@code allowCached}. For the official-pack
+     * guard only ({@link #isProvenSendSource}), which checks a transfer up to three times: a
+     * stat-equal tampering is not the threat there (the user's own library, the official database
+     * refusing what it lists), while it is for {@code /verify-conversion}, which decides a silent
+     * transfer (C7-0b) and always hashes.
+     */
+    ProvenanceVerdict verifyConversion(String sourcePath, String convertedPath, boolean allowCached) {
         Path source = requireLibraryEntry(sourcePath);
         Path converted = requireLibraryEntry(convertedPath);
         try {
@@ -821,6 +862,13 @@ public class LibraryService {
                 // None of those is a statement that the artefacts differ.
                 return ProvenanceVerdict.UNKNOWN;
             }
+            // A MATCH established earlier, while neither side has changed (sizes and modification
+            // times of every file) and the record is the same: not hashed again (a pack may weigh
+            // a gigabyte, and a transfer checks it up to three times)
+            Optional<String> matchKey = matchKey(source, converted, recorded.get());
+            if (allowCached && matchKey.isPresent() && matchKey.get().equals(verifiedMatches.getIfPresent(sourcePath + "|" + convertedPath))) {
+                return ProvenanceVerdict.MATCH;
+            }
             Optional<String> currentSource = sourceIdentity(sourcePath);
             Optional<String> currentArtifact = identityOf(converted);
             if (!currentSource.isPresent() || !currentArtifact.isPresent()) {
@@ -829,7 +877,12 @@ public class LibraryService {
             }
             boolean sameSource = currentSource.get().equals(recorded.get().getSourceSha256());
             boolean sameArtifact = currentArtifact.get().equals(recorded.get().getArtifactSha256());
-            return sameSource && sameArtifact ? ProvenanceVerdict.MATCH : ProvenanceVerdict.MISMATCH;
+            if (sameSource && sameArtifact) {
+                // The signatures taken before hashing: a change during the hash invalidates the entry
+                matchKey.ifPresent(key -> verifiedMatches.put(sourcePath + "|" + convertedPath, key));
+                return ProvenanceVerdict.MATCH;
+            }
+            return ProvenanceVerdict.MISMATCH;
         } catch (RuntimeException e) {
             // An unexpected failure is an absence of knowledge, never a proof.
             LOGGER.error("Failed to verify the provenance of `" + convertedPath + "`", e);
@@ -837,8 +890,35 @@ public class LibraryService {
         }
     }
 
-    /** The identity of a library artefact, read as a file or as a tree according to its name. */
-    private Optional<String> identityOf(Path artifact) {
+    /** MATCH verdicts, by "source\0artifact", valid while {@link #matchKey} gives the same key. */
+    private final Cache<String, String> verifiedMatches = Caffeine.newBuilder().maximumSize(1_000).build();
+
+    /** The signatures of both sides and the digests of the record: what a cached MATCH stands for. */
+    private Optional<String> matchKey(Path source, Path converted, ConversionRecord record) {
+        Optional<String> sourceSignature = statSignature(source);
+        Optional<String> artifactSignature = statSignature(converted);
+        if (!sourceSignature.isPresent() || !artifactSignature.isPresent()) {
+            return Optional.empty();
+        }
+        return Optional.of(sourceSignature.get() + "|" + artifactSignature.get() + "|"
+                + record.getSourceSha256() + "|" + record.getArtifactSha256());
+    }
+
+    /** A conversion just recorded: both sides were hashed for the record, no need to hash them again. */
+    private void rememberMatch(String sourcePath, String convertedPath, ConversionRecord record) {
+        try {
+            matchKey(requireLibraryEntry(sourcePath), requireLibraryEntry(convertedPath), record)
+                    .ifPresent(key -> verifiedMatches.put(sourcePath + "|" + convertedPath, key));
+        } catch (RuntimeException e) {
+            LOGGER.debug("Conversion not remembered as verified: " + e.getMessage());
+        }
+    }
+
+    /**
+     * The identity of a library artefact, read as a file or as a tree according to its name.
+     * Package-private and overridable: a test counts the artefacts hashed.
+     */
+    Optional<String> identityOf(Path artifact) {
         return kindOf(artifact.getFileName().toString()) == ConversionRecord.Kind.FILE
                 ? contentDigest.ofFile(artifact)
                 : contentDigest.ofTree(artifact);
@@ -906,6 +986,370 @@ public class LibraryService {
     public boolean isOfficialPack(String uuid) {
         return uuid != null && (databaseMetadataService.isOfficialPack(uuid)
                 || databaseMetadataService.getPackMetadata(uuid).map(DatabasePackMetadata::isOfficial).orElse(false));
+    }
+
+    /** Whether the official database is loaded (it is empty until a first download succeeds). */
+    public boolean isOfficialDatabaseAvailable() {
+        return databaseMetadataService.isOfficialDatabaseAvailable();
+    }
+
+    /**
+     * Whether STUdio knows {@code uuid} to be one of the user's own packs, hence <em>not</em> an
+     * official one: the only packs that may be transferred between a Lunii and the library.
+     *
+     * <p>Not being in the official database is not enough: the database may be empty (never
+     * downloaded, offline) or older than the pack. So a positive proof is required, and the one
+     * kept is that the library holds the pack in the editor's own format: an archive ({@code .zip}
+     * with a {@code story.json}) carrying this UUID, made by the editor, by the YouTube import or
+     * uploaded as such. The Luniistore never ships a pack in that format: an official pack only
+     * reaches the library as a raw or FS pack extracted from a Lunii. An archive the provenance
+     * ledger records as converted from such a pack does not count, for that reason.
+     *
+     * <p>An archive is no proof either when:
+     * <ul>
+     *   <li>its name is a conversion output's ({@code <uuid>.converted_<millis>.zip}), whatever the
+     *   ledger says: conversions made before the ledger, or whose record failed, are not in it;</li>
+     *   <li>the provenance ledger cannot be read ({@code INVALID}): none is, since none can be told
+     *   apart from a conversion;</li>
+     *   <li>its UUID is in {@link DeviceSourcedPackStore} (a pack copied from a Lunii, or converted
+     *   from a raw or FS pack, without being proven the user's at the time): the UUID is marked,
+     *   not the file, so a converted archive renamed (downloaded and uploaded again, "save as" in
+     *   the editor) is no proof.</li>
+     * </ul>
+     *
+     * <p>Rejected as proofs, because an official pack can end up in them: the unofficial database
+     * (filled from every archive of the library, converted ones included, while the official
+     * database was empty or stale) and the device records of {@code device-packs.json} (written for
+     * any pack matched by UUID with the library, extracted ones included).
+     *
+     * <p>Fail-closed: anything that cannot be read is no proof.
+     */
+    public boolean isKnownHomemadePack(String uuid) {
+        if (uuid == null || isOfficialPack(uuid)) {
+            return false;
+        }
+        if (deviceSourced.isMarkedOrUnreadable(uuid)) {
+            return false;
+        }
+        if (provenanceStore.state() == ConversionProvenanceStore.State.INVALID) {
+            LOGGER.warn("The provenance database cannot be read: no archive proves pack " + uuid + " to be the user's");
+            return false;
+        }
+        return !proofArchives(uuid).isEmpty();
+    }
+
+    /**
+     * The archives of the library that prove {@code uuid} to be one of the user's packs (see
+     * {@link #isKnownHomemadePack}, whose other conditions are not checked here).
+     */
+    private List<Path> proofArchives(String uuid) {
+        String wanted = uuid.toLowerCase(Locale.ROOT);
+        Path root = Paths.get(libraryPath());
+        if (!Files.isDirectory(root)) {
+            return new ArrayList<>();
+        }
+        try (Stream<Path> paths = Files.list(root)) {
+            return paths
+                    .filter(path -> !isStagingEntry(path))
+                    // Case-sensitive, as readPackFile, which reads nothing else as an archive
+                    .filter(path -> path.getFileName().toString().endsWith(".zip"))
+                    .filter(path -> !isConversionName(path.getFileName().toString()))
+                    .filter(LibraryService::isPlainEntry)
+                    .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+                    .filter(path -> readPackFileCached(path)
+                            .map(pack -> pack.getMetadata().getUuid())
+                            .map(declared -> declared.toLowerCase(Locale.ROOT).equals(wanted))
+                            .orElse(false))
+                    .filter(path -> !convertedFromAnotherFormat(path))
+                    .collect(Collectors.toList());
+        } catch (IOException | UncheckedIOException e) {
+            LOGGER.warn("Cannot tell whether pack " + uuid + " is one of the user's own: the library could not be read", e);
+            return new ArrayList<>();
+        }
+    }
+
+    private static boolean isConversionName(String name) {
+        return CONVERSION_OUTPUT_NAME.matcher(name).matches();
+    }
+
+    /**
+     * Whether the library entry {@code name} (the pack {@code uuid}, one of the user's) may be the
+     * source of a transfer to a Lunii. An archive may: it is the editor's format. A raw or FS pack
+     * may only if the provenance ledger links it to an archive proving the pack to be the user's
+     * ({@link #verifyConversion}): a folder renamed by hand to the UUID of one of the user's packs
+     * is not that pack. Reads both in full: only called when a transfer is asked for.
+     */
+    public boolean isProvenSendSource(String name, String uuid) {
+        if (name.endsWith(".zip")) {
+            return true;
+        }
+        for (Path archive : proofArchives(uuid)) {
+            if (verifyConversion(archive.getFileName().toString(), name, true) == ProvenanceVerdict.MATCH) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Why no archive can prove anything at the moment, naming the file at fault, or empty. In
+     * French: shown as is to the user.
+     */
+    public Optional<String> proofDatabaseProblem() {
+        if (!deviceSourced.isReadable()) {
+            return Optional.of("Le fichier " + DeviceSourcedPackStore.storePath().toAbsolutePath()
+                    + " est illisible : aucun pack n'est reconnu comme un des vôtres tant qu'il n'est pas"
+                    + " réparé, déplacé ou supprimé.");
+        }
+        if (provenanceStore.state() == ConversionProvenanceStore.State.INVALID) {
+            return Optional.of("Le fichier " + ConversionProvenanceStore.storePath().toAbsolutePath()
+                    + " est illisible : aucun pack n'est reconnu comme un des vôtres tant qu'il n'est pas"
+                    + " réparé, déplacé ou supprimé.");
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Whether the editor may open the archive {@code name}: not an official pack, not a pack marked
+     * as possibly coming from a Lunii, and not the conversion output of a pack not proven to be the
+     * user's. Opening it and saving it under a new UUID (the editor renews UUIDs) would otherwise
+     * make an archive of an official pack that looks like one of the user's.
+     */
+    public boolean mayOpenInEditor(String name) {
+        return !editorRefusal(name).isPresent();
+    }
+
+    /** Why the editor may not open the archive {@code name} (see {@link #mayOpenInEditor}), in French. */
+    public Optional<String> editorRefusal(String name) {
+        Optional<String> declared = declaredUuid(name);
+        if (!declared.isPresent()) {
+            return Optional.empty();
+        }
+        String uuid = declared.get();
+        String refused = "Le pack " + name + " est un pack officiel, ou peut venir d'une Lunii :"
+                + " STUdio ne l'ouvre pas dans l'éditeur.";
+        if (isOfficialPack(uuid)) {
+            return Optional.of(refused);
+        }
+        if (!deviceSourced.isReadable()) {
+            // Fail-closed: whether the pack is marked cannot be told
+            return Optional.of("Le fichier " + DeviceSourcedPackStore.storePath().toAbsolutePath()
+                    + " est illisible : STUdio n'ouvre pas " + name + " dans l'éditeur tant qu'il n'est pas"
+                    + " réparé, déplacé ou supprimé.");
+        }
+        if (deviceSourced.isMarkedOrUnreadable(uuid)) {
+            return Optional.of(refused);
+        }
+        return !isConversionName(name) || isKnownHomemadePack(uuid) ? Optional.empty() : Optional.of(refused);
+    }
+
+    // ------------------------------------------------- library check at startup
+
+    private volatile boolean libraryCheckPending;
+    private volatile boolean libraryCheckFailed;
+
+    /** Delay before the library check is tried again after a failure. */
+    static final long LIBRARY_CHECK_RETRY_MS = 60_000;
+
+    /**
+     * Whether transfers must wait for the library check (running, or failed). In French, why. After
+     * a failure, asking starts the check again.
+     */
+    public Optional<String> libraryCheckProblem() {
+        if (libraryCheckFailed) {
+            startLibraryCheck();
+            Optional<String> file = proofDatabaseProblem();
+            return Optional.of(file.orElse("La vérification de la bibliothèque a échoué (voir le journal) : par"
+                    + " précaution, aucun pack n'est transféré.") + " Elle est relancée : réessayez dans un instant.");
+        }
+        if (libraryCheckPending) {
+            return Optional.of("Vérification de la bibliothèque en cours : réessayez dans un instant.");
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Starts the library check in the background (never blocks the caller); transfers are refused
+     * until it is done. See {@link #checkLibrary()}.
+     */
+    public synchronized void startLibraryCheck() {
+        if (libraryCheckPending) {
+            return;
+        }
+        libraryCheckPending = true;
+        Thread thread = new Thread(() -> {
+            try {
+                checkLibrary();
+                libraryCheckFailed = false;
+            } catch (IOException | RuntimeException e) {
+                LOGGER.error("The library check failed: transfers are refused until it succeeds", e);
+                libraryCheckFailed = true;
+                scheduleLibraryCheckRetry();
+            } finally {
+                libraryCheckPending = false;
+            }
+        }, "library-check");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    /**
+     * Marks the packs of the library that may come from a Lunii, as found before the marks existed
+     * (idempotent: an entry already digested, unchanged since, is not read again):
+     * <ul>
+     *   <li>every raw or FS pack whose name is not a conversion output's: extracted from a Lunii,
+     *   or uploaded as such;</li>
+     *   <li>every conversion output the ledger records as converted from a raw or FS pack;</li>
+     *   <li>every conversion output the ledger does not know, when the library also holds a raw or
+     *   FS pack (not a conversion output) of the same UUID.</li>
+     * </ul>
+     * Archives of the user's own and their conversions (recorded from an archive, or alone with
+     * their UUID) are left alone, and so is any pack proven to be the user's (same exception as the
+     * other marks). The price: an archive renamed from the conversion of an extracted official pack
+     * before any of this existed passes for a proof; the official database still refuses that pack
+     * if it lists it.
+     *
+     * @throws IOException if a mark could not be stored
+     */
+    private void scheduleLibraryCheckRetry() {
+        Thread retry = new Thread(() -> {
+            try {
+                Thread.sleep(LIBRARY_CHECK_RETRY_MS);
+            } catch (InterruptedException e) {
+                return;
+            }
+            if (libraryCheckFailed) {
+                startLibraryCheck();
+            }
+        }, "library-check-retry");
+        retry.setDaemon(true);
+        retry.start();
+    }
+
+    void checkLibrary() throws IOException {
+        // Nothing is marked while the ledger cannot be read (the check fails, and is tried again later)
+        requireReadableLedger();
+        Path root = Paths.get(libraryPath());
+        if (!Files.isDirectory(root)) {
+            return;
+        }
+        List<Path> entries;
+        try (Stream<Path> paths = Files.list(root)) {
+            entries = paths.filter(path -> !isStagingEntry(path)).filter(LibraryService::isPlainEntry)
+                    .collect(Collectors.toList());
+        }
+        Map<Path, String> uuids = new HashMap<>();
+        Set<String> rawOrFsUuids = new HashSet<>();
+        for (Path entry : entries) {
+            Optional<String> uuid = readPackFileCached(entry).map(pack -> pack.getMetadata().getUuid());
+            if (!uuid.isPresent()) {
+                continue;
+            }
+            String lower = uuid.get().toLowerCase(Locale.ROOT);
+            uuids.put(entry, lower);
+            if (!entry.getFileName().toString().endsWith(".zip") && !isConversionName(entry.getFileName().toString())) {
+                rawOrFsUuids.add(lower);
+            }
+        }
+        for (Map.Entry<Path, String> e : uuids.entrySet()) {
+            String name = e.getKey().getFileName().toString();
+            boolean mark;
+            if (!isConversionName(name)) {
+                mark = !name.endsWith(".zip");
+            } else {
+                Optional<ConversionRecord> record = provenanceStore.find(name);
+                mark = record.isPresent()
+                        ? record.get().getSourceName() == null || !record.get().getSourceName().endsWith(".zip")
+                        : rawOrFsUuids.contains(e.getValue());
+            }
+            // Same exception as the other marks: a pack proven to be the user's (an archive of it made
+            // with STUdio) is not marked, or the user's own pack extracted once would be blocked for good
+            if (mark) {
+                // Read again for each mark: the ledger may become unreadable meanwhile
+                requireReadableLedger();
+            }
+            if (mark && !isKnownHomemadePack(e.getValue())) {
+                markEntry(e.getKey(), e.getValue(), DeviceSourcedPackStore.Reason.LIBRARY_CHECK);
+            }
+        }
+    }
+
+    /** Marks the pack {@code uuid} of a library entry, with the digests of its assets (once per content). */
+    /**
+     * Refuses to go on while the provenance ledger cannot be read: no archive is a proof then, and a
+     * mark set now (never removed) would block for good packs that do have their archive.
+     */
+    private void requireReadableLedger() {
+        if (provenanceStore.state() == ConversionProvenanceStore.State.INVALID) {
+            throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                    proofDatabaseProblem().orElse("Le fichier " + ConversionProvenanceStore.storePath().toAbsolutePath()
+                            + " est illisible.") + " L'opération est refusée.");
+        }
+    }
+
+    private void markEntry(Path entry, String uuid, DeviceSourcedPackStore.Reason reason) throws IOException {
+        String name = entry.getFileName().toString();
+        Optional<String> signature = statSignature(entry);
+        if (signature.isPresent() && deviceSourced.isMarkedOrUnreadable(uuid)
+                && signature.equals(deviceSourced.scannedSignature(name))) {
+            return;
+        }
+        Set<String> digests;
+        try {
+            digests = PackAssetDigests.of(entry);
+        } catch (IOException | RuntimeException e) {
+            // The UUID is marked all the same: its content just cannot be recognised elsewhere
+            LOGGER.warn("Cannot digest the assets of " + entry + ": only its UUID is marked", e);
+            digests = new HashSet<>();
+        }
+        deviceSourced.mark(uuid, reason, digests, signature.isPresent() ? name : null, signature.orElse(null));
+    }
+
+    /**
+     * Marks {@code uuid} as possibly coming from a Lunii, unless it is proven to be the user's right
+     * now: the mark is never removed, and the user's own pack copied back from their Lunii, or
+     * converted from its FS version, must not be blocked for good.
+     *
+     * @throws IOException if the mark could not be stored
+     */
+    void markUnlessHomemade(String uuid, DeviceSourcedPackStore.Reason reason) throws IOException {
+        markUnlessHomemade(uuid, reason, new Path[0]);
+    }
+
+    /** Same, with the digests of the assets of these packs (library entries or temporary outputs). */
+    private void markUnlessHomemade(String uuid, DeviceSourcedPackStore.Reason reason, Path... packs) throws IOException {
+        requireReadableLedger();
+        if (isKnownHomemadePack(uuid)) {
+            return;
+        }
+        Set<String> digests = new HashSet<>();
+        for (Path pack : packs) {
+            try {
+                digests.addAll(PackAssetDigests.of(pack));
+            } catch (IOException | RuntimeException e) {
+                LOGGER.warn("Cannot digest the assets of " + pack + ": only its UUID is marked", e);
+            }
+        }
+        deviceSourced.mark(uuid, reason, digests, null, null);
+    }
+
+    /**
+     * Called when a pack is about to be copied from a Lunii into the library. The extraction guard
+     * only lets through packs proven to be the user's, which are not marked: this is the safety net
+     * for a pack that would go through otherwise.
+     *
+     * @throws IOException if the mark could not be stored: the extraction must not go on
+     */
+    public void recordExtractedFromDevice(String uuid) throws IOException {
+        markUnlessHomemade(uuid, DeviceSourcedPackStore.Reason.EXTRACTED);
+    }
+
+    /** Whether the provenance ledger records this archive as converted from a raw or FS pack. */
+    private boolean convertedFromAnotherFormat(Path archive) {
+        return provenanceStore.find(archive.getFileName().toString())
+                .map(record -> record.getSourceName() == null
+                        || !record.getSourceName().toLowerCase(Locale.ROOT).endsWith(".zip"))
+                .orElse(false);
     }
 
     public Optional<Path> libraryEntry(String name) {
@@ -1018,46 +1462,55 @@ public class LibraryService {
      * to the caller exactly as it would have been. The artefact simply stays unproven, which is what
      * every artefact in every library is today.
      */
-    private void recordProvenance(String packPath, Optional<String> sourceBefore, Path artifact,
-                                  String targetFormat) {
+    private Optional<ConversionRecord> recordProvenance(String packPath, Optional<String> sourceBefore, Path artifact,
+                                                        String targetFormat) {
         try {
             String artifactName = artifact.getFileName().toString();
             if (!sourceBefore.isPresent()) {
                 LOGGER.warn("No provenance for `" + artifactName + "`: the source could not be read"
                         + " before the conversion");
-                return;
+                return Optional.empty();
             }
             Optional<String> sourceAfter = sourceIdentity(packPath);
             if (!sourceAfter.isPresent()) {
                 LOGGER.warn("No provenance for `" + artifactName + "`: the source could not be read"
                         + " after the conversion");
-                return;
+                return Optional.empty();
             }
             if (!sourceBefore.get().equals(sourceAfter.get())) {
                 LOGGER.warn("No provenance for `" + artifactName + "`: `" + packPath + "` changed"
                         + " while it was being converted, so it cannot be recorded as the source");
-                return;
+                return Optional.empty();
             }
             ConversionRecord.Kind artifactKind = kindOf(artifactName);
-            Optional<String> artifactDigest = artifactKind == ConversionRecord.Kind.FILE
-                    ? contentDigest.ofFile(artifact)
-                    : contentDigest.ofTree(artifact);
+            Optional<String> artifactDigest = identityOf(artifact);
             if (!artifactDigest.isPresent()) {
                 LOGGER.warn("No provenance for `" + artifactName + "`: the artefact could not be read");
-                return;
+                return Optional.empty();
             }
             BasicFileAttributes attributes = Files.readAttributes(artifact, BasicFileAttributes.class);
             ConversionRecord record = new ConversionRecord(
                     Paths.get(packPath).getFileName().toString(), kindOf(packPath), sourceBefore.get(),
                     artifactKind, artifactDigest.get(), attributes.size(),
                     attributes.lastModifiedTime().toMillis(), targetFormat, ApplicationVersion.current());
-            if (!provenanceStore.record(artifactName, record)) {
-                LOGGER.warn("No provenance for `" + artifactName + "`: the provenance database could"
-                        + " not be written. The conversion is unaffected.");
+            // A few attempts: Windows may hold the ledger for a moment (indexer, antivirus)
+            for (int attempt = 1; attempt <= 3; attempt++) {
+                if (provenanceStore.record(artifactName, record)) {
+                    return Optional.of(record);
+                }
+                if (attempt < 3) {
+                    Thread.sleep(100);
+                }
             }
+            LOGGER.warn("No provenance for `" + artifactName + "`: the provenance database could"
+                    + " not be written");
+            return Optional.empty();
         } catch (IOException | RuntimeException e) {
-            // Describing a conversion must never undo one.
             LOGGER.error("Failed to record provenance for a conversion that succeeded", e);
+            return Optional.empty();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Optional.empty();
         }
     }
 
@@ -1075,6 +1528,9 @@ public class LibraryService {
                 // A pack folder of the same name: not something an upload replaces.
                 return false;
             }
+            // Before it is in the library: an archive holding the content of a pack that may come
+            // from a Lunii (the editor saves it under a new UUID) is no proof of a pack of the user's
+            markIfDeviceSourced(src.toPath(), destPath);
             // Replaced in one step: deleting first lost the existing pack if the move then failed
             // (full disk, process killed). Across volumes, copied beside it under a staging name.
             try {
@@ -1093,6 +1549,61 @@ public class LibraryService {
         } catch (IOException e) {
             LOGGER.error("Failed to add pack to local library", e);
             throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Marks the pack of a file entering the library when it may come from a Lunii: an archive that
+     * shares an asset with a marked pack, a raw pack not proven to be the user's.
+     *
+     * @throws IOException if a mark could not be stored: the file must not enter the library
+     */
+    /** The digests of the assets of an archive. Package-private and overridable: a test counts them. */
+    Set<String> archiveAssetDigests(Path archive) throws IOException {
+        return PackAssetDigests.ofArchive(archive);
+    }
+
+    private void markIfDeviceSourced(Path file, String name) throws IOException {
+        if (name.endsWith(".zip")) {
+            if (!deviceSourced.isReadable() || !deviceSourced.hasMarkedAssets()) {
+                // Nothing is proven while the marks cannot be read, and nothing can be recognised
+                // while no content is marked: the archive is not read at all
+                return;
+            }
+            Set<String> digests;
+            try {
+                digests = archiveAssetDigests(file);
+            } catch (IOException | RuntimeException e) {
+                LOGGER.warn("Cannot digest the assets of the archive added as " + name, e);
+                return;
+            }
+            if (!deviceSourced.sharesAssetWithMarked(digests)) {
+                return;
+            }
+            StoryPackMetadata metadata;
+            try {
+                metadata = new ArchiveStoryPackReader().readMetadata(file);
+            } catch (IOException | RuntimeException e) {
+                metadata = null;
+            }
+            if (metadata == null || metadata.getUuid() == null) {
+                // Its UUID cannot be marked: the archive does not enter the library
+                throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                        "L'archive " + name + " contient des fichiers d'un pack qui peut venir d'une Lunii, et son"
+                                + " identifiant ne peut pas être lu : elle n'est pas ajoutée à la bibliothèque.");
+            }
+            LOGGER.warn("The archive added as " + name + " holds the content of a pack that may come from a Lunii");
+            deviceSourced.mark(metadata.getUuid(), DeviceSourcedPackStore.Reason.SAME_CONTENT, digests, null, null);
+        } else if (name.endsWith(".pack")) {
+            StoryPackMetadata metadata;
+            try (FileInputStream fis = new FileInputStream(file.toFile())) {
+                metadata = new BinaryStoryPackReader().readMetadata(fis);
+            } catch (IOException | RuntimeException e) {
+                return;
+            }
+            if (metadata != null && metadata.getUuid() != null) {
+                markUnlessHomemade(metadata.getUuid(), DeviceSourcedPackStore.Reason.UPLOADED_RAW);
+            }
         }
     }
 
@@ -1208,7 +1719,9 @@ public class LibraryService {
         if (!Files.isDirectory(root)) {
             return new ArrayList<>();
         }
-        try (Stream<Path> paths = Files.walk(root, 1)) {
+        // Files.list, not Files.walk: walk stats each entry and fails as a whole when one is
+        // removed meanwhile (see packs())
+        try (Stream<Path> paths = Files.list(root)) {
             entries = paths
                     .filter(path -> !path.equals(root))
                     .filter(path -> !isStagingEntry(path))
@@ -1629,12 +2142,14 @@ public class LibraryService {
             json.put("size", pack.getSize());
         }
         return databaseMetadataService.getPackMetadata(pack.getMetadata().getUuid())
-                .map(metadata -> json
-                        .put("title", metadata.getTitle())
-                        .put("description", metadata.getDescription())
-                        .put("image", metadata.getThumbnail())
-                        .put("official", metadata.isOfficial())
-                )
+                .map(metadata -> {
+                    // Only what the database knows: an incomplete official entry must not erase
+                    // the title read from the pack itself
+                    Optional.ofNullable(metadata.getTitle()).ifPresent(title -> json.put("title", title));
+                    Optional.ofNullable(metadata.getDescription()).ifPresent(desc -> json.put("description", desc));
+                    Optional.ofNullable(metadata.getThumbnail()).ifPresent(image -> json.put("image", image));
+                    return json.put("official", metadata.isOfficial());
+                })
                 .orElse(json);
     }
 

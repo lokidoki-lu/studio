@@ -110,6 +110,25 @@ const change = (element, value, property = 'value') => {
 
 describe('PackLibrarySimple', () => {
 
+    it('shows a loader, not "empty library", until the library has been read', () => {
+        renderSimple({device: DEVICE, library: {...LIBRARY, packs: [], loading: true}, ...actions()});
+        expect(container.textContent).toContain('library.local.loading');
+        expect(container.textContent).not.toContain('simpleLibrary.library.empty');
+        renderSimple({device: DEVICE, library: {...LIBRARY, packs: [], loading: false}, ...actions()});
+        expect(container.textContent).not.toContain('library.local.loading');
+        expect(container.textContent).toContain('simpleLibrary.library.empty');
+    });
+
+    it('shows a loader, not "no story", while the story list of a Lunii just plugged is read', () => {
+        renderSimple({device: {...DEVICE, packs: [], packsLoading: true}, library: LIBRARY, ...actions()});
+        expect(container.querySelector('.device-loading')).not.toBeNull();
+        expect(container.textContent).toContain('library.device.loading');
+        expect(container.textContent).not.toContain('library.device.empty');
+        renderSimple({device: {...DEVICE, packs: [], packsLoading: false}, library: LIBRARY, ...actions()});
+        expect(container.querySelector('.device-loading')).toBeNull();
+        expect(container.textContent).toContain('library.device.empty');
+    });
+
     it('shows one card per pack, sorted by title, with its description and size', () => {
         renderSimple({device: DEVICE, library: LIBRARY, ...actions()});
         expect(cards().map(c => c.querySelector('.simple-title').textContent)).toEqual(['Aladdin', 'Bambi', 'Les Dalton']);

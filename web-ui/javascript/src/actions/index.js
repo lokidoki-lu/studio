@@ -15,7 +15,7 @@ import {SUBSCRIBED, CHANNEL_OPEN} from '../services/eventBusChannel';
 import {fetchLibraryInfos, fetchLibraryPacks, downloadFromLibrary, fetchLibraryPackEntry, uploadToLibrary, convertInLibrary, removeFromLibrary} from '../services/library';
 import {fetchEvergreenInfos, fetchEvergreenLatestRelease, fetchEvergreenAnnounce} from '../services/evergreen';
 import {generateFilename, sortPacks} from "../utils/packs";
-import {readFromArchive, readFromLibrary, adoptLibraryAssets, discardLibraryAssets} from "../utils/reader";
+import {readFromArchive, readFromLibrary, adoptLibraryAssets, discardLibraryAssets, releaseLibraryAssets} from "../utils/reader";
 import {httpErrorMessage} from "../utils/fetch";
 import {updateFromLibrary} from "../services/deviceRepair";
 import {needsRepairOffer} from "../utils/deviceRepairEvents";
@@ -38,15 +38,21 @@ export const actionLoadLibrary = (t) => {
                     })
                     .catch(e => {
                         console.error('failed to fetch library packs', e);
+                        dispatch(libraryLoadFailed());
                         toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.fetchingFailed')}</>} error={e} />, autoClose: false });
                     });
             })
             .catch(e => {
                 console.error('failed to fetch library infos', e);
+                dispatch(libraryLoadFailed());
                 toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.loadingFailed')}</>} error={e} />, autoClose: false });
             });
     }
 };
+
+export const libraryLoadFailed = () => ({
+    type: 'LIBRARY_LOAD_FAILED'
+});
 
 export const setLibrary = (metadata, packs) => ({
     type: 'SET_LIBRARY',
@@ -89,7 +95,8 @@ export const actionDevicePlugged = (metadata, t) => {
     return dispatch => mutex.acquire()
         .then(
             release => {
-            dispatch(devicePlugged(metadata));
+            // The story list is read next: until then the device shows a loader, not "no story"
+            dispatch(devicePlugged(metadata, true));
 
             console.log("fetching device packs...");
             let toastId = toast(t('toasts.device.fetching'), { autoClose: false });
@@ -100,6 +107,7 @@ export const actionDevicePlugged = (metadata, t) => {
                 })
                 .catch(e => {
                     console.error('failed to fetch device packs', e);
+                    dispatch(devicePacksFailed());
                     toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.device.fetchingFailed')}</>} error={e} />, autoClose: false });
                 })
                 .finally(() => {
@@ -614,11 +622,27 @@ export const actionDownloadFromLibrary = (uuid, path, t) => {
     }
 };
 
+// Each pack read for the editor (archive or library) gets a number: only the last one asked for is
+// shown, whichever finishes first
+let libraryLoadSequence = 0;
+
 export const actionLoadPackInEditor = (packData, filename, t) => {
     return dispatch => {
         let toastId = toast(t('toasts.editor.loading'), { autoClose: false });
-        readFromArchive(packData)
+        const sequence = ++libraryLoadSequence;
+        return readFromArchive(packData)
             .then(loadedModel => {
+                if (!loadedModel) {
+                    // Never install an empty model: the editor would go on showing the previous pack under this name
+                    throw new Error('No story pack could be read from ' + filename);
+                }
+                if (sequence !== libraryLoadSequence) {
+                    // Another pack was asked for since: this one is not shown
+                    toast.dismiss(toastId);
+                    return;
+                }
+                // The pack shown no longer comes from the library: its assets can go
+                releaseLibraryAssets();
                 toast.update(toastId, { type: toast.TYPE.SUCCESS, render: t('toasts.editor.loaded'), autoClose: 5000});
                 // Set loaded model in editor
                 dispatch(setEditorDiagram(loadedModel, filename));
@@ -627,14 +651,17 @@ export const actionLoadPackInEditor = (packData, filename, t) => {
             })
             .catch(e => {
                 console.error('failed to load story pack', e);
+                if (sequence !== libraryLoadSequence) {
+                    // Another pack was asked for since: this abandoned read says nothing
+                    toast.dismiss(toastId);
+                    return;
+                }
                 toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.editor.loadingFailed')}</>} error={e} />, autoClose: false });
             });
     }
 };
 
 // A library pack is read entry by entry on the server: no download of the whole archive, no unzipping in the browser
-// Each library read gets a number: only the last one asked for is shown, whichever finishes first
-let libraryLoadSequence = 0;
 
 export const actionLoadLibraryPackInEditor = (path, t) => {
     return dispatch => {
@@ -666,6 +693,9 @@ export const actionLoadLibraryPackInEditor = (path, t) => {
 
 export const actionCreatePackInEditor = (t) => {
     return dispatch => {
+        // A pack read still in flight must not replace the new one
+        ++libraryLoadSequence;
+        releaseLibraryAssets();
         // Set empty model in editor
         let model = new PackDiagramModel();
         dispatch(setEditorDiagram(model));
@@ -679,26 +709,40 @@ export const loadSample = () => import(/* webpackChunkName: "sample" */ "../util
     .then(module => module.simplifiedSample());
 
 export const actionLoadSampleInEditor = (t, load = loadSample) => {
-    return dispatch => load()
-        .then(model => {
-            // Set sample model in editor
-            dispatch(setEditorDiagram(model, generateFilename(model)));
-            // Show editor
-            dispatch(showEditor());
-        })
-        .catch(e => {
-            console.error('failed to load the sample pack', e);
-            toast(<IssueReportToast content={<>{t('toasts.editor.loadingFailed')}</>} error={e} />, { type: toast.TYPE.ERROR, autoClose: false });
-        });
+    return dispatch => {
+        const sequence = ++libraryLoadSequence;
+        return load()
+            .then(model => {
+                if (sequence !== libraryLoadSequence) {
+                    // Another pack was asked for since
+                    return;
+                }
+                releaseLibraryAssets();
+                // Set sample model in editor
+                dispatch(setEditorDiagram(model, generateFilename(model)));
+                // Show editor
+                dispatch(showEditor());
+            })
+            .catch(e => {
+                console.error('failed to load the sample pack', e);
+                toast(<IssueReportToast content={<>{t('toasts.editor.loadingFailed')}</>} error={e} />, { type: toast.TYPE.ERROR, autoClose: false });
+            });
+    };
 };
 
+/**
+ * One pack file into the library. Resolves with true once the library holds it, false otherwise (the
+ * toast then says why): it never rejects, so callers that ignore the outcome need no catch.
+ */
 export const actionUploadToLibrary = (uuid, path, packData, t) => {
     return dispatch => {
         let toastId = toast(t('toasts.library.uploading'), { autoClose: false });
         return uploadToLibrary(uuid, path, packData,
             progressEvent => {
                 if (progressEvent.lengthComputable) {
-                    let progress = (progressEvent.loaded / progressEvent.total);
+                    // Capped below 1: a controlled progress bar that reaches 1 closes its toast, and the
+                    // server only answers (success or refusal) once it has written the whole pack.
+                    let progress = Math.min(progressEvent.loaded / progressEvent.total, 0.99);
                     console.log(`Uploaded ${progressEvent.loaded} of ${progressEvent.total}: ${progress}`);
                     toast.update(toastId, {progress: progress, autoClose: false});
                 }
@@ -713,13 +757,16 @@ export const actionUploadToLibrary = (uuid, path, packData, t) => {
                     });
                     // Refresh device metadata and packs list
                     dispatch(actionRefreshLibrary(t));
+                    return true;
                 } else {
                     toast.update(toastId, { progress: null, type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.uploadingFailed')}</>} />, autoClose: false });
+                    return false;
                 }
             })
             .catch(e => {
                 console.error('failed to upload pack to library', e);
                 toast.update(toastId, { progress: null, type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.uploadingFailed')}</>} error={e} showDetails />, autoClose: false });
+                return false;
             });
     }
 };
@@ -898,9 +945,14 @@ export const actionLoadEvergreen = (announceOptOut, t) => {
     }
 };
 
-export const devicePlugged = (metadata) => ({
+export const devicePlugged = (metadata, loadingPacks = false) => ({
     type: 'DEVICE_PLUGGED',
-    metadata
+    metadata,
+    loadingPacks
+});
+
+export const devicePacksFailed = () => ({
+    type: 'DEVICE_PACKS_FAILED'
 });
 
 export const deviceUnplugged = () => ({

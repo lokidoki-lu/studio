@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import DeviceLoading from './DeviceLoading';
 import { connect } from 'react-redux';
 import {withTranslation} from "react-i18next";
 
@@ -161,8 +162,9 @@ export class PackLibrarySimple extends PackLibrary {
             </>}
             {device.metadata.error && <p className="simple-note simple-error">{t('simpleLibrary.device.error')}</p>}
             {this.renderDeviceRepair('simple-device-repair')}
-            {device.packs.length === 0 && <p className="simple-empty">{t('library.device.empty')}</p>}
-            {device.packs.length > 0 && <ol className="simple-device-list">
+            {device.packsLoading && <DeviceLoading />}
+            {!device.packsLoading && device.packs.length === 0 && <p className="simple-empty">{t('library.device.empty')}</p>}
+            {!device.packsLoading && device.packs.length > 0 && <ol className="simple-device-list">
                 {device.packs.map((pack, idx) => {
                     const title = packTitle(pack, pack.uuid);
                     return <li key={pack.uuid} className="simple-device-pack">
@@ -245,6 +247,7 @@ export class PackLibrarySimple extends PackLibrary {
     render() {
         const { t } = this.props;
         const groups = (this.state.library && this.state.library.packs) || [];
+        const libraryLoading = !!(this.state.library && this.state.library.loading);
         const items = simpleItems(groups, this.state.device.packs, {
             query: this.state.query, sort: this.state.sort, notOnDevice: this.state.notOnDevice,
             locale: this.props.i18n && this.props.i18n.language
@@ -298,7 +301,8 @@ export class PackLibrarySimple extends PackLibrary {
                     </div>
                     {this.renderSendQueue(items.map(item => item.uuid))}
                     <div className="simple-scroll">
-                        {groups.length === 0 && <p className="simple-empty">{t('simpleLibrary.library.empty')}</p>}
+                        {libraryLoading && <DeviceLoading message="library.local.loading" />}
+                        {!libraryLoading && groups.length === 0 && <p className="simple-empty">{t('simpleLibrary.library.empty')}</p>}
                         {groups.length > 0 && items.length === 0 && <p className="simple-empty">{t('library.local.noMatch')}</p>}
                         {items.length > 0 && <ul className="simple-grid">{items.map(item => this.renderCard(item))}</ul>}
                     </div>

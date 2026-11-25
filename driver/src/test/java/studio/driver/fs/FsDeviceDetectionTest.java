@@ -284,6 +284,77 @@ class FsDeviceDetectionTest {
     }
 
     @Test
+    @DisplayName("a second Lunii plugged next to the published one gets its own partition, never the first one's")
+    void secondDeviceDoesNotTakeTheFirstOnesPartition(@org.junit.jupiter.api.io.TempDir java.nio.file.Path root)
+            throws java.io.IOException {
+        String mountA = java.nio.file.Files.createDirectory(root.resolve("A")).toString();
+        String mountB = java.nio.file.Files.createDirectory(root.resolve("B")).toString();
+        Device first = deviceWithPointer(0x1000L);
+        Device second = deviceWithPointer(0x2000L);
+        installLocator(locatorReturning(mountA, null));
+        driver.handleDevicePlugged(first);
+        assertEquals(mountA, driver.getPartitionMountPoint());
+
+        // B is seen on the bus before its volume is mounted: the first scans only list A's.
+        java.util.concurrent.atomic.AtomicInteger scans = new java.util.concurrent.atomic.AtomicInteger();
+        installLocator(new DevicePartitionLocator(
+                () -> scans.getAndIncrement() < 2 ? List.of(mountA) : List.of(mountA, mountB),
+                path -> true, millis -> true, 0L, 10));
+        driver.handleDevicePlugged(second);
+
+        assertEquals(mountB, driver.getPartitionMountPoint(), "B must not be published on A's partition");
+        assertSame(second, get(driver, "device"));
+        assertEquals(2, pluggedEvents.size());
+    }
+
+    /** Publishes {@code first} on {@code mountA}, then plugs {@code second} while only that volume is listed. */
+    private void plugSecondWhileOnlyFirstVolumeIsListed(Device first, Device second, String mountA,
+                                                        String usbSerial, String volumeSerial) {
+        installLocator(locatorReturning(mountA, null));
+        driver.handleDevicePlugged(first);
+        set(driver, "usbSerialReader", (java.util.function.Function<Device, Optional<String>>) d -> Optional.ofNullable(usbSerial));
+        set(driver, "volumeSerialReader", (java.util.function.Function<String, String>) m -> volumeSerial);
+        installLocator(new DevicePartitionLocator(() -> List.of(mountA), path -> true, millis -> true, 0L, 3));
+        driver.handleDevicePlugged(second);
+    }
+
+    @Test
+    @DisplayName("the same Lunii enumerated again under a new libusb object keeps its partition (same serial)")
+    void sameSerialReenumeratedIsNotSkipped(@org.junit.jupiter.api.io.TempDir java.nio.file.Path root) throws java.io.IOException {
+        String mountA = java.nio.file.Files.createDirectory(root.resolve("A")).toString();
+        Device again = deviceWithPointer(0x2000L);
+        plugSecondWhileOnlyFirstVolumeIsListed(deviceWithPointer(0x1000L), again, mountA, "SN1", " sn1 ");
+        assertEquals(mountA, driver.getPartitionMountPoint());
+        assertSame(again, get(driver, "device"));
+    }
+
+    @Test
+    @DisplayName("another Lunii (other serial, or none readable) never gets the published partition")
+    void otherOrUnknownSerialIsSkipped(@org.junit.jupiter.api.io.TempDir java.nio.file.Path root) throws java.io.IOException {
+        String mountA = java.nio.file.Files.createDirectory(root.resolve("A")).toString();
+        Device first = deviceWithPointer(0x1000L);
+        plugSecondWhileOnlyFirstVolumeIsListed(first, deviceWithPointer(0x2000L), mountA, "SN2", "SN1");
+        assertSame(first, get(driver, "device"));
+        assertEquals(mountA, driver.getPartitionMountPoint());
+
+        plugSecondWhileOnlyFirstVolumeIsListed(first, deviceWithPointer(0x3000L), mountA, null, "SN1");
+        assertSame(first, get(driver, "device"));
+        plugSecondWhileOnlyFirstVolumeIsListed(first, deviceWithPointer(0x4000L), mountA, "SN1", null);
+        assertSame(first, get(driver, "device"));
+    }
+
+    @Test
+    @DisplayName("the same Lunii plugged again is still found on its partition")
+    void sameDeviceAgainIsNotExcluded() {
+        Device device = deviceWithPointer(0x1000L);
+        installLocator(new DevicePartitionLocator(() -> List.of("D:\\no-such-mount"), path -> true, millis -> true, 0L, 1));
+        driver.handleDevicePlugged(device);
+        driver.handleDevicePlugged(device);
+        assertEquals("D:\\no-such-mount", driver.getPartitionMountPoint());
+        assertEquals(2, pluggedEvents.size());
+    }
+
+    @Test
     @DisplayName("a search superseded by a newer one for the same device does not publish")
     void supersededSearchDoesNotPublish() {
         Device device = deviceWithPointer(0x1000L);

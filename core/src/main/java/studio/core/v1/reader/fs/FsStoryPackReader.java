@@ -193,8 +193,10 @@ public class FsStoryPackReader {
                 boolean autoplay = bb.getShort() != 0;
 
                 // Transition will be updated later with the actual action nodes
+                // A selected option index of -1 is a random option (as in the archive format): the
+                // transition exists as soon as it points to an action node, see FsStoryPackWriter.
                 Transition okTransition = null;
-                if (okTransitionActionNodeIndexInLI != -1 && okTransitionNumberOfOptions != -1 && okTransitionSelectedOptionIndex != -1) {
+                if (okTransitionActionNodeIndexInLI != -1 && okTransitionNumberOfOptions != -1) {
                     if (!actionNodesOptionsCount.containsKey(okTransitionActionNodeIndexInLI)) {
                         actionNodesOptionsCount.put(okTransitionActionNodeIndexInLI, okTransitionNumberOfOptions);
                     }
@@ -204,7 +206,7 @@ public class FsStoryPackReader {
                     transitionsWithAction.put(okTransitionActionNodeIndexInLI, twa);
                 }
                 Transition homeTransition = null;
-                if (homeTransitionActionNodeIndexInLI != -1 && homeTransitionNumberOfOptions != -1 && homeTransitionSelectedOptionIndex != -1) {
+                if (homeTransitionActionNodeIndexInLI != -1 && homeTransitionNumberOfOptions != -1) {
                     if (!actionNodesOptionsCount.containsKey(homeTransitionActionNodeIndexInLI)) {
                         actionNodesOptionsCount.put(homeTransitionActionNodeIndexInLI, homeTransitionNumberOfOptions);
                     }
@@ -274,7 +276,14 @@ public class FsStoryPackReader {
             }
             // Update action on transitions referencing this sector
             ActionNode actionNode = new ActionNode(options, null);
-            transitionsWithAction.get(offset).forEach(transition -> transition.setActionNode(actionNode));
+            for (Transition transition : transitionsWithAction.get(offset)) {
+                // -1 stands for a random option, like in ArchiveStoryPackReader
+                if (transition.getOptionIndex() < -1 || transition.getOptionIndex() >= count) {
+                    throw new IOException("Invalid FS story pack: a transition selects option " + transition.getOptionIndex()
+                            + " of the action node at index " + offset + ", which has " + count + " option(s)");
+                }
+                transition.setActionNode(actionNode);
+            }
         }
 
         return new StoryPack(uuid, factoryDisabled, version, List.copyOf(stageNodes.values()), null, nightModeAvailable);

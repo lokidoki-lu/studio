@@ -38,7 +38,7 @@ const LIBRARY = {
     metadata: {path: '/library'},
     packs: [
         pack('u-a', 'Alpha', 'a.zip', 'archive'),
-        pack('u-b', 'Beta', 'u-b.converted_1', 'fs'),
+        pack('u-b', 'Beta', 'u-b.fs', 'fs'),
         pack('u-off', 'Officiel', 'off.zip', 'archive', {official: true}),
         pack('u-on', 'Déjà là', 'on.zip', 'archive')
     ]
@@ -130,7 +130,7 @@ describe('sending a selection (simplified view)', () => {
 
         expect(bar().textContent).toContain('sendQueue.selection {"count":4}');
         // Only what would be sent is estimated: Alpha (to convert) and Beta (already converted)
-        expect(props.estimateOnDevice).toHaveBeenLastCalledWith(['a.zip', 'u-b.converted_1'], 'fs');
+        expect(props.estimateOnDevice).toHaveBeenLastCalledWith(['a.zip', 'u-b.fs'], 'fs');
         expect(bar().textContent).toContain('spaceEstimate.summary {"required":"libraryPurge.units.mb {\\"value\\":\\"2\\"}"');
         expect(card('Alpha').classList.contains('send-selected')).toBe(true);
 
@@ -140,7 +140,7 @@ describe('sending a selection (simplified view)', () => {
         // Alpha converted then transferred, Beta transferred as it is, one at a time
         expect(props.convertPackInLibrary).toHaveBeenCalledTimes(1);
         expect(props.convertPackInLibrary).toHaveBeenCalledWith('u-a', 'a.zip', 'fs', false, expect.anything());
-        expect(props.addFromLibrary.mock.calls.map(c => [c[0], c[1]])).toEqual([['u-a', 'u-a.converted_9'], ['u-b', 'u-b.converted_1']]);
+        expect(props.addFromLibrary.mock.calls.map(c => [c[0], c[1]])).toEqual([['u-a', 'u-a.converted_9'], ['u-b', 'u-b.fs']]);
 
         const summary = modal('send-queue-summary');
         expect(summary).not.toBeNull();
@@ -215,12 +215,56 @@ describe('sending a selection (simplified view)', () => {
 
         const ask = modal('ask-confirm-conversion');
         expect(ask.textContent).toContain('sendQueue.appliesToAll');
-        act(() => { button(ask, 'dialogs.library.askConfirmConversion.transfer').click(); });
+        // Sending the existing conversion is refused by the server: only converting again or leaving out
+        expect(button(ask, 'dialogs.library.askConfirmConversion.transfer')).toBeUndefined();
+        expect(Array.from(ask.querySelectorAll('.modal-footer button')).map(b => b.textContent.trim()))
+            .toEqual(['dialogs.library.askConfirmConversion.cancel', 'dialogs.library.askConfirmConversion.convert']);
+        act(() => { button(ask, 'dialogs.library.askConfirmConversion.convert').click(); });
         await flush(20);
 
+        // Asked once for both
+        expect(modal('ask-confirm-conversion')).toBeNull();
         expect(props.verifyConversion).toHaveBeenCalledTimes(2);
+        expect(props.convertPackInLibrary.mock.calls.map(c => c[0])).toEqual(['u-a', 'u-c']);
+        expect(props.addFromLibrary.mock.calls.map(c => c[1])).toEqual(['u-a.converted_9', 'u-c.converted_9']);
+    });
+
+    it('leaves out, with the reason, the packs whose conversion is unproven when not converted again', async () => {
+        const props = actions();
+        const both = (uuid, title) => ({uuid, packs: [
+            {uuid, path: uuid + '.converted_1', format: 'fs', title, size: 1},
+            {uuid, path: uuid + '.zip', format: 'archive', title, size: 1}
+        ]});
+        render(PackLibrarySimple, {device: device('fs'), library: {...LIBRARY, packs: [both('u-a', 'Alpha'), both('u-c', 'Gamma')]}, ...props});
+        act(() => { box('Alpha').click(); });
+        act(() => { box('Gamma').click(); });
+        await flush();
+        act(() => { button(bar(), 'sendQueue.send').click(); });
+        await flush();
+        act(() => { button(modal('ask-confirm-conversion'), 'dialogs.library.askConfirmConversion.cancel').click(); });
+        await flush(20);
+
         expect(props.convertPackInLibrary).not.toHaveBeenCalled();
-        expect(props.addFromLibrary.mock.calls.map(c => c[1])).toEqual(['u-a.converted_1', 'u-c.converted_1']);
+        expect(props.addFromLibrary).not.toHaveBeenCalled();
+        const summary = modal('send-queue-summary').textContent;
+        expect(summary).toContain('sendQueue.summary.counts {"sent":0,"skipped":2,"failed":0}');
+        expect(summary).toContain('sendQueue.reasons.declined');
+    });
+
+    it('does not try to send a converted folder whose source archive is gone, and says why in the summary', async () => {
+        const props = actions();
+        const orphan = pack('u-o', 'Orphelin', 'u-o.converted_1', 'fs');
+        render(PackLibrarySimple, {device: device('fs'), library: {...LIBRARY, packs: [orphan, pack('u-a', 'Alpha', 'a.zip', 'archive')]}, ...props});
+        act(() => { box('Orphelin').click(); });
+        act(() => { box('Alpha').click(); });
+        await flush();
+        act(() => { button(bar(), 'sendQueue.send').click(); });
+        await flush(20);
+
+        expect(props.addFromLibrary.mock.calls.map(c => c[0])).toEqual(['u-a']);
+        const summary = modal('send-queue-summary').textContent;
+        expect(summary).toContain('sendQueue.summary.counts {"sent":1,"skipped":1,"failed":0}');
+        expect(summary).toContain('sendQueue.reasons.sourceMissing');
     });
 
     it('refuses a selection that does not fit, before converting anything, and says by how much', async () => {
@@ -269,7 +313,7 @@ describe('sending a selection (simplified view)', () => {
         expect(refusal.textContent).toContain('spaceEstimate.refusal.sendAnywayExplain');
         act(() => { button(refusal, 'spaceEstimate.refusal.sendAnyway').click(); });
         await flush();
-        expect(props.addFromLibrary).toHaveBeenCalledWith('u-b', 'u-b.converted_1', 'fs', 'fs', expect.anything());
+        expect(props.addFromLibrary).toHaveBeenCalledWith('u-b', 'u-b.fs', 'fs', 'fs', expect.anything());
         expect(button(card('Beta'), 'simpleLibrary.card.send').disabled).toBe(false);
     });
 
@@ -300,7 +344,7 @@ describe('sending a selection (simplified view)', () => {
         act(() => { button(card('Beta'), 'simpleLibrary.card.send').click(); });
         await flush();
         expect(modal('space-refusal')).toBeNull();
-        expect(props.addFromLibrary).toHaveBeenCalledWith('u-b', 'u-b.converted_1', 'fs', 'fs', expect.anything());
+        expect(props.addFromLibrary).toHaveBeenCalledWith('u-b', 'u-b.fs', 'fs', 'fs', expect.anything());
     });
 
     it('tries a transfer again when the device is busy for a moment', async () => {
@@ -404,10 +448,10 @@ describe('questions asked during a send queue (B1)', () => {
 
         let ask = modal('ask-confirm-conversion');
         expect(ask.textContent).not.toContain('contentMismatch');
-        act(() => { button(ask, 'dialogs.library.askConfirmConversion.transfer').click(); });
+        act(() => { button(ask, 'dialogs.library.askConfirmConversion.cancel').click(); });
         await flush();
 
-        // Gamma's conversion does not match its source: "transfer" given for Alpha is no answer for it
+        // Gamma's conversion does not match its source: "leave out" given for Alpha is no answer for it
         ask = modal('ask-confirm-conversion');
         expect(ask).not.toBeNull();
         expect(ask.textContent).toContain('dialogs.library.askConfirmConversion.contentMismatch');
@@ -417,7 +461,8 @@ describe('questions asked during a send queue (B1)', () => {
         // Delta is unproven, as Alpha was: answered already
         expect(modal('ask-confirm-conversion')).toBeNull();
         expect(props.convertPackInLibrary.mock.calls.map(c => c[0])).toEqual(['u-c']);
-        expect(props.addFromLibrary.mock.calls.map(c => c[1])).toEqual(['u-a.converted_1', 'u-c.converted_9', 'u-d.converted_1']);
+        expect(props.addFromLibrary.mock.calls.map(c => c[1])).toEqual(['u-c.converted_9']);
+        expect(modal('send-queue-summary').textContent).toContain('sendQueue.summary.counts {"sent":1,"skipped":2,"failed":0}');
     });
 
     it('Escape on the conversion question leaves out this pack only, and the next one is asked', async () => {
@@ -429,9 +474,9 @@ describe('questions asked during a send queue (B1)', () => {
 
         const ask = modal('ask-confirm-conversion');
         expect(ask).not.toBeNull();
-        act(() => { button(ask, 'dialogs.library.askConfirmConversion.transfer').click(); });
+        act(() => { button(ask, 'dialogs.library.askConfirmConversion.convert').click(); });
         await flush(20);
-        expect(props.addFromLibrary.mock.calls.map(c => c[1])).toEqual(['u-c.converted_1']);
+        expect(props.addFromLibrary.mock.calls.map(c => c[1])).toEqual(['u-c.converted_9']);
         const summary = modal('send-queue-summary').textContent;
         expect(summary).toContain('sendQueue.summary.counts {"sent":1,"skipped":1,"failed":0}');
         expect(summary).toContain('sendQueue.reasons.declined');

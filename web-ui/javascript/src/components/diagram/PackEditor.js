@@ -19,24 +19,23 @@ import StudioLinkFactory from "./factories/StudioLinkFactory";
 import StudioLinkLayerFactory from "./factories/StudioLinkLayerFactory";
 import ActionPortFactory from "./factories/ActionPortFactory";
 import StagePortFactory from "./factories/StagePortFactory";
-import PackDiagramModel from "./models/PackDiagramModel";
 import PackDiagramWidget from "./widgets/PackDiagramWidget";
 import FixedZoomCanvasAction from "./actions/FixedZoomCanvasAction";
 import IssueReportToast from "../IssueReportToast";
 import Modal from "../Modal";
 import TitleVoiceControls from "./TitleVoiceControls";
-import {generateFilename} from "../../utils/packs";
+import {generateFilename, isZipFile} from "../../utils/packs";
 import {writeToArchive} from "../../utils/writer";
 import {
+    actionCreatePackInEditor,
     actionLoadPackInEditor,
-    actionUploadToLibrary,
-    setEditorDiagram
+    actionUploadToLibrary
 } from "../../actions";
 
 import './PackEditor.css';
 
 
-class PackEditor extends React.Component {
+export class PackEditor extends React.Component {
 
     constructor(props) {
         super(props);
@@ -68,7 +67,8 @@ class PackEditor extends React.Component {
         this.state = {
             engine,
             diagram: null,
-            showSaveConfirmDialog: false
+            showSaveConfirmDialog: false,
+            showClearConfirmDialog: false
         };
     }
 
@@ -112,10 +112,16 @@ class PackEditor extends React.Component {
         let path = this.props.editor.filename || generateFilename(this.state.engine.getModel());
         // Show toast
         let toastId = toast(t('toasts.editor.saving'), { autoClose: false });
-        writeToArchive(this.state.engine.getModel())
-            .then(blob => {
-                this.props.uploadPackToLibrary(uuid, path, blob)
-                    .then(() => toast.update(toastId, { type: toast.TYPE.SUCCESS, render: t('toasts.editor.saved'), autoClose: 5000}));
+        return writeToArchive(this.state.engine.getModel())
+            // Resolves with true only once the library holds the pack (the upload toast says why otherwise)
+            .then(blob => this.props.uploadPackToLibrary(uuid, path, blob))
+            .then(saved => {
+                if (saved) {
+                    toast.update(toastId, { type: toast.TYPE.SUCCESS, render: t('toasts.editor.saved'), autoClose: 5000});
+                } else {
+                    // The upload toast already says why, and stays open: one error is enough
+                    toast.dismiss(toastId);
+                }
             })
             .catch(e => {
                 console.error('failed to save story pack to library', e);
@@ -128,9 +134,17 @@ class PackEditor extends React.Component {
     };
 
     clear = () => {
-        let model = new PackDiagramModel();
+        // A new, empty pack: the one being edited is gone, and with it the assets it held
+        this.dismissClearConfirmDialog();
+        this.props.createPackInEditor();
+    };
 
-        this.props.setEditorDiagram(model);
+    showClearConfirmDialog = () => {
+        this.setState({showClearConfirmDialog: true});
+    };
+
+    dismissClearConfirmDialog = () => {
+        this.setState({showClearConfirmDialog: false});
     };
 
     exportPack = () => {
@@ -157,10 +171,18 @@ class PackEditor extends React.Component {
 
     packImportFileSelected = (event) => {
         const { t } = this.props;
-        let file = event.target.files[0];
+        const input = event.target;
+        const file = input.files && input.files[0];
+        // Emptied, so that choosing the same file again triggers a new import
+        input.value = '';
+        if (!file) {
+            // Dialog cancelled
+            return;
+        }
         console.log('Selected import file name = ' + file.name);
-        console.log(file.type);
-        if (['application/zip', 'application/x-zip-compressed'].indexOf(file.type) === -1) {
+        // Judged on the extension too, as in the library: Windows often leaves the MIME type of a .zip empty.
+        // The editor reads ZIP archives only, not binary .pack files.
+        if (!isZipFile(file)) {
             toast.error(t('toasts.editor.loadingWrongType'));
             return;
         }
@@ -194,6 +216,16 @@ class PackEditor extends React.Component {
                        ]}
                        onClose={this.dismissSaveConfirmDialog}
                 />}
+                {this.state.showClearConfirmDialog &&
+                <Modal id="confirm-editor-clear"
+                       title={t('dialogs.editor.clear.title')}
+                       content={<p>{t('dialogs.editor.clear.content')}</p>}
+                       buttons={[
+                           { label: t('dialogs.shared.no'), onClick: this.dismissClearConfirmDialog},
+                           { label: t('dialogs.shared.yes'), onClick: this.clear}
+                       ]}
+                       onClose={this.dismissClearConfirmDialog}
+                />}
                 <div className="controls">
                     {/* eslint-disable-next-line */}
                     <a id="download" style={{visibility: 'hidden', position: 'absolute'}} />
@@ -202,7 +234,7 @@ class PackEditor extends React.Component {
                     <span title={t('editor.actions.import')} className="btn btn-default glyphicon glyphicon-import" onClick={this.showImportFileSelector}/>
                     <span title={t('editor.actions.export')} className="btn btn-default glyphicon glyphicon-export" onClick={this.exportPack}/>
                     <TitleVoiceControls getModel={() => this.state.engine.getModel()} onChanged={() => this.state.engine.repaintCanvas()}/>
-                    <span title={t('editor.actions.clear')} className="btn btn-default glyphicon glyphicon-trash" onClick={this.clear}/>
+                    <span title={t('editor.actions.clear')} className="btn btn-default glyphicon glyphicon-trash" onClick={this.showClearConfirmDialog}/>
                 </div>
 
                 <PackDiagramWidget diagramEngine={this.state.engine}/>
@@ -217,7 +249,7 @@ const mapStateToProps = (state, ownProps) => ({
 });
 
 const mapDispatchToProps = (dispatch, ownProps) => ({
-    setEditorDiagram: (diagram) => dispatch(setEditorDiagram(diagram)),
+    createPackInEditor: () => dispatch(actionCreatePackInEditor(ownProps.t)),
     loadPackInEditor: (packData, filename) => dispatch(actionLoadPackInEditor(packData, filename, ownProps.t)),
     uploadPackToLibrary: (uuid, path, packData) => dispatch(actionUploadToLibrary(uuid, path, packData, ownProps.t))
 });

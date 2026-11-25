@@ -22,6 +22,7 @@
       "serial": "Serial number:",
       "firmware": "Firmware version:",
       "empty": "No story packs in device, yet.",
+      "loading": "Reading the stories on the Lunii…",
       "removePack": "Remove this story pack from device",
       "sdcardsize": "SD card size:",
       "sdcardunit": "GB",
@@ -50,6 +51,7 @@
       "addPack": "Add a story pack to the library",
       "import": "Import packs",
       "search": "Search packs (title, file, UUID)",
+      "loading": "Reading the library…",
       "noMatch": "No story pack matches this search.",
       "size": "Space used on disk"
     },
@@ -466,6 +468,7 @@
       "uploading": "Uploading pack to library...",
       "uploaded": "Pack uploaded to library.",
       "uploadingFailed": "Failed to upload pack to library.",
+      "convertedSourceMissing": "This converted pack cannot be sent: its original archive is no longer in the library, and STUdio only sends a conversion it can link to its archive. Put the original archive (.zip) back into the library, then send the pack again.",
       "converting": "Converting pack in library...",
       "converted": "Pack converted in library.",
       "convertingFailed": "Failed to convert pack in library.",
@@ -583,6 +586,10 @@
         "title": "Pack already exists in library",
         "content": "Overwrite the existing pack in library?"
       },
+      "clear": {
+        "title": "Clear the story pack",
+        "content": "Clear the whole story pack being edited? Anything not saved or exported will be lost."
+      },
       "filenameSuggestion": {
         "title": "Pack filename may be updated",
         "content": "Generate a new pack filename?",
@@ -630,10 +637,9 @@
       },
       "askConfirmConversion": {
         "title": "Convert story pack?",
-        "content": "<p>A device-compatible instance of this story pack is already in the library, but STUdio cannot check that it was produced from the pack the library holds now — so it may not match.</p><p>Convert that pack again to be sure, or send the existing instance if you know it is the one you want.</p><p>(The converted pack will be stored in the local library)</p>",
-        "contentMismatch": "<p>A device-compatible instance of this story pack is already in the library, but STUdio has checked it: it was not made from the pack the library holds now, so it would not send what you have.</p><p>Convert that pack again, or send the existing instance anyway if that is what you want.</p><p>(The converted pack will be stored in the local library)</p>",
+        "content": "<p>A device-compatible instance of this story pack is already in the library, but STUdio cannot link it to the original archive the library holds now: nothing proves it was made from it.</p><p>A conversion that cannot be linked to its original archive is not sent to the Lunii. Convert this pack again to send it.</p><p>(The converted pack will be stored in the local library)</p>",
+        "contentMismatch": "<p>A device-compatible instance of this story pack is already in the library, but STUdio has checked it: it was not made from the original archive the library holds now.</p><p>A conversion that cannot be linked to its original archive is not sent to the Lunii. Convert this pack again to send it.</p><p>(The converted pack will be stored in the local library)</p>",
         "convert": "Convert again",
-        "transfer": "Send the existing one",
         "cancel": "Cancel"
       }
     },
@@ -690,6 +696,10 @@
         "REORDER": "The Lunii adopts the new order.",
         "OTHER": "The Lunii uses the new list; the current index is kept as .pi.bak."
       },
+      "confirmAdoptIndexMissing": "Restore the Lunii index from the pending file (.pi.new)?",
+      "indexMissing": "The installed index (.pi) is gone: the Lunii no longer shows any story. The pending index (.pi.new) can be adopted to get them back.",
+      "indexMissingUnlisted": "These folders hold a complete story that the pending file does not name: {{folders}}. Adopting it would make them disappear from the Lunii.",
+      "indexMissingCannotAdopt": "The installed index (.pi) is gone and the pending index (.pi.new) cannot be used. STUdio does nothing: do not delete any folder on the card, and ask for help before doing anything else.",
       "cannotAdopt": "The pending index cannot be adopted: it names {{count}} story(ies) whose folder is not a complete copy on the Lunii. Only the current index can be kept.",
       "confirmAdoptRemoving": "Replace the current index by the new one? These stories will no longer be listed on the Lunii: {{titles}}. Their folders stay on the card, and the current index is kept as .pi.bak."
     },
@@ -842,7 +852,9 @@
       "transfer": "the transfer failed",
       "unknown": "outcome unknown (tracking lost)",
       "error": "unexpected error",
-      "noDevice": "Lunii unplugged"
+      "noDevice": "Lunii unplugged",
+      "sourceMissing": "original archive missing from the library: put it back to send this pack",
+      "unverifiedConversion": "existing conversion not linked to its original archive, not converted again"
     },
     "summary": {
       "title": "Sending of the selection finished",

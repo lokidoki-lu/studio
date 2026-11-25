@@ -289,6 +289,12 @@ public class DeviceController {
                 ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "'uuid' must be a pack UUID"));
                 return;
             }
+            // Never an official pack: only one of the user's own packs leaves the Lunii
+            Optional<StoryTellerException> refused = LibrarySendGuard.extractionRefusal(libraryService, uuid);
+            if (refused.isPresent()) {
+                ApiErrors.respond(ctx, refused.get());
+                return;
+            }
             // Transfer pack file to library file. The UUID is canonical by now, so the destination is
             // a direct entry of the library.
             File destination;
@@ -366,6 +372,22 @@ public class DeviceController {
         // The checks of addFromLibrary / updateFromLibrary, made again when the transfer starts
         storyTellerService.setSendGuard((uuid, packFile) ->
                 LibrarySendGuard.refusal(libraryService, uuid, packFile.getName(), packFile.toPath()));
+        // The check of addToLibrary, made again when the extraction starts
+        storyTellerService.setExtractionGuard(uuid -> {
+            Optional<StoryTellerException> refused = LibrarySendGuard.extractionRefusal(libraryService, uuid);
+            if (refused.isPresent()) {
+                return refused;
+            }
+            try {
+                libraryService.recordExtractedFromDevice(uuid);
+            } catch (StoryTellerException e) {
+                return Optional.of(e);
+            } catch (java.io.IOException e) {
+                return Optional.of(new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                        "Le pack " + uuid + " n'a pas pu être noté comme venant de la Lunii : rien n'a été copié", e));
+            }
+            return Optional.empty();
+        });
 
         // Read-only check of the device's bookkeeping. Runs in the device queue.
         router.get("/diagnosis").blockingHandler(ctx -> storyTellerService.diagnosis()

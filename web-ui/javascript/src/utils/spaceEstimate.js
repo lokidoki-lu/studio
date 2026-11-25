@@ -10,7 +10,7 @@
  * is guessed here, this only picks which file of each pack is asked about and adds things up.
  */
 
-import {chooseDropAction} from "./packs";
+import {chooseDropAction, needsProvenanceProof} from "./packs";
 
 /** Free bytes of the device, from its metadata; null when unknown. */
 export function freeBytes(metadata) {
@@ -35,7 +35,8 @@ export function freeBytes(metadata) {
 export function estimatePaths(group, driverFormat) {
     const {action, source, cached} = chooseDropAction(group && group.packs, driverFormat);
     if (action === 'transfer') {
-        return [cached.path];
+        // A converted folder without its source archive is not sent (sendToDevice): nothing to count
+        return needsProvenanceProof(cached) ? [] : [cached.path];
     }
     if (action === 'convert') {
         return source ? [source.path] : [];
@@ -71,7 +72,12 @@ export function selectionRequirement(groups, driverFormat, estimate) {
     const unknown = [];
     let required = 0;
     (groups || []).forEach(group => {
-        const known = estimatePaths(group, driverFormat).map(path => bytes[path]).filter(b => typeof b === 'number');
+        const paths = estimatePaths(group, driverFormat);
+        if (paths.length === 0) {
+            // Nothing of this group would go to the device: it takes no space, and is no unknown
+            return;
+        }
+        const known = paths.map(path => bytes[path]).filter(b => typeof b === 'number');
         if (known.length === 0) {
             unknown.push(group.uuid);
             return;

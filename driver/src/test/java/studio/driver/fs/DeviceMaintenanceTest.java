@@ -37,6 +37,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -509,6 +510,262 @@ class DeviceMaintenanceTest {
             assertEquals(StoryTellerException.Reason.PACK_INDEX_PENDING, reasonOf(upload));
             CompletionException delete = assertThrows(CompletionException.class, () -> driver.deletePack(PACK_A.toString()).join());
             assertEquals(StoryTellerException.Reason.PACK_INDEX_PENDING, reasonOf(delete));
+        }
+
+        @Test
+        @DisplayName("cut on a record boundary dropping several packs: torn, never adopted, nothing touched")
+        void prefixDroppingSeveralPacksIsTorn() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            upload(driver, PACK_B, "b", (byte) 2);
+            upload(driver, PACK_C, "c", (byte) 3);
+            byte[] before = Files.readAllBytes(index());
+            // The removal of C was cut after the first record of .pi.new: it names A only.
+            Files.write(pendingIndex(), Arrays.copyOf(before, 16));
+
+            FsDeviceDiagnosis.PendingIndex p = driver.diagnose().join().getPendingIndex();
+            assertEquals(PendingIndexKind.TORN, p.getKind());
+            assertFalse(p.isAdoptable());
+            assertTrue(p.isSafeToDiscard());
+            CompletionException e = assertThrows(CompletionException.class,
+                    () -> driver.resolvePendingIndex(true, p.getFingerprint(), token(driver)).join());
+            assertEquals(StoryTellerException.Reason.INVALID_REQUEST, reasonOf(e));
+            assertArrayEquals(before, Files.readAllBytes(index()));
+            assertTrue(Files.exists(pendingIndex()));
+            assertFalse(Files.exists(partition.resolve(".pi.bak")));
+            for (UUID pack : List.of(PACK_A, PACK_B, PACK_C)) {
+                assertTrue(FsDeviceMaintenance.isCompletePackFolder(folderOf(pack)));
+            }
+            // Discarding it keeps the installed index
+            assertTrue(driver.resolvePendingIndex(false, p.getFingerprint(), token(driver)).join());
+            assertEquals(List.of(PACK_A, PACK_B, PACK_C), installedIndex());
+        }
+
+        @Test
+        @DisplayName("the removal of the last pack only stays a removal that can be adopted")
+        void removalOfOnePackStaysAdoptable() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            upload(driver, PACK_B, "b", (byte) 2);
+            upload(driver, PACK_C, "c", (byte) 3);
+            writeIndex(pendingIndex(), PACK_A, PACK_B);
+            FsDeviceDiagnosis.PendingIndex p = driver.diagnose().join().getPendingIndex();
+            assertEquals(PendingIndexKind.REMOVE, p.getKind());
+            assertTrue(p.isAdoptable());
+            assertTrue(driver.resolvePendingIndex(true, p.getFingerprint(), token(driver)).join());
+            assertEquals(List.of(PACK_A, PACK_B), installedIndex());
+            assertTrue(FsDeviceMaintenance.isCompletePackFolder(folderOf(PACK_C)));
+        }
+
+        @Test
+        @DisplayName(".pi missing next to a complete .pi.new: the listing says so, the check sees it, adopting restores it")
+        void missingIndexNextToCompletePending() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            upload(driver, PACK_B, "b", (byte) 2);
+            // A replacement cut after the removal of .pi, before the rename of .pi.new
+            Files.move(index(), pendingIndex());
+
+            CompletionException list = assertThrows(CompletionException.class, () -> driver.getPacksList().join());
+            assertEquals(StoryTellerException.Reason.PACK_INDEX_PENDING, reasonOf(list));
+            assertTrue(list.getCause().getMessage().contains("/api/device/diagnosis"), list.getCause().getMessage());
+
+            FsDeviceDiagnosis d = driver.diagnose().join();
+            assertTrue(d.isIndexMissing());
+            FsDeviceDiagnosis.PendingIndex p = d.getPendingIndex();
+            assertNotNull(p);
+            assertEquals(PendingIndexKind.ADD, p.getKind());
+            assertEquals(-1, p.getCurrentCount());
+            assertTrue(p.isAdoptable());
+            assertFalse(p.isSafeToDiscard(), "discarding would leave no index at all");
+
+            // Discarding is refused: .pi.new is the only index left
+            CompletionException discard = assertThrows(CompletionException.class,
+                    () -> driver.resolvePendingIndex(false, p.getFingerprint(), token(driver)).join());
+            assertEquals(StoryTellerException.Reason.INVALID_REQUEST, reasonOf(discard));
+            assertTrue(Files.exists(pendingIndex()));
+
+            assertTrue(driver.resolvePendingIndex(true, p.getFingerprint(), token(driver)).join());
+            assertEquals(List.of(PACK_A, PACK_B), installedIndex());
+            assertFalse(Files.exists(pendingIndex()));
+            assertFalse(Files.exists(partition.resolve(".pi.bak")));
+            assertEquals(2, driver.getPacksList().join().size());
+            assertEquals(0, driver.diagnose().join().problemCount());
+        }
+
+        @Test
+        @DisplayName(".pi missing next to a .pi.new naming an incomplete copy, or empty: never adopted, nothing touched")
+        void missingIndexNextToUnadoptablePending() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            Files.delete(index());
+            partialFolder(folderOf(PACK_C));
+            writeIndex(pendingIndex(), PACK_A, PACK_C);
+
+            FsDeviceDiagnosis.PendingIndex p = driver.diagnose().join().getPendingIndex();
+            assertFalse(p.isAdoptable());
+            assertEquals(List.of(PACK_C), p.getIncomplete());
+            assertThrows(CompletionException.class, () -> driver.resolvePendingIndex(true, p.getFingerprint(), token(driver)).join());
+            assertFalse(Files.exists(index()));
+            assertTrue(Files.exists(pendingIndex()));
+            assertTrue(FsDeviceMaintenance.isCompletePackFolder(folderOf(PACK_A)));
+
+            Files.write(pendingIndex(), new byte[0]);
+            FsDeviceDiagnosis.PendingIndex empty = driver.diagnose().join().getPendingIndex();
+            assertEquals(PendingIndexKind.TORN, empty.getKind());
+            assertFalse(empty.isAdoptable());
+            assertFalse(empty.isSafeToDiscard());
+            assertThrows(CompletionException.class, () -> driver.resolvePendingIndex(true, empty.getFingerprint(), token(driver)).join());
+            assertThrows(CompletionException.class, () -> driver.resolvePendingIndex(false, empty.getFingerprint(), token(driver)).join());
+            assertFalse(Files.exists(index()));
+            assertTrue(Files.exists(pendingIndex()));
+        }
+
+        @Test
+        @DisplayName(".pi missing, .pi.new names A only, B and C are complete copies: never adopted, nothing touched")
+        void missingIndexNextToPendingThatLeavesCompletePacksOut() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            upload(driver, PACK_B, "b", (byte) 2);
+            upload(driver, PACK_C, "c", (byte) 3);
+            // A leftover of an update is not a pack folder: it is not counted.
+            copyDeviceFolder(PACK_A, staging(FsDeviceMaintenance.STAGING_NEW_PREFIX, PACK_A));
+            Files.delete(index());
+            // .pi.new cut on a record boundary: it names A only.
+            writeIndex(pendingIndex(), PACK_A);
+            byte[] pendingBefore = Files.readAllBytes(pendingIndex());
+
+            FsDeviceDiagnosis.PendingIndex p = driver.diagnose().join().getPendingIndex();
+            assertFalse(p.isAdoptable());
+            assertFalse(p.isSafeToDiscard());
+            assertTrue(p.getIncomplete().isEmpty());
+            assertEquals(List.of(FsDeviceMaintenance.folderNameOf(PACK_B), FsDeviceMaintenance.folderNameOf(PACK_C)).stream()
+                    .sorted().collect(java.util.stream.Collectors.toList()), p.getUnlistedCompleteFolders());
+
+            CompletionException adopt = assertThrows(CompletionException.class,
+                    () -> driver.resolvePendingIndex(true, p.getFingerprint(), token(driver)).join());
+            assertEquals(StoryTellerException.Reason.INVALID_REQUEST, reasonOf(adopt));
+            assertThrows(CompletionException.class, () -> driver.resolvePendingIndex(false, p.getFingerprint(), token(driver)).join());
+            assertFalse(Files.exists(index()));
+            assertArrayEquals(pendingBefore, Files.readAllBytes(pendingIndex()));
+            for (UUID pack : List.of(PACK_A, PACK_B, PACK_C)) {
+                assertTrue(FsDeviceMaintenance.isCompletePackFolder(folderOf(pack)));
+            }
+        }
+
+        @Test
+        @DisplayName(".pi missing, a pack whose only complete copy is a leftover of an update: never adopted, nothing touched")
+        void missingIndexWithCompleteCopyOnlyInStaging() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            upload(driver, PACK_B, "b", (byte) 2);
+            Files.delete(index());
+            writeIndex(pendingIndex(), PACK_A);
+            // B's folder is gone; its only complete copy is under the name an in-place update gave it.
+            Path fresh = staging(FsDeviceMaintenance.STAGING_NEW_PREFIX, PACK_B);
+            Path previous = staging(FsDeviceMaintenance.STAGING_OLD_PREFIX, PACK_B);
+            Files.move(folderOf(PACK_B), fresh);
+            for (Path leftover : List.of(fresh, previous)) {
+                if (leftover.equals(previous)) {
+                    Files.move(fresh, previous);
+                }
+                FsDeviceDiagnosis.PendingIndex p = driver.diagnose().join().getPendingIndex();
+                assertFalse(p.isAdoptable(), leftover.getFileName().toString());
+                assertEquals(List.of(FsDeviceMaintenance.folderNameOf(PACK_B)), p.getUnlistedCompleteFolders());
+                assertThrows(CompletionException.class,
+                        () -> driver.resolvePendingIndex(true, p.getFingerprint(), token(driver)).join());
+                assertFalse(Files.exists(index()));
+                assertEquals(List.of(PACK_A), FsDeviceMaintenance.parseIndex(Files.readAllBytes(pendingIndex())));
+                assertTrue(FsDeviceMaintenance.isCompletePackFolder(leftover));
+                assertTrue(FsDeviceMaintenance.isCompletePackFolder(folderOf(PACK_A)));
+            }
+        }
+
+        @Test
+        @DisplayName("a reordering cut on a record boundary (not a prefix of .pi): torn, never adopted, .pi kept")
+        void cutReorderingIsTorn() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            upload(driver, PACK_B, "b", (byte) 2);
+            upload(driver, PACK_C, "c", (byte) 3);
+            byte[] before = Files.readAllBytes(index());
+            // Reordering to [C, B, A] cut after its first record
+            writeIndex(pendingIndex(), PACK_C);
+
+            FsDeviceDiagnosis.PendingIndex p = driver.diagnose().join().getPendingIndex();
+            assertEquals(PendingIndexKind.TORN, p.getKind());
+            assertFalse(p.isAdoptable());
+            assertTrue(p.isSafeToDiscard());
+            assertThrows(CompletionException.class, () -> driver.resolvePendingIndex(true, p.getFingerprint(), token(driver)).join());
+            assertArrayEquals(before, Files.readAllBytes(index()));
+            assertFalse(Files.exists(partition.resolve(".pi.bak")));
+
+            // The removal of one pack, in the middle, stays a removal that can be adopted
+            writeIndex(pendingIndex(), PACK_A, PACK_C);
+            FsDeviceDiagnosis.PendingIndex removal = driver.diagnose().join().getPendingIndex();
+            assertEquals(PendingIndexKind.REMOVE, removal.getKind());
+            assertTrue(removal.isAdoptable());
+        }
+
+        @Test
+        @DisplayName("refusing a torn .pi.new while .pi is missing does not offer to discard it")
+        void tornRefusalWithoutIndexDoesNotOfferDiscard() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            Files.delete(index());
+            Files.write(pendingIndex(), new byte[0]);
+            FsDeviceDiagnosis.PendingIndex p = driver.diagnose().join().getPendingIndex();
+            CompletionException e = assertThrows(CompletionException.class,
+                    () -> driver.resolvePendingIndex(true, p.getFingerprint(), token(driver)).join());
+            assertFalse(e.getCause().getMessage().contains("only be discarded"), e.getCause().getMessage());
+            assertTrue(e.getCause().getMessage().contains("cannot be discarded"), e.getCause().getMessage());
+        }
+
+        @Test
+        @DisplayName("a missing .pi and an empty one are told apart by the fingerprint")
+        void missingAndEmptyIndexFingerprintsDiffer() {
+            assertNotEquals(FsDeviceMaintenance.fingerprint(null, new byte[16]),
+                    FsDeviceMaintenance.fingerprint(new byte[0], new byte[16]));
+        }
+    }
+
+    // ------------------------------------------------------------------ listing
+
+    @Nested
+    @DisplayName("the pack list")
+    class Listing {
+
+        @Test
+        @DisplayName("a truncated node index leaves that pack out, the others are still listed")
+        void truncatedNodeIndexIsIsolated() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            upload(driver, PACK_B, "b", (byte) 2);
+            upload(driver, PACK_C, "c", (byte) 3);
+            Files.write(folderOf(PACK_A).resolve("ni"), new byte[0]);
+            Files.write(folderOf(PACK_C).resolve("ni"), new byte[3]);
+
+            List<studio.driver.model.fs.FsStoryPackInfos> packs = driver.getPacksList().join();
+            assertEquals(1, packs.size());
+            assertEquals(PACK_B, packs.get(0).getUuid());
+            // Nothing was repaired: the index and the files are as they were
+            assertEquals(List.of(PACK_A, PACK_B, PACK_C), installedIndex());
+            assertEquals(0, Files.size(folderOf(PACK_A).resolve("ni")));
+        }
+
+        @Test
+        @DisplayName("reordering the listed packs leaves a pack the list hid at its own position")
+        void reorderKeepsHiddenPacksInPlace() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_B, "b", (byte) 2);
+            upload(driver, PACK_A, "a", (byte) 1);
+            upload(driver, PACK_C, "c", (byte) 3);
+            // A is hidden from the list: the UI only knows B and C, and asks for C before B.
+            Files.write(folderOf(PACK_A).resolve("ni"), new byte[0]);
+            assertEquals(2, driver.getPacksList().join().size());
+
+            assertTrue(driver.reorderPacks(List.of(PACK_C.toString(), PACK_B.toString())).join());
+            assertEquals(List.of(PACK_C, PACK_A, PACK_B), installedIndex());
         }
     }
 

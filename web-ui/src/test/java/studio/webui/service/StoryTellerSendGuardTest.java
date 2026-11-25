@@ -68,6 +68,12 @@ class StoryTellerSendGuardTest {
         }
 
         @Override
+        public CompletableFuture<TransferStatus> downloadPack(String uuid, String outputPath, TransferProgressListener listener) {
+            sent.add("extract:" + uuid);
+            return CompletableFuture.completedFuture(null);
+        }
+
+        @Override
         public CompletableFuture<TransferStatus> updatePack(String uuid, String inputPath, TransferProgressListener listener) {
             sent.add("update:" + new File(inputPath).getName());
             return CompletableFuture.completedFuture(null);
@@ -138,6 +144,35 @@ class StoryTellerSendGuardTest {
         assertEquals("SUCCEEDED", awaitEnd(service.addPack(U, pack.toFile()).join().orElseThrow()).getString("state"));
         assertEquals("SUCCEEDED", awaitEnd(service.updatePack(U, pack.toFile()).join().orElseThrow()).getString("state"));
         assertEquals(List.of("add:" + pack.getFileName(), "update:" + pack.getFileName()), driver.sent);
+    }
+
+    @Test
+    @DisplayName("an extraction is checked again when it starts: refused then, nothing is copied")
+    void extractionCheckedAgainWhenItStarts() throws Exception {
+        Path library = Files.createDirectories(root.resolve("library"));
+        AtomicInteger checks = new AtomicInteger();
+        service.setExtractionGuard(uuid -> {
+            checks.incrementAndGet();
+            return Files.exists(root.resolve("official-now"))
+                    ? Optional.of(new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "official now"))
+                    : Optional.empty();
+        });
+        Files.createFile(root.resolve("official-now"));
+
+        assertEquals("FAILED", awaitEnd(service.extractPack(U, library.toFile()).join().orElseThrow()).getString("state"));
+        assertTrue(driver.sent.isEmpty(), driver.sent.toString());
+        assertEquals(1, checks.get());
+
+        Files.delete(root.resolve("official-now"));
+        assertEquals("SUCCEEDED", awaitEnd(service.extractPack(U, library.toFile()).join().orElseThrow()).getString("state"));
+        assertEquals(List.of("extract:" + U), driver.sent);
+
+        // A guard that cannot decide refuses
+        service.setExtractionGuard(uuid -> {
+            throw new IllegalStateException("unreadable");
+        });
+        assertEquals("FAILED", awaitEnd(service.extractPack(U, library.toFile()).join().orElseThrow()).getString("state"));
+        assertEquals(1, driver.sent.size());
     }
 
     @Test
