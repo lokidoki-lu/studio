@@ -111,6 +111,17 @@ const modal = (id) => document.getElementById('modal-' + id);
 
 describe('sending a selection (simplified view)', () => {
 
+    it('keeps the bar in place with nothing selected, so that ticking a box does not move the grid', async () => {
+        const props = actions();
+        render(PackLibrarySimple, {device: device('fs'), library: LIBRARY, ...props});
+        await flush();
+        expect(bar()).not.toBeNull();
+        expect(bar().textContent).toContain('sendQueue.hint');
+        act(() => { button(bar(), 'sendQueue.selectAll').click(); });
+        await flush();
+        expect(bar().textContent).toContain('sendQueue.selection');
+    });
+
     it('selects with boxes, shows the space needed and free, sends one pack after the other and sums up', async () => {
         const props = actions();
         render(PackLibrarySimple, {device: device('fs'), library: LIBRARY, ...props});
@@ -138,7 +149,7 @@ describe('sending a selection (simplified view)', () => {
         expect(summary.textContent).toContain('sendQueue.reasons.onDevice');
         // The selection is emptied
         act(() => { button(summary, 'dialogs.shared.close').click(); });
-        expect(bar()).toBeNull();
+        expect(bar().textContent).toContain('sendQueue.hint');
     });
 
     it('shows the progress (pack n/N, its part) and lets the rest be cancelled', async () => {

@@ -9,6 +9,8 @@
  * reads. The backend checks everything again (see API.md, "Packs from YouTube").
  */
 
+import {getTitleVoice} from "./titleAssets";
+
 export const BITRATES = [48, 64, 96, 128];
 
 // The links pasted in the text area: one per line, blank lines ignored
@@ -26,7 +28,8 @@ export function defaultForm(tools) {
         links: '',
         title: '',
         description: '',
-        voice: t.defaultVoice || 'fr-FR-DeniseNeural',
+        // The voice chosen in the editor when the backend offers it, as titles sound the same everywhere
+        voice: (Array.isArray(t.voices) && t.voices.indexOf(getTitleVoice()) !== -1) ? getTitleVoice() : (t.defaultVoice || 'fr-FR-DeniseNeural'),
         cleanTitles: true,
         sponsorBlock: true,
         seasons: true,

@@ -34,7 +34,8 @@ export const fetchYoutubeJob = (id) => {
 // The running creation or the last one, or null when there has been none
 export const fetchCurrentYoutubeJob = () => {
     return apiFetch('/api/youtube/jobs/current')
-        .then(response => response.status === 404 ? null : handleJsonOrError(response));
+        // 204: no creation yet (404 from an older server)
+        .then(response => response.status === 204 || response.status === 404 ? null : handleJsonOrError(response));
 };
 
 export const cancelYoutubePack = (id) => {

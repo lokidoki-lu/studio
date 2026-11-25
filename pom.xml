@@ -25,6 +25,12 @@
     </modules>
 
     <properties>
+        <!-- Sources and resources are UTF-8. Without this, Maven uses the platform encoding
+             (cp1252 on Windows) to copy filtered resources, and every character with a byte cp1252
+             leaves undefined (0x81, 0x8D, 0x8F, 0x90, 0x9D: the arrow "←" for one) became "?" in
+             the translations of a release built on Windows. -->
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <!-- Test-only tooling. Pinned so that a build is reproducible whatever Maven version
              the developer or the CI runner happens to use (the default Surefire bound by the
              Maven super-POM varies across Maven releases, and versions below 2.22 cannot run

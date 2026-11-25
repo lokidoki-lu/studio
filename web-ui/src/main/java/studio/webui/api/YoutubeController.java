@@ -21,6 +21,8 @@ import studio.webui.service.YoutubePackJob;
 import studio.webui.service.YoutubePackRequest;
 import studio.webui.service.YoutubePackService;
 
+import java.util.Optional;
+
 /** Packs made from YouTube links: {@code /api/youtube}. See API.md. */
 public class YoutubeController {
 
@@ -57,9 +59,16 @@ public class YoutubeController {
         // The running creation, or the last one: the dialog finds it again after being closed.
         // Blocking handlers: they take the service lock, which the event loop must never wait for
         // (the tools are probed outside of it).
-        router.get("/jobs/current").blockingHandler(ctx -> handle(ctx, () -> json(ctx, 200,
-                service.current().orElseThrow(() -> new YoutubePackException(YoutubePackException.Code.NOT_FOUND,
-                        "Aucune cr\u00e9ation en cours")).toJson())), false);
+        // No creation yet is the usual answer, asked each time the library is shown: 204, not an
+        // error (a 404 here filled the browser console)
+        router.get("/jobs/current").blockingHandler(ctx -> handle(ctx, () -> {
+            Optional<YoutubePackJob> current = service.current();
+            if (current.isPresent()) {
+                json(ctx, 200, current.get().toJson());
+            } else {
+                ctx.response().setStatusCode(204).end();
+            }
+        }), false);
 
         router.get("/jobs/:id").blockingHandler(ctx -> handle(ctx, () -> {
             String id = ctx.pathParam("id");

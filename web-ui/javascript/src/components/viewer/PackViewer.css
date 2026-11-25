@@ -34,6 +34,11 @@
     stroke: none;
 }
 
+.pack-viewer .button .button-glyph {
+    fill: #eb8036;
+    stroke: none;
+}
+
 .pack-viewer .actionable:hover {
     fill: #f6b54d;
     stroke: #eead45;
