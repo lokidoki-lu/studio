@@ -27,6 +27,7 @@ import {AppContext} from "../AppContext";
 import Modal from "./Modal";
 import LibraryPurge from "./LibraryPurge";
 import YoutubePack from "./YoutubePack";
+import PackPreview from "./PackPreview";
 import {
     LOCAL_STORAGE_ALLOW_ENRICHED_BINARY_FORMAT
 } from "../utils/storage";
@@ -397,6 +398,8 @@ class PackLibrary extends React.Component {
         return (
             <div className="pack-library">
 
+                {this.state.previewing && <PackPreview pack={this.state.previewing} onClose={() => this.setState({previewing: null})} />}
+
                 {this.state.showRemoveFromDeviceConfirmDialog &&
                 <Modal id="confirm-device-pack-remove"
                        title={t('dialogs.library.removeFromDevice.title')}
@@ -605,6 +608,9 @@ class PackLibrary extends React.Component {
                                                 <div className="pack-version"><span>{`v${p.version}`}</span></div>
                                                 {p.size >= 0 && <div className="pack-size" title={t('library.local.size')}>{t(`libraryPurge.units.${sizeUnit(p.size).key}`, { value: sizeUnit(p.size).value })}</div>}
                                                 <div className="pack-actions">
+                                                    <button className="pack-action" onClick={() => this.setState({previewing: {...p, uuid: group.uuid}})} aria-label={t('library.local.previewPack')}>
+                                                        <span className="glyphicon glyphicon-eye-open" title={t('library.local.previewPack')} />
+                                                    </button>
                                                     {p.format !== 'archive' && <button className="pack-action" onClick={this.onConvertLibraryPack(p, 'archive')}>
                                                         <span role="img" aria-label="to archive" title={t('library.local.convertPackToArchive')}>&#10132;&#x1f5dc;</span>
                                                     </button>}

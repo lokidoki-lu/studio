@@ -62,6 +62,7 @@ class PackViewer extends React.Component {
                     && this.props.controls.autoplay
                     && (
                         !this.audioRef
+                        || !this.audioRef.current
                         || this.audioRef.current.ended
                     )
                 )
@@ -101,7 +102,7 @@ class PackViewer extends React.Component {
         const { t } = this.props;
         return (
             <div className="pack-viewer">
-                <svg width="1022" height="557">
+                <svg width="1022" height="557" viewBox="0 0 1022 557">
                     {/* Blur filter when casing overlay is ON */}
                     <defs>
                         <filter id="blurryOverlay">

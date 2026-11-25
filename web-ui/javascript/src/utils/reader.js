@@ -433,7 +433,7 @@ function buildPackModel(json, loadThumbnail, loadAsset) {
                     });
 }
 
-function mimeType(assetFileName) {
+export function mimeType(assetFileName) {
     let prefix = dataUrlPrefix(assetFileName);
     return prefix.substring('data:'.length, prefix.indexOf(';base64,'));
 }

@@ -99,6 +99,37 @@ public class LibraryController {
             );
         }, false);
 
+        // What the library preview shows of a pack beyond its metadata (size, node counts, audio
+        // duration), read from headers only. Unordered, like /entry: the preview asks for it while
+        // it reads entries.
+        router.post("/details").blockingHandler(ctx -> {
+            JsonObject body = DeviceController.jsonBody(ctx);
+            if (body == null) {
+                return;
+            }
+            String packPath = DeviceController.stringField(body, "path");
+            if (packPath == null) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                        "`path` is a required string"));
+                return;
+            }
+            Optional<JsonObject> details;
+            try {
+                details = libraryService.packDetails(packPath);
+            } catch (IOException | RuntimeException e) {
+                LOGGER.error("Failed to read the details of library pack " + packPath, e);
+                ApiErrors.respond(ctx, new StoryTellerException("Failed to read pack details", e));
+                return;
+            }
+            details.ifPresentOrElse(
+                    json -> ctx.response()
+                            .putHeader("content-type", "application/json")
+                            .putHeader("Cache-Control", "no-store")
+                            .end(Json.encode(json)),
+                    () -> ctx.response().setStatusCode(404).end()
+            );
+        }, false);
+
         // Local library pack upload
         router.post("/upload").blockingHandler(ctx -> {
             String uuid = ctx.request().getFormAttribute("uuid");
