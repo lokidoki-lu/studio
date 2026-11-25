@@ -56,7 +56,8 @@ export function simpleItem(group, deviceUuids) {
         group,
         title: packTitle(main, group.uuid),
         description: main.description || '',
-        image: main.image || null,
+        // A converted copy (FS, raw) may come first without a thumbnail: take the first one there is
+        image: (packs.find(p => p.image) || {}).image || null,
         official: !!main.official,
         nightMode: !!main.nightModeAvailable,
         version: main.version,
