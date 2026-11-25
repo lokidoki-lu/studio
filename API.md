@@ -102,6 +102,55 @@ A typical recovery: an upload fails with `CONTENT_FOLDER_EXISTS` for pack `…55
 folder is the last eight hex digits, upper case (`AAAABBBB`). If `GET /orphans` lists it, remove it
 and upload again.
 
+## Device check and repairs
+
+Lunii 2.x / 3.x only; on a 1.x Lunii (`driver: "raw"`) `GET /diagnosis` answers
+`{"supported": false}` and the other routes refuse with `UNSUPPORTED_ON_DEVICE` (400). Every route
+runs in the device queue and re-reads the card before acting. New error codes: `PACK_INDEX_PENDING`
+(409: a `.pi.new` left by an interrupted index write blocks adds, removals and reorders; the upload
+refusal and the index writer now carry it), `DEVICE_STATE_CHANGED` (409: the card changed since the
+check, nothing done), `UNSUPPORTED_ON_DEVICE` (400).
+
+- `GET /diagnosis` → `{"supported", "indexedPacks", "problems", "orphans": [{"folder", "sizeInBytes",
+  "complete"}], "missingContent": [{"uuid", "folder", "folderPresent"}], "interruptedUpdates":
+  [{"folder", "uuid", "state", "leftovers"}], "pendingIndex": null | {"kind", "safeToDiscard",
+  "canAdopt", "fingerprint", "currentCount", "pendingCount", "added", "removed"}}`. Read only.
+  `kind`: `TORN`, `IDENTICAL`, `ADD_INCOMPLETE` (safe to discard), `ADD`, `REMOVE`, `REORDER`,
+  `OTHER` (a choice). Orphans are removed with `POST /orphans/remove`; an entry without content with
+  `POST /removeFromDevice`.
+- `POST /repair/pendingIndex` `{"action": "discard"|"adopt", "fingerprint"}` → `{"success": true}`.
+  `discard` deletes `.pi.new` (the installed index stays); `adopt` moves it onto `.pi` atomically,
+  refused for `TORN` and `ADD_INCOMPLETE`. Refused with `DEVICE_STATE_CHANGED` if the fingerprint no
+  longer matches.
+- `POST /repair/interruptedUpdate` `{"folder": "AAAABBBB"}` → `{"success": true}`: finishes or
+  cleans up an interrupted in-place update (`COPY_INTERRUPTED`: the new copy is removed;
+  `SWAP_INTERRUPTED`: the complete new copy is renamed into place; `CLEANUP_INTERRUPTED`: the old
+  version is removed; `PREVIOUS_ONLY`: the old version is put back). The index is not touched.
+- `POST /integrity` → `{"checkId"}`, then `GET /integrity/:id` → `{"done", "checked", "total",
+  "success", "packs": [{"uuid", "title", "official", "ok", "stageNodes", "images", "sounds",
+  "problems": [{"code", "detail"}]}]}`. Read only: index files in full, the first block of each
+  asset. Codes: `FOLDER_MISSING`, `FILE_MISSING`, `FILE_UNREADABLE`, `NODE_INDEX_INVALID`,
+  `ASSET_INDEX_INVALID`, `LIST_INDEX_INVALID`, `COUNT_MISMATCH`, `ASSET_REFERENCE_OUT_OF_RANGE`,
+  `TRANSITION_OUT_OF_RANGE`, `ASSET_MISSING`, `ASSET_EMPTY`, `ASSET_HEADER_INVALID`,
+  `BOOT_FILE_INVALID`.
+
+## In-place update of a pack
+
+- `GET /updates` → `{"supported", "packs": [{"uuid", "status", "basis", "deviceVersion",
+  "libraryVersion", "path"}]}` for each device pack the library holds. `status`: `UPDATE_AVAILABLE`,
+  `UP_TO_DATE`, `UNKNOWN`, `OFFICIAL`. The criterion is content, not the version: STUdio records
+  (`~/.studio/db/device-packs.json`, per Lunii serial) the origin digest of what it wrote — the
+  source's SHA-256 for a proven conversion, the artefact's own otherwise — and compares it with the
+  origin of the library's most recent artefact. Without a record, the card is compared byte for byte
+  with the library's folders (and recorded on a match); then a higher library version (`basis:
+  "version"`).
+- `POST /updateFromLibrary` `{"uuid", "path"}` → `{"transferId"}` (operation `update`, followed like
+  an add). `path` must be a folder (`fs`) of the library: convert first. The pack keeps its place:
+  the new version is copied to `.content/.studio-new-XXXXXXXX`, then two renames swap it with the
+  old one (`.studio-old-XXXXXXXX`, removed last); the index is not rewritten. Refused with
+  `PACK_NOT_ON_DEVICE` if the pack is not there, `CONTENT_FOLDER_EXISTS` while leftovers of an
+  interrupted update remain, `UNSUPPORTED_ON_DEVICE` on a 1.x Lunii.
+
 ## Old packs in the library
 
 Under `http://localhost:8080/api/library` (not `/api/device`). When a pack is sent to a device,

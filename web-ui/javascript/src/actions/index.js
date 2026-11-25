@@ -18,6 +18,9 @@ import {generateFilename, sortPacks} from "../utils/packs";
 import {readFromArchive, readFromLibrary, adoptLibraryAssets, discardLibraryAssets} from "../utils/reader";
 import {httpErrorMessage} from "../utils/fetch";
 import {simplifiedSample} from "../utils/sample";
+import {updateFromLibrary} from "../services/deviceRepair";
+import {needsRepairOffer} from "../utils/deviceRepairEvents";
+import DeviceRepairOffer from "../components/DeviceRepairOffer";
 
 
 const mutex = withTimeout(new Mutex(), 100);
@@ -290,6 +293,10 @@ const updateProgress = (toastId) => (progress) => {
 
 /** A failure toast that shows the backend's reason when it gave one. */
 function failureRender(content, verdict) {
+    // A failure the device check can resolve offers to open it
+    if (verdict && needsRepairOffer(verdict.error)) {
+        content = <>{content}<DeviceRepairOffer /></>;
+    }
     return verdict && verdict.message
         ? <IssueReportToast content={content} error={new Error(verdict.message)} showDetails />
         : <IssueReportToast content={content} />;
@@ -303,7 +310,16 @@ function failureRender(content, verdict) {
  */
 const followedPacks = new Set();
 
-export const actionAddFromLibrary = (uuid, path, format, driver, context, t) => {
+/** The failure text of a refused request, with the repair offer when it applies. */
+const withRepairOffer = (text, e) => e && needsRepairOffer(e.code) ? <>{text}<DeviceRepairOffer /></> : <>{text}</>;
+
+export const actionAddFromLibrary = (uuid, path, format, driver, context, t, mode = 'add') => {
+    // mode 'update': the pack already on the device is replaced in place (deviceUpdate.*)
+    const updating = mode === 'update';
+    const keys = updating
+        ? {adding: 'deviceUpdate.toasts.updating', added: 'deviceUpdate.toasts.updated', failed: 'deviceUpdate.toasts.failed'}
+        : {adding: 'toasts.device.adding', added: 'toasts.device.added', failed: 'toasts.device.addingFailed'};
+    const send = updating ? updateFromLibrary : addFromLibrary;
     return dispatch => mutex.acquire()
         .then(
             release => {
@@ -320,8 +336,8 @@ export const actionAddFromLibrary = (uuid, path, format, driver, context, t) => 
                     release();
                 } else {
                     // Then start transfer
-                    let toastId = toast(t('toasts.device.adding'), { autoClose: false });
-                    return addFromLibrary(uuid, path)
+                    let toastId = toast(t(keys.adding), { autoClose: false });
+                    return send(uuid, path)
                         .then(resp => {
                             // From here on the backend has accepted the transfer and is running it.
                             // Nothing that happens to the monitoring channel below changes that, so
@@ -339,14 +355,14 @@ export const actionAddFromLibrary = (uuid, path, format, driver, context, t) => 
                                 onVerdict: verdict => {
                                     followedPacks.delete(key);
                                     if (verdict.success) {
-                                        toast.update(toastId, {progress: null, type: toast.TYPE.SUCCESS, render: t('toasts.device.added'), autoClose: 5000});
+                                        toast.update(toastId, {progress: null, type: toast.TYPE.SUCCESS, render: t(keys.added), autoClose: 5000});
                                     } else if (verdict.unknown) {
                                         toast.update(toastId, {progress: null, type: toast.TYPE.WARNING, render: t('toasts.device.trackingLost'), autoClose: false});
                                     } else {
                                         // The backend says why the transfer failed. Show it, as for a
                                         // refusal at request time. Without a message there is nothing to
                                         // show, and no detail block is asked for.
-                                        toast.update(toastId, {progress: null, type: toast.TYPE.ERROR, render: failureRender(<>{t('toasts.device.addingFailed')}</>, verdict), autoClose: false});
+                                        toast.update(toastId, {progress: null, type: toast.TYPE.ERROR, render: failureRender(<>{t(keys.failed)}</>, verdict), autoClose: false});
                                     }
                                     // Refresh device metadata and packs list
                                     if (verdict.success || verdict.unknown) {
@@ -369,7 +385,7 @@ export const actionAddFromLibrary = (uuid, path, format, driver, context, t) => 
                             console.error('failed to add pack to device', e);
                             // showDetails: an upload can be refused for a precise reason the driver
                             // spells out (e.g. a destination folder that was already there).
-                            toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.device.addingFailed')}</>} error={e} showDetails />, autoClose: false });
+                            toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={withRepairOffer(t(keys.failed), e)} error={e} showDetails />, autoClose: false });
                             // Always release the mutex
                             release();
                         });
@@ -398,7 +414,7 @@ export const actionRemoveFromDevice = (uuid, t) => {
                     })
                     .catch(e => {
                         console.error('failed to remove pack from device', e);
-                        toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.device.removingFailed')}</>} error={e} showDetails />, autoClose: false });
+                        toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={withRepairOffer(t('toasts.device.removingFailed'), e)} error={e} showDetails />, autoClose: false });
                     })
                     .finally(() => {
                         // Always release the mutex
@@ -430,7 +446,7 @@ export const actionReorderOnDevice = (uuids, t) => {
                     })
                     .catch(e => {
                         console.error('failed to reorder packs on device', e);
-                        toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.device.reorderingFailed')}</>} error={e} showDetails />, autoClose: false });
+                        toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={withRepairOffer(t('toasts.device.reorderingFailed'), e)} error={e} showDetails />, autoClose: false });
                         // The list shown was reordered optimistically: re-read the real order
                         dispatch(actionRefreshDevice(t));
                     })

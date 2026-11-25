@@ -22,8 +22,13 @@ import {
     actionUploadManyToLibrary,
     actionCreatePackInEditor,
     actionLoadSampleInEditor,
+    actionRefreshDevice,
     setAllowEnriched
 } from "../actions";
+import DeviceRepair from "./DeviceRepair";
+import DeviceUpdateButton from "./DeviceUpdateButton";
+import {fetchDeviceUpdates} from "../services/deviceRepair";
+import {updateStatuses} from "../utils/deviceRepairEvents";
 import {AppContext} from "../AppContext";
 import Modal from "./Modal";
 import LibraryPurge from "./LibraryPurge";
@@ -77,8 +82,77 @@ export class PackLibrary extends React.Component {
             confirmConversionDialog: {
                 show: false,
                 data: null
-            }
+            },
+            // Update status of each device pack the library holds, by lower-case uuid (GET /api/device/updates)
+            deviceUpdates: {}
         };
+    }
+
+    componentDidUpdate(prevProps) {
+        const device = this.props.device || {};
+        const before = prevProps.device || {};
+        const library = this.props.library || {};
+        if (device.packs !== before.packs || device.metadata !== before.metadata || library.packs !== (prevProps.library || {}).packs) {
+            this.refreshDeviceUpdates();
+        }
+    }
+
+    /** Asks the backend which device packs the library holds in another version. 2.x+ devices only. */
+    refreshDeviceUpdates = () => {
+        const metadata = this.props.device && this.props.device.metadata;
+        if (!metadata || metadata.driver !== 'fs') {
+            if (Object.keys(this.state.deviceUpdates).length > 0) {
+                this.setState({deviceUpdates: {}});
+            }
+            return Promise.resolve();
+        }
+        const request = this.deviceUpdatesRequest = (this.deviceUpdatesRequest || 0) + 1;
+        return Promise.resolve()
+            .then(() => fetchDeviceUpdates())
+            .then(response => {
+                // Only the answer to the latest request is shown
+                if (request === this.deviceUpdatesRequest && !this.unmountedLibrary) {
+                    this.setState({deviceUpdates: updateStatuses(response)});
+                }
+            })
+            .catch(e => console.warn('could not compare the device with the library', e));
+    };
+
+    componentWillUnmount() {
+        this.unmountedLibrary = true;
+    }
+
+    deviceUpdateOf = (uuid) => this.state.deviceUpdates[String(uuid).toLowerCase()];
+
+    /**
+     * Replaces a pack already on the device by the library's version, keeping its place: the same
+     * decision (and conversion, if needed) as sending it, then an in-place update.
+     */
+    updatePackOnDevice = (uuid) => {
+        const group = ((this.state.library && this.state.library.packs) || [])
+            .find(g => String(g.uuid).toLowerCase() === String(uuid).toLowerCase());
+        if (!group || !this.state.device.metadata || !this.isPackDraggable(group.packs[0] || {})) {
+            return Promise.resolve();
+        }
+        return Promise.resolve(this.sendToDevice(group, 'update'));
+    };
+
+    /** Lower-case uuids and titles of the library, for the device check window. */
+    libraryIndex() {
+        const groups = (this.state.library && this.state.library.packs) || [];
+        const titles = {};
+        (this.state.device.packs || []).forEach(p => { if (p.title) { titles[String(p.uuid).toLowerCase()] = p.title; } });
+        groups.forEach(g => { if (g.packs[0] && g.packs[0].title) { titles[String(g.uuid).toLowerCase()] = g.packs[0].title; } });
+        return {uuids: groups.map(g => String(g.uuid).toLowerCase()), titles};
+    }
+
+    renderDeviceRepair(className) {
+        const index = this.libraryIndex();
+        return <DeviceRepair driver={this.state.device.metadata && this.state.device.metadata.driver}
+                             libraryUuids={index.uuids} titles={index.titles}
+                             onResend={this.updatePackOnDevice}
+                             onChanged={this.props.refreshDevice}
+                             className={className} />;
     }
 
     componentDidMount() {
@@ -86,6 +160,7 @@ export class PackLibrary extends React.Component {
             device: this.props.device,
             library: this.props.library
         });
+        this.refreshDeviceUpdates();
     }
 
     componentWillReceiveProps(nextProps, nextContext) {
@@ -109,7 +184,7 @@ export class PackLibrary extends React.Component {
      * Sends a library group ({uuid, packs}) to the plugged device, converting it first if needed.
      * Returns a promise settled once the transfer is started, or a dialog asks what to do.
      */
-    sendToDevice = (data) => {
+    sendToDevice = (data, mode = 'add') => {
         const driverFormat = this.state.device.metadata.driver;
         // Which artefact goes to the device is decided in utils/packs. It compares no timestamps and
         // selects on more than format: nothing records which source a conversion output came from,
@@ -127,7 +202,7 @@ export class PackLibrary extends React.Component {
             // No identifiable non-converted source is currently in the library, so there is no
             // current source to compare this against and none to offer for re-conversion
             console.log('OK, transferring pack: %o', cached);
-            return this.doAddToDevice(cached, cached.path);
+            return this.doAddToDevice(cached, cached.path, mode);
         }
 
         if (action === 'convert') {   // No compatible pack: convert the source
@@ -137,7 +212,7 @@ export class PackLibrary extends React.Component {
                 this.setState({
                     allowEnrichedDialog: {
                         show: true,
-                        data: { pack: {...source, format: driverFormat}, format: driverFormat, addToDevice: true }
+                        data: { pack: {...source, format: driverFormat}, format: driverFormat, addToDevice: true, mode }
                     }
                 });
             } else {
@@ -146,7 +221,7 @@ export class PackLibrary extends React.Component {
                     .then(path => {
                         // A failed conversion has already been reported, and yields no path
                         if (path) {
-                            return this.doAddToDevice({...source, format: driverFormat}, path);
+                            return this.doAddToDevice({...source, format: driverFormat}, path, mode);
                         }
                     });
             }
@@ -167,7 +242,7 @@ export class PackLibrary extends React.Component {
                 const verified = applyProvenanceVerdict(decision, verdict);
                 if (verified.action === 'transfer') {
                     console.log('conversion proven to match the source, transferring: %o', cached);
-                    return this.doAddToDevice(cached, cached.path);
+                    return this.doAddToDevice(cached, cached.path, mode);
                 }
                 console.log('conversion not proven (%s), asking', verified.verdict);
                 this.setState({
@@ -177,15 +252,19 @@ export class PackLibrary extends React.Component {
                             pack: {...source, format: driverFormat},
                             format: driverFormat,
                             cached,
-                            verdict: verified.verdict
+                            verdict: verified.verdict,
+                            mode
                         }
                     }
                 });
             });
     };
 
-    doAddToDevice = (data, path) => {
-        // Transfer pack and show progress
+    doAddToDevice = (data, path, mode) => {
+        // Transfer pack and show progress; 'update' replaces the pack already on the device, in place
+        if (mode === 'update') {
+            return this.props.updateOnDevice(data.uuid, path, data.format, this.state.device.metadata.driver, this.context);
+        }
         return this.props.addFromLibrary(data.uuid, path, data.format, this.state.device.metadata.driver, this.context);
     };
 
@@ -214,7 +293,7 @@ export class PackLibrary extends React.Component {
                 .then(path => {
                     // A failed conversion has already been reported, and yields no path
                     if (path && data.addToDevice) {
-                        this.doAddToDevice(data.pack, path);
+                        this.doAddToDevice(data.pack, path, data.mode);
                     }
                 });
         }
@@ -240,12 +319,12 @@ export class PackLibrary extends React.Component {
                     .then(path => {
                         // A failed conversion has already been reported, and yields no path
                         if (path) {
-                            this.doAddToDevice(data.pack, path);
+                            this.doAddToDevice(data.pack, path, data.mode);
                         }
                     });
             } else if (answer === 'transfer') {
                 // The user decides the existing pack is the one they want. STUdio cannot tell.
-                this.doAddToDevice(data.cached, data.cached.path);
+                this.doAddToDevice(data.cached, data.cached.path, data.mode);
             }
         }
     };
@@ -471,6 +550,7 @@ export class PackLibrary extends React.Component {
                         <div><strong>{t('library.device.sdcardsize')}</strong> { (this.state.device.metadata.storage.size / 1073741824 ).toFixed(1) || '-'} {t('library.device.sdcardunit')}</div>
                         <div><strong>{t('library.device.packs.length')}</strong> { this.state.device.packs.length || '-' }</div>
                         {this.state.device.metadata.error && <p><strong>DEVICE HAS ERRORS</strong></p>}
+                        {this.renderDeviceRepair()}
                         <div className="progress">
                             <div className={`progress-bar ${storageStatus}`} role="progressbar" style={{width: storagePercentage}} aria-valuenow={this.state.device.metadata.storage.taken} aria-valuemin="0" aria-valuemax={this.state.device.metadata.storage.size}>{storagePercentage}</div>
                         </div>
@@ -546,6 +626,9 @@ export class PackLibrary extends React.Component {
                                     <div className="pack-title">
                                         <span title={pack.uuid}>{pack.title && pack.title !== "MISSING_PACK_TITLE" ? pack.title : pack.uuid}</span>&nbsp;
                                     </div>
+                                    {!pack.official && <div className="pack-update">
+                                        <DeviceUpdateButton status={this.deviceUpdateOf(pack.uuid)} onUpdate={() => this.updatePackOnDevice(pack.uuid)} />
+                                    </div>}
                                     <div className="pack-actions">
                                         <button className="pack-action" onClick={this.onRemovePackFromDevice(pack.uuid)}>
                                             <span className="glyphicon glyphicon-trash"
@@ -669,6 +752,8 @@ export const mapStateToProps = (state, ownProps) => ({
 
 export const mapDispatchToProps = (dispatch, ownProps) => ({
     addFromLibrary: (uuid, path, format, driver, context) => dispatch(actionAddFromLibrary(uuid, path, format, driver, context, ownProps.t)),
+    updateOnDevice: (uuid, path, format, driver, context) => dispatch(actionAddFromLibrary(uuid, path, format, driver, context, ownProps.t, 'update')),
+    refreshDevice: () => dispatch(actionRefreshDevice(ownProps.t)),
     removeFromDevice: (uuid) => dispatch(actionRemoveFromDevice(uuid, ownProps.t)),
     reorderOnDevice: (uuids) => dispatch(actionReorderOnDevice(uuids, ownProps.t)),
     addToLibrary: (uuid, driver, context) => dispatch(actionAddToLibrary(uuid, driver, context, ownProps.t)),
