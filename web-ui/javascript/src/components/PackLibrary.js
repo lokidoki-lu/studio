@@ -26,6 +26,7 @@ import {
 import {AppContext} from "../AppContext";
 import Modal from "./Modal";
 import LibraryPurge from "./LibraryPurge";
+import YoutubePack from "./YoutubePack";
 import {
     LOCAL_STORAGE_ALLOW_ENRICHED_BINARY_FORMAT
 } from "../utils/storage";
@@ -547,6 +548,7 @@ class PackLibrary extends React.Component {
                             <input type="search" value={this.state.search || ''} placeholder={t('library.local.search')} aria-label={t('library.local.search')} onChange={e => this.setState({search: e.target.value})} />
                         </div>
                         <button type="button" title={t('library.local.addPack')} className="btn btn-primary ui-btn ui-btn-primary library-import" onClick={this.showAddFileSelector}><span className="glyphicon glyphicon-import"/> {t('library.local.import')}</button>
+                        <YoutubePack />
                         <LibraryPurge />
                         <div className="format-legend">
                             <span className="legend-archive">{t('library.format.archive')}</span>
