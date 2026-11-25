@@ -287,10 +287,14 @@
     border-color: rgba(47, 179, 109, .5);
 }
 
+/* Dark theme, as in index.css: per the system unless the header switch forces light, or forced dark */
 @media (prefers-color-scheme: dark) {
-    .pack-library-simple .simple-badge.ok {
+    :root:not([data-theme="light"]) .pack-library-simple .simple-badge.ok {
         color: #5fd49a;
     }
+}
+:root[data-theme="dark"] .pack-library-simple .simple-badge.ok {
+    color: #5fd49a;
 }
 
 @media (max-width: 720px) {
