@@ -65,8 +65,14 @@ final class DeviceSpaceEstimate {
     /** The pack folder, rf, rf/000, sf and sf/000. */
     static final long FS_FOLDERS = 5;
     static final long SECTOR = 512;
-    /** An MP3 assumed at 64 kbps when its own header cannot be read, so that its WAV is not under-counted. */
-    static final long MP3_TO_WAV_FACTOR = WAV_BYTES_PER_SECOND / 8_000;
+    /**
+     * An MP3 assumed at 32 kbps when its own header cannot be read (an FS asset is enciphered from its
+     * first byte), so that its WAV is not under-counted: 32 kbps is the lowest bit rate of MPEG-1 Layer
+     * III, which a 44.1 kHz MP3 is, and a VBR voice track can average close to it. 64 kbps, assumed
+     * before, under-counted such a track by half.
+     */
+    static final long MP3_MIN_BYTES_PER_SECOND = 32_000 / 8;
+    static final long MP3_TO_WAV_FACTOR = WAV_BYTES_PER_SECOND / MP3_MIN_BYTES_PER_SECOND;
 
     private DeviceSpaceEstimate() {
     }
