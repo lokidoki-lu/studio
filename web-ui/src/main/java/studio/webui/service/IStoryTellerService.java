@@ -39,4 +39,62 @@ public interface IStoryTellerService {
 
     /** Removes the named unreferenced pack content folders, and reports what happened to each. */
     CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames);
+
+    // ------------------------------------------------------------ device check, repairs, updates
+    // Defaults refuse, so that stand-ins (the mock service, test fakes) need not implement them.
+
+    /** What the device check found: see API.md, "Device check and repairs". */
+    default CompletableFuture<JsonObject> diagnosis() {
+        return CompletableFuture.failedFuture(unsupported());
+    }
+
+    /** Discards ({@code adopt == false}) or adopts a pending {@code .pi.new}, if still as checked. */
+    default CompletableFuture<Boolean> resolvePendingIndex(boolean adopt, String fingerprint) {
+        return CompletableFuture.failedFuture(unsupported());
+    }
+
+    /** Finishes or cleans up an interrupted in-place update of the pack folder {@code folder}. */
+    default CompletableFuture<Boolean> resolveInterruptedUpdate(String folder) {
+        return CompletableFuture.failedFuture(unsupported());
+    }
+
+    /** Starts a read-only integrity check of every pack on the device; answers with its id. */
+    default CompletableFuture<String> startIntegrityCheck() {
+        return CompletableFuture.failedFuture(unsupported());
+    }
+
+    /** The state of an integrity check, with its results once done. */
+    default Optional<JsonObject> integrityCheck(String id) {
+        return Optional.empty();
+    }
+
+    /** Queues the in-place replacement of a pack already on the device; answers with a transfer id. */
+    default CompletableFuture<Optional<String>> updatePack(String uuid, File packFile) {
+        return CompletableFuture.failedFuture(unsupported());
+    }
+
+    /** Whether the pack on the device holds exactly what sending {@code packFolder} would write. */
+    default CompletableFuture<Boolean> packContentMatches(String uuid, File packFolder) {
+        return CompletableFuture.completedFuture(false);
+    }
+
+    /** Identifies the plugged device across sessions (its serial number), if a 2.x+ device is plugged. */
+    default CompletableFuture<Optional<String>> fsDeviceKey() {
+        return CompletableFuture.completedFuture(Optional.empty());
+    }
+
+    /** Told after a pack was written to, or removed from, a 2.x+ device. */
+    interface DevicePackListener {
+        void onWritten(String deviceKey, String uuid, File packFile);
+
+        void onRemoved(String deviceKey, String uuid);
+    }
+
+    default void setDevicePackListener(DevicePackListener listener) {
+    }
+
+    private static studio.driver.StoryTellerException unsupported() {
+        return new studio.driver.StoryTellerException(studio.driver.StoryTellerException.Reason.UNSUPPORTED_ON_DEVICE,
+                "Not available with this device service");
+    }
 }

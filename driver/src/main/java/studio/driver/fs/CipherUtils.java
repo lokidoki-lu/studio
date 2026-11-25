@@ -78,6 +78,15 @@ public class CipherUtils {
         }
     }
 
+    /**
+     * The {@code bt} file {@link #addBootFileV2} writes for a pack whose {@code ri}, as stored on the
+     * card, is {@code riStored}: lets a check compare without writing anything.
+     */
+    static byte[] expectedBootFileV2(byte[] riStored, byte[] deviceUuid) {
+        byte[] block = Arrays.copyOfRange(riStored, 0, Math.min(CIPHER_BLOCK_SIZE_BOOT_V2, riStored.length));
+        return cipherFirstBlockSpecificKeyV2(block, computeSpecificKeyV2FromUUID(deviceUuid));
+    }
+
     static void addBootFileV3(Path packFolder, FsDeviceKeyV3 deviceKeyV3) throws IOException {
         addBootFileV3(packFolder, deviceKeyV3, new OpenOption[0]);
     }

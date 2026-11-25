@@ -11,7 +11,9 @@ import org.usb4java.Device;
 import studio.core.v1.reader.fs.FsStoryPackReader;
 import studio.driver.DeviceVersion;
 import studio.driver.LibUsbDetectionHelper;
+import studio.driver.model.fs.FsDeviceDiagnosis;
 import studio.driver.model.fs.FsDeviceInfos;
+import studio.driver.model.fs.FsPackIntegrity;
 import studio.driver.model.fs.FsDeviceKeyV3;
 import studio.driver.model.fs.FsStoryPackInfos;
 import studio.driver.StoryTellerException;
@@ -539,6 +541,9 @@ public class FsStoryTellerAsyncDriver {
                         try (Stream<Path> entries = Files.list(contentFolder)) {
                             entries.filter(Files::isDirectory)
                                     .map(entry -> entry.getFileName().toString())
+                                    // The leftovers of an interrupted in-place update are reported,
+                                    // with what to do about them, by the device check (diagnose).
+                                    .filter(name -> FsDeviceMaintenance.stagingHex(name) == null)
                                     .filter(name -> !referenced.contains(name.toUpperCase(Locale.ROOT)))
                                     .forEach(unreferenced::add);
                         } catch (IOException e) {
@@ -792,7 +797,11 @@ public class FsStoryTellerAsyncDriver {
             packIndexWriter.write(session.mountPoint + File.separator + PACK_INDEX_FILENAME, packUUIDs);
             return CompletableFuture.completedFuture(true);
         } catch (Exception e) {
-            return CompletableFuture.failedFuture(new StoryTellerException("Failed to write pack index on device partition", e));
+            // A leftover .pi.new is a state the user can resolve (GET /api/device/diagnosis): say so
+            // with a reason the client can act on, rather than as an unknown failure.
+            StoryTellerException.Reason reason = e.getCause() instanceof FileAlreadyExistsException
+                    ? StoryTellerException.Reason.PACK_INDEX_PENDING : StoryTellerException.Reason.UNKNOWN;
+            return CompletableFuture.failedFuture(new StoryTellerException(reason, "Failed to write pack index on device partition", e));
         }
     }
 
@@ -842,6 +851,440 @@ public class FsStoryTellerAsyncDriver {
 
     private String folderNameOf(UUID packUUID) {
         return computePackFolderName(packUUID.toString());
+    }
+
+
+    // ================================================================== maintenance: diagnosis and repairs
+
+    /** Reads {@code .pi} in full and refuses one that is not a whole number of records. */
+    private static byte[] readValidIndexBytes(String mountPoint) {
+        byte[] index;
+        try {
+            index = Files.readAllBytes(Paths.get(mountPoint, PACK_INDEX_FILENAME));
+        } catch (IOException e) {
+            throw new StoryTellerException("Failed to read pack index on device partition", e);
+        }
+        if (index.length % PACK_INDEX_RECORD_SIZE != 0) {
+            throw new StoryTellerException("Invalid pack index on device partition: " + index.length
+                    + " bytes is not a whole number of " + PACK_INDEX_RECORD_SIZE + "-byte records");
+        }
+        return index;
+    }
+
+    /**
+     * Inspects the partition's bookkeeping, reading only: unreferenced folders (with their size),
+     * index entries without content, a pending {@code .pi.new} and what discarding or adopting it
+     * would mean, and the leftovers of an interrupted in-place update.
+     */
+    public CompletableFuture<FsDeviceDiagnosis> diagnose() {
+        PartitionSession session = currentPartition();
+        if (session == null) {
+            return CompletableFuture.failedFuture(noDevice());
+        }
+        return CompletableFuture.supplyAsync(() -> {
+            byte[] index = readValidIndexBytes(session.mountPoint);
+            try {
+                return FsDeviceMaintenance.diagnose(Paths.get(session.mountPoint), index);
+            } catch (IOException e) {
+                throw new StoryTellerException("Failed to inspect the device partition", e);
+            }
+        });
+    }
+
+    /**
+     * Resolves a pending {@code .pi.new}: discards it (the installed {@code .pi} stays) or adopts it
+     * (it replaces {@code .pi}, by the same atomic move the index writer uses).
+     *
+     * <p>{@code fingerprint} is the one the diagnosis reported: the two files are read again here,
+     * and nothing is done if they changed since. Adopting is refused for a torn file, and for one
+     * that would index a pack whose content never finished copying.
+     */
+    public CompletableFuture<Boolean> resolvePendingIndex(boolean adopt, String fingerprint) {
+        PartitionSession session = currentPartition();
+        if (session == null) {
+            return CompletableFuture.failedFuture(noDevice());
+        }
+        return CompletableFuture.supplyAsync(() -> {
+            Path partition = Paths.get(session.mountPoint);
+            Path index = partition.resolve(PACK_INDEX_FILENAME);
+            Path pending = partition.resolve(PACK_INDEX_FILENAME + TemporaryFilePackIndexWriter.TEMPORARY_SUFFIX);
+            if (!Files.exists(pending, LinkOption.NOFOLLOW_LINKS)) {
+                throw new StoryTellerException(StoryTellerException.Reason.DEVICE_STATE_CHANGED,
+                        "There is no pending pack index on the device any more: nothing was done");
+            }
+            byte[] current = readValidIndexBytes(session.mountPoint);
+            byte[] pendingBytes;
+            try {
+                pendingBytes = Files.readAllBytes(pending);
+            } catch (IOException e) {
+                throw new StoryTellerException("Failed to read the pending pack index", e);
+            }
+            FsDeviceDiagnosis.PendingIndex analysis = FsDeviceMaintenance.analysePendingIndex(current, pendingBytes,
+                    partition.resolve(CONTENT_FOLDER));
+            if (fingerprint == null || !fingerprint.equals(analysis.getFingerprint())) {
+                throw new StoryTellerException(StoryTellerException.Reason.DEVICE_STATE_CHANGED,
+                        "The pack index files changed since they were checked: nothing was done. Check the device again.");
+            }
+            ensureSamePartition(session, "the pending pack index was left as it is");
+            try {
+                if (adopt) {
+                    if (analysis.getKind() == FsDeviceDiagnosis.PendingIndexKind.TORN) {
+                        throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                                "The pending pack index is incomplete and cannot be adopted; it can only be discarded");
+                    }
+                    if (analysis.getKind() == FsDeviceDiagnosis.PendingIndexKind.ADD_INCOMPLETE) {
+                        throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                                "Adopting the pending pack index would list a pack whose copy did not finish; it can only be discarded");
+                    }
+                    LOGGER.info("Adopting the pending pack index " + pending);
+                    FsSync.forceFile(pending);
+                    Files.move(pending, index, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                } else {
+                    LOGGER.info("Discarding the pending pack index " + pending);
+                    Files.delete(pending);
+                }
+            } catch (IOException e) {
+                throw new StoryTellerException("Failed to resolve the pending pack index", e);
+            }
+            FsSync.forceDirectoryBestEffort(partition);
+            return true;
+        });
+    }
+
+    /**
+     * Finishes, or cleans up after, an in-place update that was interrupted, for the pack folder
+     * {@code folderName}. The state is read again here from the folders on the card:
+     * <ul>
+     *     <li>new copy and pack folder both there: the copy was cut short, the new copy is removed;</li>
+     *     <li>new copy and previous content, no pack folder: cut between the two renames, the new copy
+     *     (complete, since the swap only starts once it is) becomes the pack folder;</li>
+     *     <li>previous content only: it is put back as the pack folder;</li>
+     *     <li>pack folder and previous content: the previous content is removed.</li>
+     * </ul>
+     * The pack index is not touched.
+     */
+    public CompletableFuture<Boolean> resolveInterruptedUpdate(String folderName) {
+        PartitionSession session = currentPartition();
+        if (session == null) {
+            return CompletableFuture.failedFuture(noDevice());
+        }
+        if (folderName == null || !FsDeviceMaintenance.PACK_FOLDER_NAME.matcher(folderName).matches()) {
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                    "Not a pack content folder name: " + folderName));
+        }
+        String hex = folderName.toUpperCase(Locale.ROOT);
+        return CompletableFuture.supplyAsync(() -> {
+            Path content = Paths.get(session.mountPoint, CONTENT_FOLDER);
+            Path folder = content.resolve(hex);
+            Path fresh = content.resolve(FsDeviceMaintenance.STAGING_NEW_PREFIX + hex);
+            Path previous = content.resolve(FsDeviceMaintenance.STAGING_OLD_PREFIX + hex);
+            boolean hasFolder = Files.isDirectory(folder, LinkOption.NOFOLLOW_LINKS);
+            boolean hasNew = Files.isDirectory(fresh, LinkOption.NOFOLLOW_LINKS);
+            boolean hasOld = Files.isDirectory(previous, LinkOption.NOFOLLOW_LINKS);
+            if (!hasNew && !hasOld) {
+                throw new StoryTellerException(StoryTellerException.Reason.DEVICE_STATE_CHANGED,
+                        "No interrupted update is left for the pack folder " + hex + ": nothing was done");
+            }
+            ensureSamePartition(session, "the interrupted update was left as it is");
+            try {
+                if (!hasFolder && hasNew && hasOld && FsDeviceMaintenance.isCompletePackFolder(fresh)) {
+                    LOGGER.info("Completing the interrupted update of " + hex);
+                    renameFolder(fresh, folder);
+                    FsSync.forceDirectoryBestEffort(content);
+                    removeFolder(previous);
+                } else if (!hasFolder && hasOld) {
+                    LOGGER.info("Restoring the previous content of " + hex);
+                    renameFolder(previous, folder);
+                    FsSync.forceDirectoryBestEffort(content);
+                    if (hasNew) {
+                        removeFolder(fresh);
+                    }
+                } else {
+                    // The pack folder is there (or nothing can be promoted): leftovers only.
+                    if (hasNew) {
+                        removeFolder(fresh);
+                    }
+                    if (hasOld) {
+                        removeFolder(previous);
+                    }
+                }
+            } catch (IOException e) {
+                throw new StoryTellerException("Failed to resolve the interrupted update of " + hex, e);
+            }
+            return true;
+        });
+    }
+
+    /** Progress of a whole-device integrity check: files looked at so far, out of an estimated total. */
+    public interface IntegrityProgress {
+        void onProgress(int checked, int total);
+    }
+
+    /**
+     * Checks every pack of the index, reading only (see {@link FsDeviceMaintenance#checkPack}).
+     * Packs are reported in index order, once each.
+     */
+    public CompletableFuture<List<FsPackIntegrity>> checkIntegrity(IntegrityProgress progress) {
+        PartitionSession session = currentPartition();
+        if (session == null) {
+            return CompletableFuture.failedFuture(noDevice());
+        }
+        return readPackIndex(session.mountPoint)
+                .thenCompose(packUUIDs -> getDeviceInfos(session.mountPoint)
+                        .thenApply(infos -> {
+                            requireSupportedFirmware(infos);
+                            Path content = Paths.get(session.mountPoint, CONTENT_FOLDER);
+                            List<UUID> packs = new ArrayList<>(new LinkedHashSet<>(packUUIDs));
+                            int total = 0;
+                            for (UUID uuid : packs) {
+                                total += FsDeviceMaintenance.filesToCheck(content.resolve(folderNameOf(uuid)));
+                            }
+                            final int estimated = Math.max(total, 1);
+                            int[] checked = {0};
+                            List<FsPackIntegrity> results = new ArrayList<>();
+                            for (UUID uuid : packs) {
+                                ensureSamePartition(session, "the check was not finished");
+                                results.add(FsDeviceMaintenance.checkPack(uuid, content.resolve(folderNameOf(uuid)), infos, n -> {
+                                    checked[0] += n;
+                                    if (progress != null) {
+                                        progress.onProgress(checked[0], Math.max(estimated, checked[0]));
+                                    }
+                                }));
+                            }
+                            return results;
+                        }));
+    }
+
+    /**
+     * Whether the pack on the device holds exactly what uploading the library folder
+     * {@code libraryFolder} would write: same files, and the same bytes once transformed for this
+     * device as an upload transforms them. The boot file, regenerated per device, is left out.
+     * Reads only, and stops at the first difference.
+     */
+    public CompletableFuture<Boolean> packContentMatches(String uuid, String libraryFolder) {
+        PartitionSession session = currentPartition();
+        if (session == null) {
+            return CompletableFuture.failedFuture(noDevice());
+        }
+        UUID packUUID;
+        try {
+            packUUID = canonicalPackUuid(uuid);
+        } catch (StoryTellerException invalid) {
+            return CompletableFuture.failedFuture(invalid);
+        }
+        return getDeviceInfos(session.mountPoint).thenApply(infos -> {
+            requireSupportedFirmware(infos);
+            Path deviceFolder = Paths.get(session.mountPoint, CONTENT_FOLDER, folderNameOf(packUUID));
+            Path source = Paths.get(libraryFolder);
+            try {
+                return sameContent(source, deviceFolder, infos);
+            } catch (IOException | RuntimeException e) {
+                LOGGER.log(Level.FINE, "Could not compare " + source + " with " + deviceFolder, e);
+                return false;
+            }
+        });
+    }
+
+    private static boolean sameContent(Path source, Path deviceFolder, FsDeviceInfos infos) throws IOException {
+        if (!Files.isDirectory(source) || !Files.isDirectory(deviceFolder)) {
+            return false;
+        }
+        Map<String, Path> expected = relativeFiles(source, true);
+        Map<String, Path> actual = relativeFiles(deviceFolder, false);
+        if (!expected.keySet().equals(actual.keySet())) {
+            return false;
+        }
+        boolean isCleartext = new FsStoryPackReader().isCleartext(source, false) || riLooksCleartext(source);
+        for (Map.Entry<String, Path> file : expected.entrySet()) {
+            Path s = file.getValue();
+            Path d = actual.get(file.getKey());
+            byte[] wanted = uploadedBytes(s, isCleartext, infos);
+            if (Files.size(d) != wanted.length || !Arrays.equals(wanted, Files.readAllBytes(d))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Regular files under {@code root}, by upper-case relative path; the boot file and {@code .cleartext} left out. */
+    private static Map<String, Path> relativeFiles(Path root, boolean library) throws IOException {
+        Map<String, Path> files = new TreeMap<>();
+        try (Stream<Path> paths = Files.walk(root)) {
+            for (Path p : (Iterable<Path>) paths::iterator) {
+                if (!Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS)) {
+                    continue;
+                }
+                boolean top = root.equals(p.getParent());
+                if (top && isBootFile(p)) {
+                    continue;
+                }
+                if (library && !CipherUtils.shouldBeCopied(p)) {
+                    continue;
+                }
+                files.put(root.relativize(p).toString().replace('\\', '/').toUpperCase(Locale.ROOT), p);
+            }
+        }
+        return files;
+    }
+
+    /** The bytes an upload writes for {@code s}: the same rules as {@link #copyPackFolder}. */
+    private static byte[] uploadedBytes(Path s, boolean isCleartext, FsDeviceInfos deviceInfos) throws IOException {
+        byte[] data = Files.readAllBytes(s);
+        if (!CipherUtils.shouldBeCiphered(s)) {
+            return data;
+        }
+        if (deviceInfos.getFirmwareMajor() == 2) {
+            return isCleartext ? CipherUtils.cipherFirstBlockCommonKey(data) : data;
+        }
+        if (!isCleartext) {
+            data = CipherUtils.decipherFirstBlockCommonKey(data);
+        }
+        return CipherUtils.cipherFirstBlockSpecificKeyV3(data, deviceInfos.getDeviceKeyV3());
+    }
+
+    /**
+     * Replaces a pack already on the device by the library folder {@code inputPath}, keeping its
+     * place in the index — which is not even rewritten: the entry is the UUID, and the folder name
+     * follows from it.
+     *
+     * <ol>
+     *     <li>The new content is copied, exactly as an upload copies it, into
+     *     {@code .content/.studio-new-XXXXXXXX}, created exclusively, and pushed to the card. The pack
+     *     on the device is untouched meanwhile: an unplug here leaves it playable, plus a leftover.</li>
+     *     <li>The pack folder is renamed to {@code .studio-old-XXXXXXXX}, then the new copy to the pack
+     *     folder: two renames in the same directory, back to back. FAT has no atomic exchange, so an
+     *     unplug exactly between the two leaves the pack folder missing; the diagnosis recognises that
+     *     state and finishes the swap by a single rename, nothing copied again.</li>
+     *     <li>The previous content is removed. If that is cut short the pack is already updated, and
+     *     the leftover is reported by the diagnosis.</li>
+     * </ol>
+     */
+    public CompletableFuture<TransferStatus> updatePack(String uuid, String inputPath, TransferProgressListener listener) {
+        PartitionSession session = currentPartition();
+        if (session == null) {
+            return CompletableFuture.failedFuture(noDevice());
+        }
+        UUID packUUID;
+        try {
+            packUUID = canonicalPackUuid(uuid);
+        } catch (StoryTellerException invalid) {
+            return CompletableFuture.failedFuture(invalid);
+        }
+        String mountPoint = session.mountPoint;
+        String hex = folderNameOf(packUUID);
+        Path content = Paths.get(mountPoint, CONTENT_FOLDER);
+        Path folder = content.resolve(hex);
+        Path fresh = content.resolve(FsDeviceMaintenance.STAGING_NEW_PREFIX + hex);
+        Path previous = content.resolve(FsDeviceMaintenance.STAGING_OLD_PREFIX + hex);
+
+        return readPackIndex(mountPoint).thenCompose(packUUIDs -> {
+            if (!packUUIDs.contains(packUUID)) {
+                throw new StoryTellerException(StoryTellerException.Reason.PACK_NOT_ON_DEVICE,
+                        "The pack " + packUUID + " is not on the device: there is nothing to update, it can be added instead");
+            }
+            Optional<UUID> sharing = packUUIDs.stream()
+                    .filter(p -> !p.equals(packUUID) && folderNameOf(p).equalsIgnoreCase(hex)).findFirst();
+            if (sharing.isPresent()) {
+                throw new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "The content folder " + hex
+                        + " is also the folder of pack " + sharing.get() + ": replacing it would change that pack too");
+            }
+            if (!Files.isDirectory(folder, LinkOption.NOFOLLOW_LINKS)) {
+                throw new StoryTellerException(StoryTellerException.Reason.PACK_NOT_ON_DEVICE, "The pack " + packUUID
+                        + " is listed by the index but its folder " + hex + " is missing: check the device first");
+            }
+            if (Files.exists(fresh, LinkOption.NOFOLLOW_LINKS) || Files.exists(previous, LinkOption.NOFOLLOW_LINKS)) {
+                throw new StoryTellerException(StoryTellerException.Reason.CONTENT_FOLDER_EXISTS, "An earlier update of "
+                        + packUUID + " was interrupted and left " + (Files.exists(fresh) ? fresh : previous)
+                        + ": nothing was copied. Resolve it from the device check first (GET /api/device/diagnosis).");
+            }
+            long requiredBytes;
+            try {
+                long currentIndexBytes = new File(mountPoint + File.separator + PACK_INDEX_FILENAME).length();
+                // The previous content is still on the card while the new one is copied.
+                requiredBytes = PackTransferSizeEstimator.additionalBytesForUpload(Paths.get(inputPath), currentIndexBytes);
+            } catch (IOException | ArithmeticException e) {
+                throw new StoryTellerException(StoryTellerException.Reason.NOT_ENOUGH_SPACE, "Not enough free space on the device", e);
+            }
+            if (!hasEnoughFreeSpace(new File(mountPoint + File.separator + DEVICE_METADATA_FILENAME).getFreeSpace(), requiredBytes)) {
+                throw new StoryTellerException(StoryTellerException.Reason.NOT_ENOUGH_SPACE,
+                        "Not enough free space on the device: the new version is copied before the previous one is removed");
+            }
+            try {
+                ensureSamePartition(session, "nothing was copied");
+                Files.createDirectory(fresh);
+            } catch (FileAlreadyExistsException e) {
+                throw new StoryTellerException(StoryTellerException.Reason.CONTENT_FOLDER_EXISTS, "Already exists: " + fresh, e);
+            } catch (IOException e) {
+                throw new StoryTellerException("Failed to copy pack to device", e);
+            }
+            AtomicBoolean swapped = new AtomicBoolean(false);
+            CompletableFuture<TransferStatus> update = getDeviceInfos(mountPoint).thenApply(deviceInfos -> {
+                TransferStatus status;
+                try {
+                    status = copyPackFolder(session, inputPath, fresh.toFile(), deviceInfos, true, progressOnly(listener));
+                    FsSync.forceDirectoryTreeBestEffort(fresh);
+                    FsSync.forceDirectoryBestEffort(content);
+                } catch (IOException e) {
+                    throw new StoryTellerException("Failed to copy pack to device", e);
+                }
+                ensureSamePartition(session, "the pack on the device was left as it was");
+                try {
+                    renameFolder(folder, previous);
+                } catch (IOException e) {
+                    throw new StoryTellerException("Failed to move the previous version of the pack aside", e);
+                }
+                try {
+                    renameFolder(fresh, folder);
+                    swapped.set(true);
+                } catch (IOException | RuntimeException e) {
+                    // Put the previous version back, so the pack stays as it was.
+                    try {
+                        renameFolder(previous, folder);
+                    } catch (IOException | RuntimeException rollback) {
+                        e.addSuppressed(rollback);
+                        LOGGER.log(Level.SEVERE, "Could not put back " + previous + " after a failed update: the device"
+                                + " check will offer to finish or undo it", rollback);
+                    }
+                    throw e instanceof StoryTellerException ? (StoryTellerException) e
+                            : new StoryTellerException("Failed to install the new version of the pack", e);
+                }
+                FsSync.forceDirectoryBestEffort(content);
+                try {
+                    removeFolder(previous);
+                } catch (IOException | RuntimeException e) {
+                    // The pack is updated; only the leftover remains, which the diagnosis reports.
+                    LOGGER.log(Level.WARNING, "The pack was updated but its previous version could not be removed: " + previous, e);
+                }
+                if (listener != null) {
+                    listener.onComplete(status);
+                }
+                return status;
+            });
+            return update.handle((status, failure) -> {
+                if (failure == null) {
+                    return CompletableFuture.completedFuture(status);
+                }
+                Throwable cause = (failure instanceof CompletionException && failure.getCause() != null) ? failure.getCause() : failure;
+                if (!swapped.get() && Files.exists(fresh) && Files.isDirectory(folder) && isCurrent(session)) {
+                    try {
+                        removeFolder(fresh);
+                    } catch (IOException | RuntimeException cleanup) {
+                        cause.addSuppressed(cleanup);
+                    }
+                }
+                return CompletableFuture.<TransferStatus>failedFuture(cause);
+            }).thenCompose(f -> f);
+        });
+    }
+
+    /** Renames a folder within {@code .content}. A seam: tests interrupt an update here. */
+    void renameFolder(Path from, Path to) throws IOException {
+        Files.move(from, to, StandardCopyOption.ATOMIC_MOVE);
+    }
+
+    /** Removes a folder and everything in it. A seam, like {@link #renameFolder}. */
+    void removeFolder(Path folder) throws IOException {
+        org.apache.commons.io.FileUtils.deleteDirectory(folder.toFile());
     }
 
 
@@ -1001,10 +1444,11 @@ public class FsStoryTellerAsyncDriver {
         Path pendingIndex = Paths.get(mountPoint, PACK_INDEX_FILENAME + TemporaryFilePackIndexWriter.TEMPORARY_SUFFIX);
         if (Files.exists(pendingIndex, LinkOption.NOFOLLOW_LINKS)) {
             LOGGER.warning("Refusing to upload the pack: a pack index temporary file is already present at " + pendingIndex);
-            return CompletableFuture.failedFuture(new StoryTellerException(
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.PACK_INDEX_PENDING,
                     "A pack index temporary file already exists on the device partition: " + pendingIndex
                             + ". The index could not be updated, so the upload was refused before anything was"
-                            + " copied. Nothing was read, written or removed."));
+                            + " copied. Nothing was read, written or removed. It can be resolved from the device"
+                            + " check (GET /api/device/diagnosis)."));
         }
 
         final Path destFolderPath;
