@@ -25,7 +25,8 @@ final class DeviceRepairJson {
         d.getOrphans().forEach(o -> orphans.add(new JsonObject()
                 .put("folder", o.getFolder())
                 .put("sizeInBytes", o.getSizeInBytes())
-                .put("complete", o.isComplete())));
+                .put("complete", o.isComplete())
+                .put("referencedByPendingIndex", o.isReferencedByPendingIndex())));
         JsonArray missing = new JsonArray();
         d.getMissingContent().forEach(m -> missing.add(new JsonObject()
                 .put("uuid", m.getUuid().toString())
@@ -44,7 +45,8 @@ final class DeviceRepairJson {
                 .put("problems", d.problemCount())
                 .put("orphans", orphans)
                 .put("missingContent", missing)
-                .put("interruptedUpdates", interrupted);
+                .put("interruptedUpdates", interrupted)
+                .put("deviceToken", d.getDeviceToken());
         FsDeviceDiagnosis.PendingIndex p = d.getPendingIndex();
         if (p == null) {
             json.putNull("pendingIndex");
@@ -52,8 +54,8 @@ final class DeviceRepairJson {
             json.put("pendingIndex", new JsonObject()
                     .put("kind", p.getKind().name())
                     .put("safeToDiscard", p.isSafeToDiscard())
-                    .put("canAdopt", p.getKind() != FsDeviceDiagnosis.PendingIndexKind.TORN
-                            && p.getKind() != FsDeviceDiagnosis.PendingIndexKind.ADD_INCOMPLETE)
+                    .put("canAdopt", p.isAdoptable())
+                    .put("incomplete", uuids(p.getIncomplete()))
                     .put("fingerprint", p.getFingerprint())
                     .put("currentCount", p.getCurrentCount())
                     .put("pendingCount", p.getPendingCount())
@@ -80,6 +82,7 @@ final class DeviceRepairJson {
                 .put("images", r.getImages())
                 .put("sounds", r.getSounds())
                 .put("filesChecked", r.getFilesChecked())
+                .put("structureOnly", r.isStructureOnly())
                 .put("problems", problems);
         if (metadata != null) {
             metadata.getPackMetadata(r.getUuid().toString()).ifPresent(m -> json

@@ -151,6 +151,50 @@ class DeviceMaintenanceTest {
         return StoryTellerException.reasonOf(t);
     }
 
+    /** The token the device check answers with, which every repair must be asked with. */
+    private static String token(FsStoryTellerAsyncDriver driver) {
+        return driver.diagnose().join().getDeviceToken();
+    }
+
+    private List<UUID> installedIndex() throws IOException {
+        return FsDeviceMaintenance.parseIndex(Files.readAllBytes(index()));
+    }
+
+    private Path content() {
+        return partition.resolve(".content");
+    }
+
+    private Path staging(String prefix, UUID uuid) {
+        return content().resolve(prefix + FsDeviceMaintenance.folderNameOf(uuid));
+    }
+
+    /** A copy of the device folder of {@code uuid} under {@code target}, as an update would leave it. */
+    private void copyDeviceFolder(UUID uuid, Path target) throws IOException {
+        Path source = folderOf(uuid);
+        try (java.util.stream.Stream<Path> files = Files.walk(source)) {
+            for (Path f : (Iterable<Path>) files::iterator) {
+                Path dest = target.resolve(source.relativize(f).toString());
+                if (Files.isDirectory(f)) {
+                    Files.createDirectories(dest);
+                } else {
+                    Files.copy(f, dest);
+                }
+            }
+        }
+    }
+
+    /** A pack folder cut short: a node index and nothing else (no boot file, which is written last). */
+    private static void partialFolder(Path folder) throws IOException {
+        Files.createDirectories(folder);
+        Files.write(folder.resolve("ni"), new byte[600]);
+    }
+
+    private static long filesUnder(Path folder) throws IOException {
+        try (java.util.stream.Stream<Path> files = Files.walk(folder)) {
+            return files.filter(Files::isRegularFile).count();
+        }
+    }
+
     @BeforeEach
     void prepareDevice() throws IOException {
         writeDeviceMetadataV7();
@@ -222,7 +266,7 @@ class DeviceMaintenanceTest {
             FsDeviceDiagnosis.PendingIndex p = driver.diagnose().join().getPendingIndex();
             assertEquals(PendingIndexKind.IDENTICAL, p.getKind());
             assertTrue(p.isSafeToDiscard());
-            assertTrue(driver.resolvePendingIndex(false, p.getFingerprint()).join());
+            assertTrue(driver.resolvePendingIndex(false, p.getFingerprint(), token(driver)).join());
             assertFalse(Files.exists(pendingIndex()));
             assertArrayEquals(before, Files.readAllBytes(index()));
         }
@@ -235,7 +279,7 @@ class DeviceMaintenanceTest {
             FsDeviceDiagnosis.PendingIndex p = driver.diagnose().join().getPendingIndex();
             assertEquals(PendingIndexKind.TORN, p.getKind());
             assertTrue(p.isSafeToDiscard());
-            CompletionException e = assertThrows(CompletionException.class, () -> driver.resolvePendingIndex(true, p.getFingerprint()).join());
+            CompletionException e = assertThrows(CompletionException.class, () -> driver.resolvePendingIndex(true, p.getFingerprint(), token(driver)).join());
             assertEquals(StoryTellerException.Reason.INVALID_REQUEST, reasonOf(e));
             assertTrue(Files.exists(pendingIndex()));
         }
@@ -253,8 +297,8 @@ class DeviceMaintenanceTest {
             assertEquals(PendingIndexKind.ADD_INCOMPLETE, p.getKind());
             assertTrue(p.isSafeToDiscard());
             assertEquals(List.of(PACK_B), p.getAdded());
-            assertThrows(CompletionException.class, () -> driver.resolvePendingIndex(true, p.getFingerprint()).join());
-            assertTrue(driver.resolvePendingIndex(false, p.getFingerprint()).join());
+            assertThrows(CompletionException.class, () -> driver.resolvePendingIndex(true, p.getFingerprint(), token(driver)).join());
+            assertTrue(driver.resolvePendingIndex(false, p.getFingerprint(), token(driver)).join());
             assertFalse(Files.exists(pendingIndex()));
             assertEquals(List.of(PACK_A), FsDeviceMaintenance.parseIndex(Files.readAllBytes(index())));
         }
@@ -273,7 +317,7 @@ class DeviceMaintenanceTest {
             FsDeviceDiagnosis.PendingIndex p = d.getPendingIndex();
             assertEquals(PendingIndexKind.ADD, p.getKind());
             assertFalse(p.isSafeToDiscard());
-            assertTrue(driver.resolvePendingIndex(true, p.getFingerprint()).join());
+            assertTrue(driver.resolvePendingIndex(true, p.getFingerprint(), token(driver)).join());
             assertFalse(Files.exists(pendingIndex()));
             assertEquals(List.of(PACK_A, PACK_B), FsDeviceMaintenance.parseIndex(Files.readAllBytes(index())));
             assertEquals(0, driver.diagnose().join().problemCount());
@@ -295,7 +339,7 @@ class DeviceMaintenanceTest {
             FsDeviceDiagnosis.PendingIndex reorder = driver.diagnose().join().getPendingIndex();
             assertEquals(PendingIndexKind.REORDER, reorder.getKind());
             // Discarding keeps the order the device has
-            assertTrue(driver.resolvePendingIndex(false, reorder.getFingerprint()).join());
+            assertTrue(driver.resolvePendingIndex(false, reorder.getFingerprint(), token(driver)).join());
             assertEquals(List.of(PACK_A, PACK_B), FsDeviceMaintenance.parseIndex(Files.readAllBytes(index())));
         }
 
@@ -306,9 +350,128 @@ class DeviceMaintenanceTest {
             Files.copy(index(), pendingIndex());
             String fingerprint = driver.diagnose().join().getPendingIndex().getFingerprint();
             writeIndex(pendingIndex(), PACK_C);
-            CompletionException e = assertThrows(CompletionException.class, () -> driver.resolvePendingIndex(false, fingerprint).join());
+            CompletionException e = assertThrows(CompletionException.class, () -> driver.resolvePendingIndex(false, fingerprint, token(driver)).join());
             assertEquals(StoryTellerException.Reason.DEVICE_STATE_CHANGED, reasonOf(e));
             assertTrue(Files.exists(pendingIndex()));
+        }
+
+        @Test
+        @DisplayName("an empty .pi.new next to a non-empty .pi is torn: safe to discard, never adopted")
+        void emptyIsTorn() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            upload(driver, PACK_B, "b", (byte) 2);
+            Files.write(pendingIndex(), new byte[0]);
+            FsDeviceDiagnosis.PendingIndex p = driver.diagnose().join().getPendingIndex();
+            assertEquals(PendingIndexKind.TORN, p.getKind());
+            assertTrue(p.isSafeToDiscard());
+            assertFalse(p.isAdoptable());
+            CompletionException e = assertThrows(CompletionException.class,
+                    () -> driver.resolvePendingIndex(true, p.getFingerprint(), token(driver)).join());
+            assertEquals(StoryTellerException.Reason.INVALID_REQUEST, reasonOf(e));
+            assertEquals(List.of(PACK_A, PACK_B), installedIndex());
+            assertTrue(Files.exists(pendingIndex()));
+        }
+
+        @Test
+        @DisplayName("cut on a record boundary (16 bytes): a removal to confirm; adopting keeps .pi.bak and the folder of the pack dropped")
+        void truncatedOnRecordBoundary() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            upload(driver, PACK_B, "b", (byte) 2);
+            byte[] before = Files.readAllBytes(index());
+            Files.write(pendingIndex(), Arrays.copyOf(before, 16));
+            FsDeviceDiagnosis.PendingIndex p = driver.diagnose().join().getPendingIndex();
+            assertEquals(PendingIndexKind.REMOVE, p.getKind());
+            assertFalse(p.isSafeToDiscard());
+            assertEquals(List.of(PACK_B), p.getRemoved());
+
+            assertTrue(driver.resolvePendingIndex(true, p.getFingerprint(), token(driver)).join());
+            assertEquals(List.of(PACK_A), installedIndex());
+            // The previous index is kept, and the pack dropped from it is still whole on the card
+            assertArrayEquals(before, Files.readAllBytes(partition.resolve(".pi.bak")));
+            assertTrue(FsDeviceMaintenance.isCompletePackFolder(folderOf(PACK_B)));
+            FsDeviceDiagnosis after = driver.diagnose().join();
+            assertEquals(1, after.getOrphans().size());
+            assertTrue(after.getOrphans().get(0).isComplete());
+        }
+
+        @Test
+        @DisplayName("filled with zeros, or with noise: never adoptable, the index stays")
+        void zerosAndNoise() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            for (byte[] junk : List.of(new byte[48], noise(64))) {
+                Files.write(pendingIndex(), junk);
+                FsDeviceDiagnosis.PendingIndex p = driver.diagnose().join().getPendingIndex();
+                assertFalse(p.isAdoptable(), p.getKind().name());
+                assertFalse(p.getIncomplete().isEmpty());
+                CompletionException e = assertThrows(CompletionException.class,
+                        () -> driver.resolvePendingIndex(true, p.getFingerprint(), token(driver)).join());
+                assertEquals(StoryTellerException.Reason.INVALID_REQUEST, reasonOf(e));
+                assertEquals(List.of(PACK_A), installedIndex());
+                assertFalse(Files.exists(partition.resolve(".pi.bak")));
+            }
+        }
+
+        private byte[] noise(int length) {
+            byte[] bytes = new byte[length];
+            new java.util.Random(42).nextBytes(bytes);
+            return bytes;
+        }
+
+        @Test
+        @DisplayName(".pi plus two packs, one of them incomplete: a choice, but adopting is refused")
+        void addPartiallyIncomplete() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            upload(driver, PACK_B, "b", (byte) 2);
+            writeIndex(index(), PACK_A);
+            partialFolder(folderOf(PACK_C));
+            writeIndex(pendingIndex(), PACK_A, PACK_B, PACK_C);
+
+            FsDeviceDiagnosis.PendingIndex p = driver.diagnose().join().getPendingIndex();
+            assertEquals(PendingIndexKind.ADD, p.getKind());
+            assertFalse(p.isSafeToDiscard());
+            assertFalse(p.isAdoptable());
+            assertEquals(List.of(PACK_C), p.getIncomplete());
+            assertThrows(CompletionException.class, () -> driver.resolvePendingIndex(true, p.getFingerprint(), token(driver)).join());
+            assertEquals(List.of(PACK_A), installedIndex());
+        }
+
+        @Test
+        @DisplayName("a complete folder a pending ADD names is flagged, and not removed as an orphan")
+        void orphanNamedByPendingIndex() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            upload(driver, PACK_B, "b", (byte) 2);
+            writeIndex(index(), PACK_A);
+            writeIndex(pendingIndex(), PACK_A, PACK_B);
+            FsDeviceDiagnosis d = driver.diagnose().join();
+            assertEquals(1, d.getOrphans().size());
+            assertTrue(d.getOrphans().get(0).isReferencedByPendingIndex());
+            CompletionException e = assertThrows(CompletionException.class,
+                    () -> driver.removeUnreferencedPackContentFolder(FsDeviceMaintenance.folderNameOf(PACK_B)).join());
+            assertEquals(StoryTellerException.Reason.FOLDER_STILL_REFERENCED, reasonOf(e));
+            assertTrue(FsDeviceMaintenance.isCompletePackFolder(folderOf(PACK_B)));
+        }
+
+        @Test
+        @DisplayName("a repair asked with the token of an earlier session, or none, does nothing")
+        void staleDeviceToken() throws IOException {
+            SeamDriver driver = seamDriver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            Files.copy(index(), pendingIndex());
+            FsDeviceDiagnosis d = driver.diagnose().join();
+            String fingerprint = d.getPendingIndex().getFingerprint();
+            driver.unplug(); // plugged again: another session
+            for (String stale : java.util.Arrays.asList(d.getDeviceToken(), null, "other#0")) {
+                CompletionException e = assertThrows(CompletionException.class,
+                        () -> driver.resolvePendingIndex(false, fingerprint, stale).join());
+                assertEquals(StoryTellerException.Reason.DEVICE_STATE_CHANGED, reasonOf(e));
+            }
+            assertTrue(Files.exists(pendingIndex()));
+            assertTrue(driver.resolvePendingIndex(false, fingerprint, token(driver)).join());
         }
 
         @Test
@@ -461,7 +624,7 @@ class DeviceMaintenanceTest {
             assertTrue(d.getMissingContent().isEmpty(), "reported once, as an interrupted update");
             assertTrue(d.getOrphans().isEmpty());
 
-            assertTrue(fresh.resolveInterruptedUpdate(hex).join());
+            assertTrue(fresh.resolveInterruptedUpdate(hex, "SWAP_INTERRUPTED", token(fresh)).join());
             assertTrue(fresh.packContentMatches(PACK_B.toString(), newB.toString()).join());
             assertEquals(0, fresh.diagnose().join().problemCount());
             assertArrayEquals(indexBefore, Files.readAllBytes(index()));
@@ -485,7 +648,7 @@ class DeviceMaintenanceTest {
 
             FsDeviceDiagnosis d = driver.diagnose().join();
             assertEquals(InterruptedUpdateState.COPY_INTERRUPTED, d.getInterruptedUpdates().get(0).getState());
-            assertTrue(driver.resolveInterruptedUpdate(hex).join());
+            assertTrue(driver.resolveInterruptedUpdate(hex, "COPY_INTERRUPTED", d.getDeviceToken()).join());
             assertFalse(Files.exists(leftover));
             assertTrue(driver.packContentMatches(PACK_A.toString(), oldA.toString()).join());
             assertEquals(0, driver.diagnose().join().problemCount());
@@ -505,9 +668,192 @@ class DeviceMaintenanceTest {
             FsDeviceDiagnosis d = driver.diagnose().join();
             assertEquals(InterruptedUpdateState.CLEANUP_INTERRUPTED, d.getInterruptedUpdates().get(0).getState());
             driver.failRemove = false;
-            assertTrue(driver.resolveInterruptedUpdate(FsDeviceMaintenance.folderNameOf(PACK_A)).join());
+            assertTrue(driver.resolveInterruptedUpdate(FsDeviceMaintenance.folderNameOf(PACK_A), "CLEANUP_INTERRUPTED", token(driver)).join());
             assertEquals(0, driver.diagnose().join().problemCount());
             assertTrue(driver.packContentMatches(PACK_A.toString(), newA.toString()).join());
+        }
+
+        @Test
+        @DisplayName("sending the pack again is refused while leftovers of its update are there")
+        void uploadRefusedNextToLeftovers() throws IOException {
+            SeamDriver driver = seamDriver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            Path newA = sourcePack("a2", (byte) 9);
+            driver.failRenameAt = 2;
+            assertThrows(CompletionException.class, () -> driver.updatePack(PACK_A.toString(), newA.toString(), null).join());
+            assertFalse(Files.exists(folderOf(PACK_A)));
+
+            FsStoryTellerAsyncDriver fresh = driver();
+            CompletionException e = assertThrows(CompletionException.class,
+                    () -> fresh.uploadPack(PACK_A.toString(), sourcePack("a3", (byte) 4).toString(), null).join());
+            assertEquals(StoryTellerException.Reason.CONTENT_FOLDER_EXISTS, reasonOf(e));
+            // Nothing was created: the swap can still be finished
+            assertFalse(Files.exists(folderOf(PACK_A)));
+            assertEquals(InterruptedUpdateState.SWAP_INTERRUPTED, fresh.diagnose().join().getInterruptedUpdates().get(0).getState());
+
+            // Only the previous version left: the same
+            Files.move(staging(".studio-new-", PACK_A), partition.resolve("elsewhere"));
+            CompletionException e2 = assertThrows(CompletionException.class,
+                    () -> fresh.uploadPack(PACK_A.toString(), sourcePack("a4", (byte) 5).toString(), null).join());
+            assertEquals(StoryTellerException.Reason.CONTENT_FOLDER_EXISTS, reasonOf(e2));
+        }
+
+        @Test
+        @DisplayName("a partial pack folder between a complete new copy and the previous version: never repaired")
+        void partialFolderBetweenTwoCopies() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            // An update cut between its renames, then a send of the same pack cut short
+            copyDeviceFolder(PACK_A, staging(".studio-new-", PACK_A));
+            Files.move(folderOf(PACK_A), staging(".studio-old-", PACK_A));
+            partialFolder(folderOf(PACK_A));
+            long before = filesUnder(content());
+
+            FsDeviceDiagnosis d = driver.diagnose().join();
+            assertEquals(InterruptedUpdateState.CONFLICT, d.getInterruptedUpdates().get(0).getState());
+            String hex = FsDeviceMaintenance.folderNameOf(PACK_A);
+            CompletionException e = assertThrows(CompletionException.class,
+                    () -> driver.resolveInterruptedUpdate(hex, "CONFLICT", d.getDeviceToken()).join());
+            assertEquals(StoryTellerException.Reason.INVALID_REQUEST, reasonOf(e));
+            // Asked as the old "copy interrupted" state, it is refused too: the state changed
+            CompletionException stale = assertThrows(CompletionException.class,
+                    () -> driver.resolveInterruptedUpdate(hex, "COPY_INTERRUPTED", d.getDeviceToken()).join());
+            assertEquals(StoryTellerException.Reason.DEVICE_STATE_CHANGED, reasonOf(stale));
+            assertEquals(before, filesUnder(content()));
+            assertTrue(FsDeviceMaintenance.isCompletePackFolder(staging(".studio-new-", PACK_A)));
+            assertTrue(FsDeviceMaintenance.isCompletePackFolder(staging(".studio-old-", PACK_A)));
+        }
+
+        @Test
+        @DisplayName("a new copy next to an incomplete pack folder: the complete copy is put in place, never removed")
+        void copyNextToIncompleteFolder() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            Path oldA = upload(driver, PACK_A, "a", (byte) 1);
+            copyDeviceFolder(PACK_A, staging(".studio-new-", PACK_A));
+            org.apache.commons.io.FileUtils.deleteDirectory(folderOf(PACK_A).toFile());
+            partialFolder(folderOf(PACK_A));
+            String hex = FsDeviceMaintenance.folderNameOf(PACK_A);
+
+            FsDeviceDiagnosis d = driver.diagnose().join();
+            assertEquals(InterruptedUpdateState.PROMOTE_NEW, d.getInterruptedUpdates().get(0).getState());
+            assertTrue(driver.resolveInterruptedUpdate(hex, "PROMOTE_NEW", d.getDeviceToken()).join());
+            assertTrue(driver.packContentMatches(PACK_A.toString(), oldA.toString()).join());
+            assertEquals(0, driver.diagnose().join().problemCount());
+
+            // Both incomplete: nothing to keep for sure, nothing is done
+            partialFolder(staging(".studio-new-", PACK_A));
+            org.apache.commons.io.FileUtils.deleteDirectory(folderOf(PACK_A).toFile());
+            partialFolder(folderOf(PACK_A));
+            FsDeviceDiagnosis d2 = driver.diagnose().join();
+            assertEquals(InterruptedUpdateState.CONFLICT, d2.getInterruptedUpdates().get(0).getState());
+            assertThrows(CompletionException.class, () -> driver.resolveInterruptedUpdate(hex, "CONFLICT", d2.getDeviceToken()).join());
+            assertTrue(Files.isDirectory(staging(".studio-new-", PACK_A)));
+        }
+
+        @Test
+        @DisplayName("a new copy next to a complete pack folder that fails the check: the copy is kept")
+        void copyNextToDamagedFolder() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            copyDeviceFolder(PACK_A, staging(".studio-new-", PACK_A));
+            Files.delete(folderOf(PACK_A).resolve("sf").resolve("000").resolve("00000001"));
+            String hex = FsDeviceMaintenance.folderNameOf(PACK_A);
+            FsDeviceDiagnosis d = driver.diagnose().join();
+            assertEquals(InterruptedUpdateState.COPY_INTERRUPTED, d.getInterruptedUpdates().get(0).getState());
+            CompletionException e = assertThrows(CompletionException.class,
+                    () -> driver.resolveInterruptedUpdate(hex, "COPY_INTERRUPTED", d.getDeviceToken()).join());
+            assertEquals(StoryTellerException.Reason.INVALID_REQUEST, reasonOf(e));
+            assertTrue(FsDeviceMaintenance.isCompletePackFolder(staging(".studio-new-", PACK_A)));
+        }
+
+        @Test
+        @DisplayName("the previous version next to an incomplete pack folder: it is put back, never removed")
+        void previousNextToIncompleteFolder() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            Path oldA = upload(driver, PACK_A, "a", (byte) 1);
+            Files.move(folderOf(PACK_A), staging(".studio-old-", PACK_A));
+            partialFolder(folderOf(PACK_A));
+            String hex = FsDeviceMaintenance.folderNameOf(PACK_A);
+
+            FsDeviceDiagnosis d = driver.diagnose().join();
+            assertEquals(InterruptedUpdateState.RESTORE_PREVIOUS, d.getInterruptedUpdates().get(0).getState());
+            assertTrue(driver.resolveInterruptedUpdate(hex, "RESTORE_PREVIOUS", d.getDeviceToken()).join());
+            assertTrue(driver.packContentMatches(PACK_A.toString(), oldA.toString()).join());
+            assertEquals(0, driver.diagnose().join().problemCount());
+        }
+
+        @Test
+        @DisplayName("the previous version next to a pack folder that fails the check, or that holds the same files: kept")
+        void cleanupRefusedWhenInDoubt() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            String hex = FsDeviceMaintenance.folderNameOf(PACK_A);
+            // The same files: possibly the same entries on the card
+            copyDeviceFolder(PACK_A, staging(".studio-old-", PACK_A));
+            FsDeviceDiagnosis d = driver.diagnose().join();
+            assertEquals(InterruptedUpdateState.CLEANUP_INTERRUPTED, d.getInterruptedUpdates().get(0).getState());
+            assertThrows(CompletionException.class, () -> driver.resolveInterruptedUpdate(hex, "CLEANUP_INTERRUPTED", d.getDeviceToken()).join());
+            assertTrue(FsDeviceMaintenance.isCompletePackFolder(staging(".studio-old-", PACK_A)));
+
+            // A damaged pack folder
+            Files.write(folderOf(PACK_A).resolve("rf").resolve("000").resolve("00000001"), new byte[0]);
+            assertThrows(CompletionException.class, () -> driver.resolveInterruptedUpdate(hex, "CLEANUP_INTERRUPTED", d.getDeviceToken()).join());
+            assertTrue(FsDeviceMaintenance.isCompletePackFolder(staging(".studio-old-", PACK_A)));
+        }
+
+        @Test
+        @DisplayName("only a complete new copy left: it becomes the pack folder; only an unfinished one: it is removed")
+        void newCopyOnly() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            Path oldA = upload(driver, PACK_A, "a", (byte) 1);
+            String hex = FsDeviceMaintenance.folderNameOf(PACK_A);
+            Files.move(folderOf(PACK_A), staging(".studio-new-", PACK_A));
+            FsDeviceDiagnosis d = driver.diagnose().join();
+            assertEquals(InterruptedUpdateState.NEW_ONLY, d.getInterruptedUpdates().get(0).getState());
+            assertTrue(driver.resolveInterruptedUpdate(hex, "NEW_ONLY", d.getDeviceToken()).join());
+            assertTrue(driver.packContentMatches(PACK_A.toString(), oldA.toString()).join());
+
+            org.apache.commons.io.FileUtils.deleteDirectory(folderOf(PACK_A).toFile());
+            partialFolder(staging(".studio-new-", PACK_A));
+            FsDeviceDiagnosis d2 = driver.diagnose().join();
+            assertEquals(InterruptedUpdateState.ABANDONED_COPY, d2.getInterruptedUpdates().get(0).getState());
+            assertTrue(driver.resolveInterruptedUpdate(hex, "ABANDONED_COPY", d2.getDeviceToken()).join());
+            assertEquals(1, driver.diagnose().join().getMissingContent().size());
+        }
+
+        @Test
+        @DisplayName("a repair asked on a Lunii plugged again since the check does nothing")
+        void interruptedUpdateStaleToken() throws IOException {
+            SeamDriver driver = seamDriver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            Files.move(folderOf(PACK_A), staging(".studio-old-", PACK_A));
+            FsDeviceDiagnosis d = driver.diagnose().join();
+            driver.unplug();
+            CompletionException e = assertThrows(CompletionException.class, () -> driver.resolveInterruptedUpdate(
+                    FsDeviceMaintenance.folderNameOf(PACK_A), "PREVIOUS_ONLY", d.getDeviceToken()).join());
+            assertEquals(StoryTellerException.Reason.DEVICE_STATE_CHANGED, reasonOf(e));
+            assertFalse(Files.exists(folderOf(PACK_A)));
+        }
+
+        @Test
+        @DisplayName("an entry without content is removed from the index only while it still has none")
+        void missingContentEntry() throws IOException {
+            FsStoryTellerAsyncDriver driver = driver();
+            upload(driver, PACK_A, "a", (byte) 1);
+            upload(driver, PACK_B, "b", (byte) 2);
+            Path aside = partition.resolve("aside");
+            Files.move(folderOf(PACK_B), aside);
+            String token = token(driver);
+            // Its content came back meanwhile: refused
+            Files.move(aside, folderOf(PACK_B));
+            CompletionException e = assertThrows(CompletionException.class,
+                    () -> driver.removeMissingContentEntry(PACK_B.toString(), token).join());
+            assertEquals(StoryTellerException.Reason.DEVICE_STATE_CHANGED, reasonOf(e));
+            assertEquals(List.of(PACK_A, PACK_B), installedIndex());
+
+            org.apache.commons.io.FileUtils.deleteDirectory(folderOf(PACK_B).toFile());
+            assertTrue(driver.removeMissingContentEntry(PACK_B.toString(), token).join());
+            assertEquals(List.of(PACK_A), installedIndex());
         }
 
         @Test
@@ -518,7 +864,7 @@ class DeviceMaintenanceTest {
             String hex = FsDeviceMaintenance.folderNameOf(PACK_A);
             Files.move(folderOf(PACK_A), partition.resolve(".content").resolve(".studio-old-" + hex));
             assertEquals(InterruptedUpdateState.PREVIOUS_ONLY, driver.diagnose().join().getInterruptedUpdates().get(0).getState());
-            assertTrue(driver.resolveInterruptedUpdate(hex).join());
+            assertTrue(driver.resolveInterruptedUpdate(hex, "PREVIOUS_ONLY", token(driver)).join());
             assertTrue(driver.packContentMatches(PACK_A.toString(), oldA.toString()).join());
         }
     }
@@ -622,6 +968,33 @@ class DeviceMaintenanceTest {
             List<FsPackIntegrity> results = driver.checkIntegrity(null).join();
             assertNotNull(results.get(1));
             assertTrue(results.get(1).has(ProblemCode.FOLDER_MISSING));
+        }
+
+        @Test
+        @DisplayName("an official pack is checked for its structure only: a key of its own is not a damage")
+        void officialStructureOnly() throws IOException {
+            // As if its ciphered parts used another key than this Lunii's
+            byte[] ri = Files.readAllBytes(folderOf(PACK_A).resolve("ri"));
+            ri[0] ^= 0x33;
+            Files.write(folderOf(PACK_A).resolve("ri"), ri);
+            Files.write(folderOf(PACK_A).resolve("bt"), new byte[32]);
+            assertFalse(check().isOk());
+            FsPackIntegrity r = driver.checkIntegrity(null, PACK_A::equals).join().get(0);
+            assertTrue(r.isOk(), () -> r.getProblems().toString());
+            assertTrue(r.isStructureOnly());
+            // What does not depend on a key is still checked
+            Files.write(folderOf(PACK_A).resolve("sf").resolve("000").resolve("00000001"), new byte[0]);
+            assertTrue(driver.checkIntegrity(null, PACK_A::equals).join().get(0).has(ProblemCode.ASSET_EMPTY));
+        }
+
+        @Test
+        @DisplayName("an MP3 that starts with zero padding is not reported")
+        void paddedMp3() {
+            byte[] head = new byte[64];
+            head[10] = (byte) 0xFF;
+            head[11] = (byte) 0xFB;
+            assertTrue(FsDeviceMaintenance.looksLikeMp3(head));
+            assertFalse(FsDeviceMaintenance.looksLikeMp3(new byte[64]));
         }
 
         @Test
