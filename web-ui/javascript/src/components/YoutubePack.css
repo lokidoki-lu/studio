@@ -1,0 +1,198 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+.youtube-pack-button {
+    margin-left: 4px;
+}
+
+.youtube-pack-button.running {
+    border-color: var(--ui-accent, #3b6fd8);
+    color: var(--ui-accent, #3b6fd8);
+}
+
+/* The page does not scroll under a dialog: the dialog does, so its buttons stay reachable */
+.youtube-pack-modal {
+    overflow-y: auto;
+}
+
+.youtube-pack-modal .modal-dialog {
+    width: auto;
+    max-width: 720px;
+}
+
+.youtube-pack-form label,
+.youtube-pack-options legend {
+    color: var(--ui-text, #1f2430);
+}
+
+.youtube-pack-form label {
+    font-weight: 600;
+    margin: 0;
+}
+
+.youtube-pack-form textarea,
+.youtube-pack-form input[type="text"],
+.youtube-pack-form input[type="number"],
+.youtube-pack-form select {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid var(--ui-border, #e3e6eb);
+    border-radius: var(--ui-radius-sm, 6px);
+    background-color: var(--ui-surface-muted, #f8f9fb);
+    color: var(--ui-text, #1f2430);
+    font-size: 13px;
+}
+
+.youtube-pack-form textarea {
+    resize: vertical;
+    font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
+    margin-top: 4px;
+}
+
+.youtube-pack-form textarea:focus,
+.youtube-pack-form input:focus,
+.youtube-pack-form select:focus {
+    border-color: var(--ui-accent, #3b6fd8);
+    outline: none;
+    box-shadow: 0 0 0 3px var(--ui-accent-soft, rgba(59, 111, 216, .12));
+}
+
+.youtube-pack-grid {
+    display: grid;
+    grid-template-columns: minmax(120px, max-content) minmax(0, 1fr);
+    gap: 8px 12px;
+    align-items: center;
+    margin: 10px 0;
+}
+
+.youtube-pack-options {
+    border: 1px solid var(--ui-border, #e3e6eb);
+    border-radius: var(--ui-radius, 10px);
+    padding: 8px 14px 4px;
+    margin: 8px 0;
+}
+
+.youtube-pack-options legend {
+    width: auto;
+    border: 0;
+    padding: 0 6px;
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.youtube-pack-form .youtube-pack-check {
+    display: block;
+    font-weight: normal;
+    margin: 2px 0;
+    cursor: pointer;
+}
+
+.youtube-pack-numbers input,
+.youtube-pack-numbers select {
+    max-width: 140px;
+}
+
+.youtube-pack-hint,
+.youtube-pack-checking,
+.youtube-pack-detail {
+    color: var(--ui-text-muted, #6b7280);
+    font-size: 12px;
+    margin: 4px 0;
+}
+
+.youtube-pack-detail {
+    word-break: break-word;
+}
+
+.youtube-pack-error {
+    color: var(--ui-danger, #c2413a);
+    border: 1px solid var(--ui-danger, #c2413a);
+    border-radius: var(--ui-radius-sm, 6px);
+    padding: 8px 10px;
+    margin: 8px 0;
+}
+
+.youtube-pack-error ul {
+    margin: 4px 0 8px;
+    padding-left: 20px;
+}
+
+.youtube-pack-success {
+    color: var(--ui-text, #1f2430);
+    border: 1px solid var(--ui-accent, #3b6fd8);
+    background-color: var(--ui-accent-soft, rgba(59, 111, 216, .12));
+    border-radius: var(--ui-radius-sm, 6px);
+    padding: 8px 10px;
+    margin: 8px 0;
+}
+
+.youtube-pack-success p {
+    margin: 4px 0 0;
+}
+
+.youtube-pack-step {
+    margin-bottom: 6px;
+}
+
+.youtube-pack-current {
+    color: var(--ui-text-muted, #6b7280);
+    overflow-wrap: anywhere;
+}
+
+.youtube-pack-progress {
+    position: relative;
+    height: 22px;
+    border-radius: 11px;
+    background-color: var(--ui-surface-muted, #f8f9fb);
+    border: 1px solid var(--ui-border, #e3e6eb);
+    overflow: hidden;
+}
+
+.youtube-pack-progress-bar {
+    height: 100%;
+    background-color: var(--ui-accent, #3b6fd8);
+    transition: width .4s ease;
+}
+
+.youtube-pack-progress.failed .youtube-pack-progress-bar,
+.youtube-pack-progress.cancelled .youtube-pack-progress-bar {
+    background-color: var(--ui-danger, #c2413a);
+}
+
+.youtube-pack-progress-label {
+    position: absolute;
+    inset: 0;
+    top: 0;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 20px;
+    color: var(--ui-text, #1f2430);
+    mix-blend-mode: normal;
+}
+
+.youtube-pack-log {
+    max-height: 30vh;
+    overflow-y: auto;
+    margin: 10px 0 4px;
+    padding: 8px 10px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background-color: var(--ui-surface-muted, #f8f9fb);
+    color: var(--ui-text, #1f2430);
+    border: 1px solid var(--ui-border, #e3e6eb);
+    border-radius: var(--ui-radius-sm, 6px);
+}
+
+@media (max-width: 600px) {
+    .youtube-pack-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
