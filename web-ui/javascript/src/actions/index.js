@@ -16,7 +16,7 @@ import {fetchLibraryInfos, fetchLibraryPacks, downloadFromLibrary, fetchLibraryP
 import {fetchEvergreenInfos, fetchEvergreenLatestRelease, fetchEvergreenAnnounce} from '../services/evergreen';
 import {generateFilename, sortPacks} from "../utils/packs";
 import {readFromArchive, readFromLibrary, adoptLibraryAssets, discardLibraryAssets} from "../utils/reader";
-import {errorMessage} from "../utils/fetch";
+import {httpErrorMessage} from "../utils/fetch";
 import {simplifiedSample} from "../utils/sample";
 
 
@@ -532,7 +532,7 @@ export const actionDownloadFromLibrary = (uuid, path, t) => {
             .then(async resp => {
                 if (!resp.ok) {
                     const text = await resp.text().catch(() => '');
-                    const error = new Error(resp.statusText + ': ' + errorMessage(text));
+                    const error = new Error(httpErrorMessage(resp.statusText, text));
                     error.status = resp.status;
                     throw error;
                 }

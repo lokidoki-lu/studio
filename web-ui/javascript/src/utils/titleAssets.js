@@ -7,7 +7,7 @@
 // Generated assets for node titles: the spoken title (server side, /api/tts) and an image showing
 // the title (drawn here, on a canvas). Self-contained on purpose: no dependency on other helpers.
 
-import {handleJsonOrError} from "./fetch";
+import {apiFetch, handleJsonOrError} from "./fetch";
 
 export const LOCAL_STORAGE_TITLE_VOICE = 'titleVoice';
 
@@ -56,7 +56,7 @@ export function voiceRequest(text, setting) {
 }
 
 export async function fetchVoiceEngines() {
-    return fetch('/api/tts/engines').then(handleJsonOrError);
+    return apiFetch('/api/tts/engines').then(handleJsonOrError);
 }
 
 /** The online voices Lunii Pack offers, in the same order; key names the label in translations. */
@@ -144,7 +144,7 @@ export async function speakTitle(text, setting = getTitleVoice(), pronunciation 
     // The server refuses more than TITLE_MAX_LENGTH characters: a pronunciation may lengthen the text
     const spoken = (applyPronunciations(text, parsePronunciations(pronunciation)).trim() || text)
         .substring(0, TITLE_MAX_LENGTH);
-    const answer = await fetch('/api/tts/speak', {
+    const answer = await apiFetch('/api/tts/speak', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(voiceRequest(spoken, setting))

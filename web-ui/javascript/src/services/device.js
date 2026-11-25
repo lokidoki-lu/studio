@@ -4,20 +4,20 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-import {handleJsonOrError} from "../utils/fetch";
+import {apiFetch, handleJsonOrError} from "../utils/fetch";
 
 export const fetchDeviceInfos = () => {
-    return fetch('/api/device/infos')
+    return apiFetch('/api/device/infos')
         .then(handleJsonOrError);
 };
 
 export const fetchDevicePacks = () => {
-    return fetch('/api/device/packs')
+    return apiFetch('/api/device/packs')
         .then(handleJsonOrError);
 };
 
 export const addFromLibrary = (uuid, path) => {
-    return fetch('/api/device/addFromLibrary', {
+    return apiFetch('/api/device/addFromLibrary', {
         method: "POST",
         headers: { "Content-Type" : "application/json" },
         body: JSON.stringify({uuid, path})
@@ -26,7 +26,7 @@ export const addFromLibrary = (uuid, path) => {
 };
 
 export const removeFromDevice = (uuid) => {
-    return fetch('/api/device/removeFromDevice', {
+    return apiFetch('/api/device/removeFromDevice', {
         method: "POST",
         headers: { "Content-Type" : "application/json" },
         body: JSON.stringify({uuid})
@@ -35,7 +35,7 @@ export const removeFromDevice = (uuid) => {
 };
 
 export const reorderPacks = (uuids) => {
-    return fetch('/api/device/reorder', {
+    return apiFetch('/api/device/reorder', {
         method: "POST",
         headers: { "Content-Type" : "application/json" },
         body: JSON.stringify({uuids})
@@ -44,7 +44,7 @@ export const reorderPacks = (uuids) => {
 };
 
 export const addToLibrary = (uuid, driver) => {
-    return fetch('/api/device/addToLibrary', {
+    return apiFetch('/api/device/addToLibrary', {
         method: "POST",
         headers: { "Content-Type" : "application/json" },
         body: JSON.stringify({uuid, driver})
@@ -58,6 +58,6 @@ export const addToLibrary = (uuid, driver) => {
  * err.status === 404) when the backend has no record of it.
  */
 export const fetchTransfer = (transferId) => {
-    return fetch('/api/device/transfer/' + encodeURIComponent(transferId))
+    return apiFetch('/api/device/transfer/' + encodeURIComponent(transferId))
         .then(handleJsonOrError);
 };

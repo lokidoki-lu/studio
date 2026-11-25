@@ -548,7 +548,8 @@
       "loadingFailed": "Failed to load current version.",
       "fetchingFailed": "Failed to fetch latest release."
     },
-    "reportIssue": "Report this issue"
+    "reportIssue": "Report this issue",
+    "unreachable": "STUdio is not answering: check that it is still running."
   },
 
   "dialogs": {
