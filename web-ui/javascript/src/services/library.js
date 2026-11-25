@@ -4,20 +4,20 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-import {handleJsonOrError, errorMessage, errorCode} from "../utils/fetch";
+import {apiFetch, handleJsonOrError, httpErrorMessage, errorCode, unreachableMessage} from "../utils/fetch";
 
 export const fetchLibraryInfos = () => {
-    return fetch('/api/library/infos')
+    return apiFetch('/api/library/infos')
         .then(handleJsonOrError);
 };
 
 export const fetchLibraryPacks = () => {
-    return fetch('/api/library/packs')
+    return apiFetch('/api/library/packs')
         .then(handleJsonOrError);
 };
 
 export const downloadFromLibrary = async (uuid, path) => {
-    return await fetch('/api/library/download', {
+    return await apiFetch('/api/library/download', {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({uuid, path})
@@ -26,7 +26,7 @@ export const downloadFromLibrary = async (uuid, path) => {
 
 // One entry of a library archive (story.json, thumbnail.png, assets/...), as a Blob, or null if the archive has none
 export const fetchLibraryPackEntry = async (path, entry) => {
-    const resp = await fetch('/api/library/entry', {
+    const resp = await apiFetch('/api/library/entry', {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({path, entry})
@@ -36,7 +36,7 @@ export const fetchLibraryPackEntry = async (path, entry) => {
     }
     if (!resp.ok) {
         const text = await resp.text().catch(() => '');
-        const error = new Error(resp.statusText + ': ' + errorMessage(text));
+        const error = new Error(httpErrorMessage(resp.statusText, text));
         error.status = resp.status;
         throw error;
     }
@@ -59,7 +59,7 @@ export const uploadToLibrary = async (uuid, path, packData, progressHandler) => 
             if (xhr.status < 200 || xhr.status >= 300) {
                 // Same shape as handleJsonOrError, so the toast shows the backend's explanation.
                 const text = xhr.responseText || '';
-                const error = new Error((xhr.statusText || ('HTTP ' + xhr.status)) + ': ' + errorMessage(text));
+                const error = new Error(httpErrorMessage(xhr.statusText || ('HTTP ' + xhr.status), text));
                 error.status = xhr.status;
                 const code = errorCode(text);
                 if (code) {
@@ -76,7 +76,10 @@ export const uploadToLibrary = async (uuid, path, packData, progressHandler) => 
             resolve(body);
         };
         xhr.onerror = () => {
-            reject(new Error('Network error while uploading the pack to the library'));
+            // No answer: STUdio stopped (or the connection was cut)
+            const error = new Error(unreachableMessage() + ' (network error while uploading the pack to the library)');
+            error.code = 'UNREACHABLE';
+            reject(error);
         };
         xhr.onabort = () => {
             reject(new Error('Upload to the library was aborted'));
@@ -91,7 +94,7 @@ export const uploadToLibrary = async (uuid, path, packData, progressHandler) => 
 };
 
 export const convertInLibrary = async (uuid, path, format, allowEnriched) => {
-    return await fetch('/api/library/convert', {
+    return await apiFetch('/api/library/convert', {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({uuid, path, format, allowEnriched})
@@ -100,7 +103,7 @@ export const convertInLibrary = async (uuid, path, format, allowEnriched) => {
 };
 
 export const removeFromLibrary = (path) => {
-    return fetch('/api/library/remove', {
+    return apiFetch('/api/library/remove', {
         method: "POST",
         headers: { "Content-Type" : "application/json" },
         body: JSON.stringify({path})
@@ -120,7 +123,7 @@ export const removeFromLibrary = (path) => {
  * {candidates: [{path, uuid, title, format, size, timestamp, reason, selected, keptPath}], totalSize}.
  */
 export const fetchPurgeCandidates = () => {
-    return fetch('/api/library/purge/candidates')
+    return apiFetch('/api/library/purge/candidates')
         .then(handleJsonOrError);
 };
 
@@ -129,7 +132,7 @@ export const fetchPurgeCandidates = () => {
  * longer a candidate: {success, freed, results: [{path, removed, size, error?}]}.
  */
 export const purgeLibrary = (paths) => {
-    return fetch('/api/library/purge', {
+    return apiFetch('/api/library/purge', {
         method: "POST",
         headers: { "Content-Type" : "application/json" },
         body: JSON.stringify({paths})
@@ -138,7 +141,7 @@ export const purgeLibrary = (paths) => {
 };
 
 export const verifyConversion = async (sourcePath, convertedPath) => {
-    return await fetch('/api/library/verify-conversion', {
+    return await apiFetch('/api/library/verify-conversion', {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({sourcePath, convertedPath})
@@ -152,7 +155,7 @@ export const verifyConversion = async (sourcePath, convertedPath) => {
  * {audio: {seconds, measured, estimated, unmeasured}} for archives.
  */
 export const fetchLibraryPackDetails = (path) => {
-    return fetch('/api/library/details', {
+    return apiFetch('/api/library/details', {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({path})

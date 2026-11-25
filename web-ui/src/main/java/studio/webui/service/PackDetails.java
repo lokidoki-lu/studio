@@ -20,15 +20,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Enumeration;
+import java.util.LinkedHashMap;
 import java.util.Locale;
-import java.util.stream.Stream;
+import java.util.Map;
 
 /**
  * What the library preview shows of a pack beyond its metadata, read at low cost: never the whole
  * pack, only headers.
  *
  * <ul>
- *     <li>size on disk, for every format;</li>
+ *     <li>size on disk, for every format (measured by {@code LibraryService.diskSize});</li>
  *     <li>stage nodes and stories (stage nodes where pause is enabled, as on the device) of the raw and
  *     FS formats, from their node index: the browser counts those of an archive from its story.json;</li>
  *     <li>total audio duration of an archive, from the header of each audio asset: exact for WAV and
@@ -46,23 +47,6 @@ final class PackDetails {
     private static final int SECTOR_SIZE = 512;
 
     private PackDetails() {
-    }
-
-    // ---------------------------------------------------------------------------------- size
-
-    static long sizeOnDisk(Path pack) throws IOException {
-        if (!Files.isDirectory(pack)) {
-            return Files.size(pack);
-        }
-        try (Stream<Path> files = Files.walk(pack)) {
-            return files.filter(Files::isRegularFile).mapToLong(file -> {
-                try {
-                    return Files.size(file);
-                } catch (IOException e) {
-                    return 0L;
-                }
-            }).sum();
-        }
     }
 
     // ---------------------------------------------------------------------------- raw and FS
@@ -145,13 +129,22 @@ final class PackDetails {
         int unmeasured = 0;
         try (ZipFile zip = ZipFile.builder().setPath(pack).get();
              FileChannel channel = FileChannel.open(pack, StandardOpenOption.READ)) {
+            // An archive may hold several entries of the same name: the pack readers take the last
+            // one, so only that one is measured (counting each would add the same asset twice).
+            Map<String, ZipArchiveEntry> assets = new LinkedHashMap<>();
             Enumeration<ZipArchiveEntry> entries = zip.getEntries();
             while (entries.hasMoreElements()) {
                 ZipArchiveEntry entry = entries.nextElement();
-                String name = entry.getName() == null ? "" : entry.getName().replace('\\', '/').toLowerCase(Locale.ROOT);
-                if (entry.isDirectory() || !name.startsWith("assets/")) {
+                String name = entry.getName() == null ? "" : entry.getName().replace('\\', '/');
+                if (entry.isDirectory() || !name.toLowerCase(Locale.ROOT).startsWith("assets/")) {
                     continue;
                 }
+                assets.remove(name);
+                assets.put(name, entry);
+            }
+            for (Map.Entry<String, ZipArchiveEntry> asset : assets.entrySet()) {
+                ZipArchiveEntry entry = asset.getValue();
+                String name = asset.getKey().toLowerCase(Locale.ROOT);
                 Duration duration = null;
                 try {
                     if (name.endsWith(".mp3")) {
@@ -160,7 +153,7 @@ final class PackDetails {
                         }
                     } else if (name.endsWith(".wav")) {
                         try (InputStream in = zip.getInputStream(entry)) {
-                            duration = in == null ? null : wavDuration(in);
+                            duration = in == null ? null : wavDuration(in, entry.getSize());
                         }
                     } else if (name.endsWith(".ogg") || name.endsWith(".oga")) {
                         duration = storedOggDuration(zip, entry, channel);
@@ -272,19 +265,26 @@ final class PackDetails {
         return null;
     }
 
-    /** Duration of a WAV stream, from the byte rate of its fmt chunk and the size of its data chunk. */
-    static Duration wavDuration(InputStream in) throws IOException {
+    /**
+     * Duration of a WAV stream of {@code size} bytes (-1 if unknown), from the byte rate of its fmt
+     * chunk and the size of its data chunk. That size is capped at what the stream can hold after the
+     * chunk header: a WAV written to a pipe declares 0xFFFFFFFF (or any placeholder), which read as
+     * such made a few seconds of audio last hours.
+     */
+    static Duration wavDuration(InputStream in, long size) throws IOException {
         byte[] riff = in.readNBytes(12);
         if (riff.length < 12 || !new String(riff, 0, 4, StandardCharsets.ISO_8859_1).equals("RIFF")
                 || !new String(riff, 8, 4, StandardCharsets.ISO_8859_1).equals("WAVE")) {
             return null;
         }
+        long position = 12;
         long byteRate = 0;
         for (int chunks = 0; chunks < 32; chunks++) {
             byte[] chunk = in.readNBytes(8);
             if (chunk.length < 8) {
                 return null;
             }
+            position += 8;
             String id = new String(chunk, 0, 4, StandardCharsets.ISO_8859_1);
             long chunkSize = ByteBuffer.wrap(chunk, 4, 4).order(ByteOrder.LITTLE_ENDIAN).getInt() & 0xFFFFFFFFL;
             if (id.equals("fmt ")) {
@@ -294,10 +294,13 @@ final class PackDetails {
                 }
                 byteRate = ByteBuffer.wrap(fmt, 8, 4).order(ByteOrder.LITTLE_ENDIAN).getInt() & 0xFFFFFFFFL;
                 skipFully(in, chunkSize - fmt.length + (chunkSize & 1));
+                position += chunkSize + (chunkSize & 1);
             } else if (id.equals("data")) {
-                return byteRate > 0 ? new Duration((double) chunkSize / byteRate, false) : null;
+                long dataSize = size > 0 ? Math.min(chunkSize, Math.max(size - position, 0)) : chunkSize;
+                return byteRate > 0 ? new Duration((double) dataSize / byteRate, false) : null;
             } else {
                 skipFully(in, chunkSize + (chunkSize & 1));
+                position += chunkSize + (chunkSize & 1);
             }
         }
         return null;

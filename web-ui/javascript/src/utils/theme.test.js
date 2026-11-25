@@ -39,6 +39,21 @@ it('falls back to auto on an unknown value or an unreadable storage', () => {
     expect(() => saveTheme('dark', {setItem: () => { throw new Error('blocked'); }})).not.toThrow();
 });
 
+it('falls back to auto when the browser refuses even to give its storage', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(window, 'localStorage');
+    Object.defineProperty(window, 'localStorage', {configurable: true, get: () => { throw new Error('SecurityError'); }});
+    try {
+        expect(loadTheme()).toBe('auto');
+        expect(() => saveTheme('dark')).not.toThrow();
+    } finally {
+        if (descriptor) {
+            Object.defineProperty(window, 'localStorage', descriptor);
+        } else {
+            delete window.localStorage;
+        }
+    }
+});
+
 it('sets data-theme only when the theme is forced', () => {
     const root = document.createElement('html');
     applyTheme('dark', root);

@@ -103,15 +103,20 @@
     padding: 0 8px;
     border-radius: 999px;
     font-size: 12px;
-    color: #fff;
+    font-weight: 600;
+    /* White on the muted grey and on purple (FS) in the light theme, dark on their lighter tones in the dark one */
+    color: var(--ui-on-accent, #fff);
     background-color: var(--ui-text-muted);
 }
 
+/* Amber and teal are light in both themes: dark text */
 .pack-preview-format-archive {
+    color: #0e1016;
     background-color: var(--ui-format-archive);
 }
 
 .pack-preview-format-raw {
+    color: #0e1016;
     background-color: var(--ui-format-raw);
 }
 

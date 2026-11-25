@@ -117,6 +117,45 @@ export function progressPercent(job) {
     return Number.isFinite(p) ? Math.max(0, Math.min(100, Math.round(p * 100))) : 0;
 }
 
+// A refusal or a failure of the backend, in the language of the interface: its code when there is a
+// translation for it (youtubePack.errors.<CODE>), its message (in French) otherwise
+export function errorText(t, code, message) {
+    const fallback = message || code || '';
+    if (!code) {
+        return fallback;
+    }
+    return t(`youtubePack.errors.${code}`, {message: fallback, defaultValue: fallback});
+}
+
+// The creation followed by this tab and not announced yet, kept across a change of view or a reload
+// (sessionStorage: per tab). Any storage problem only loses the announcement.
+const PENDING_KEY = 'studio.youtubePack.pending';
+
+export function pendingJobId() {
+    try {
+        const store = window.sessionStorage;
+        return store ? store.getItem(PENDING_KEY) : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+export function setPendingJobId(id) {
+    try {
+        const store = window.sessionStorage;
+        if (!store) {
+            return;
+        }
+        if (id) {
+            store.setItem(PENDING_KEY, String(id));
+        } else {
+            store.removeItem(PENDING_KEY);
+        }
+    } catch (e) {
+        // Private mode, quota, disabled storage: nothing to remember
+    }
+}
+
 // The last lines of the job's log, newest last
 export function lastLines(job, count) {
     const log = job && Array.isArray(job.log) ? job.log : [];

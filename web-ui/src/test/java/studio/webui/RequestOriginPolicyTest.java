@@ -54,5 +54,19 @@ class RequestOriginPolicyTest {
         assertFalse(MainVerticle.isAcceptedPostContentType(null, "/api/library/remove"));
         // An upload takes a form only: a JSON body would be held in memory up to the upload limit
         assertFalse(MainVerticle.isAcceptedPostContentType("application/json", "/api/library/upload"));
+        // With a trailing slash the upload route still matches: it must not take a JSON body
+        assertFalse(MainVerticle.isAcceptedPostContentType("application/json", "/api/library/upload/"));
+        assertTrue(MainVerticle.isAcceptedPostContentType("multipart/form-data; boundary=x", "/api/library/upload/"));
+    }
+
+    @Test
+    void fetchSites() {
+        assertTrue(MainVerticle.isAllowedFetchSite(null, false), "no header: Lunii Pack, curl, old browsers");
+        assertTrue(MainVerticle.isAllowedFetchSite("same-origin", false));
+        assertTrue(MainVerticle.isAllowedFetchSite("none", false));
+        assertFalse(MainVerticle.isAllowedFetchSite("cross-site", false));
+        assertFalse(MainVerticle.isAllowedFetchSite("same-site", false));
+        assertTrue(MainVerticle.isAllowedFetchSite("same-site", true), "dev: UI on localhost:3000");
+        assertFalse(MainVerticle.isAllowedFetchSite("cross-site", true));
     }
 }

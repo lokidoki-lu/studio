@@ -11,6 +11,7 @@ import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
+import studio.core.v1.reader.archive.ArchiveStoryPackReader;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -25,7 +26,13 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
+import java.nio.file.DirectoryNotEmptyException;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
@@ -44,6 +51,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -73,10 +81,17 @@ public class YoutubePackService {
     /** Same categories as Lunii Pack. */
     static final List<String> SPONSORBLOCK_CATEGORIES = List.of("sponsor", "selfpromo", "interaction", "intro", "outro", "preview");
 
-    private static final List<String> BLOCKED_WORDS = List.of("pas un robot", "not a bot", "sign in to confirm",
-            "connectez-vous pour confirmer", "http error 429", "too many requests");
+    /**
+     * What YouTube says when it blocks the downloads. Only the robot check and the rate limit: "Sign
+     * in to confirm your age" (or "Connectez-vous pour confirmer votre \u00e2ge") concerns one video,
+     * which is then skipped, and must not stop a whole playlist.
+     */
+    private static final List<String> BLOCKED_WORDS = List.of("pas un robot", "not a bot",
+            "http error 429", "too many requests");
     private static final Pattern DOWNLOAD_PROGRESS = Pattern.compile("\\[download\\]\\s+(\\d+(?:\\.\\d+)?)%");
     private static final Set<String> NOT_AUDIO = Set.of("jpg", "jpeg", "png", "webp", "part", "ytdl", "json", "tmp", "temp");
+    /** Empty folder, under the temporary folder, where the programs are started (see {@link ProcessRunner}). */
+    static final String PROGRAMS_DIR = "cwd";
     private static final int MAX_SPOKEN = TitleVoiceService.MAX_TEXT_LENGTH;
     private static final int KEPT_JOBS = 10;
     /** Consecutive voice failures after which the remaining titles are left silent. */
@@ -178,8 +193,12 @@ public class YoutubePackService {
     });
 
     private final LinkedHashMap<String, YoutubePackJob> jobs = new LinkedHashMap<>();
+    /** Held while the programs are probed, which can take seconds: never the service lock itself. */
+    private final Object probeLock = new Object();
     private Tools tools;
     private long toolsProbedAt;
+    /** Probes started so far: a request that waited for a probe started after it uses its result. */
+    private long probesStarted;
     private static final long NEGATIVE_PROBE_TTL_MILLIS = 60_000;
 
     Duration downloadTimeout = Duration.ofMinutes(Long.getLong("studio.youtube.downloadTimeoutMinutes", 60));
@@ -187,10 +206,16 @@ public class YoutubePackService {
     long pauseMinMillis = Long.getLong(PAUSE_MIN_PROP, 10) * 1000;
     long pauseMaxMillis = Long.getLong(PAUSE_MAX_PROP, 30) * 1000;
     String language = System.getProperty(LANG_PROP, "fr");
+    /** Largest story audio and largest pack STUdio reads back (and so can convert or send). */
+    long maxAudioBytes = ArchiveStoryPackReader.DEFAULT_MAX_ENTRY_BYTES;
+    long maxPackBytes = ArchiveStoryPackReader.DEFAULT_MAX_TOTAL_BYTES;
+    /** Room kept in the pack for story.json and the cover, and for the image and voice of each story. */
+    long packReserveBytes = 16L * 1024 * 1024;
+    long storyReserveBytes = 2L * 1024 * 1024;
 
     /** The service STUdio runs: real programs, the given voice service and library. */
     public YoutubePackService(TitleVoiceService voices, LibraryService libraryService) {
-        this(new ProcessRunner(), TitleVoiceService.defaultPythonCandidates(), new SponsorBlockApi(),
+        this(new ProcessRunner(defaultTmpRoot().resolve(PROGRAMS_DIR)), TitleVoiceService.defaultPythonCandidates(), new SponsorBlockApi(),
                 (text, engine, voice) -> voices.speak(text, engine, voice).wave,
                 new Library() {
                     @Override
@@ -203,8 +228,7 @@ public class YoutubePackService {
                         return libraryService.addPackFile(name, file.toString());
                     }
                 },
-                Paths.get(System.getProperty(LibraryService.TMP_DIR_PROP, System.getProperty("user.home") + LibraryService.TMP_DIR_PATH), "youtube"),
-                YoutubePackService::sleep, defaultSearchDirs());
+                defaultTmpRoot(), YoutubePackService::sleep, defaultSearchDirs());
     }
 
     public YoutubePackService(CommandRunner runner, List<String> pythonCandidates, SponsorBlock sponsorBlock, Speaker speaker,
@@ -214,9 +238,53 @@ public class YoutubePackService {
         this.sponsorBlock = sponsorBlock;
         this.speaker = speaker;
         this.library = library;
-        this.tmpRoot = tmpRoot;
+        this.tmpRoot = tmpRoot.toAbsolutePath();
         this.sleeper = sleeper;
         this.searchDirs = searchDirs;
+        // What a creation interrupted by a crash or a forced exit left; on the job thread, so before
+        // any new creation and without delaying the start
+        executor.submit(this::purgeLeftovers);
+    }
+
+    static Path defaultTmpRoot() {
+        return Paths.get(System.getProperty(LibraryService.TMP_DIR_PROP, System.getProperty("user.home") + LibraryService.TMP_DIR_PATH),
+                "youtube").toAbsolutePath();
+    }
+
+    /**
+     * A leftover is a job folder untouched for this long. A younger one may belong to a creation
+     * under way in another STUdio started meanwhile (a second launch fails on the port only once
+     * its services, this purge included, have been built).
+     */
+    static final long LEFTOVER_AGE_MILLIS = 6L * 60 * 60 * 1000;
+
+    /** Removes the temporary folders of earlier creations, once they are old enough to be leftovers. */
+    void purgeLeftovers() {
+        if (!Files.isDirectory(tmpRoot)) {
+            return;
+        }
+        List<Path> left;
+        try (Stream<Path> children = Files.list(tmpRoot)) {
+            long before = System.currentTimeMillis() - LEFTOVER_AGE_MILLIS;
+            left = children.filter(p -> !PROGRAMS_DIR.equals(p.getFileName().toString()))
+                    .filter(p -> lastModifiedMillis(p) < before)
+                    .collect(Collectors.toList());
+        } catch (IOException | java.io.UncheckedIOException e) {
+            LOGGER.debug("Could not list " + tmpRoot + ": " + e.getMessage());
+            return;
+        }
+        if (!left.isEmpty()) {
+            LOGGER.info("Removing " + left.size() + " temporary folder(s) left by earlier YouTube pack creations in " + tmpRoot);
+            left.forEach(YoutubePackService::deleteQuietly);
+        }
+    }
+
+    private static long lastModifiedMillis(Path path) {
+        try {
+            return Files.getLastModifiedTime(path).toMillis();
+        } catch (IOException e) {
+            return Long.MAX_VALUE;    // unknown: kept
+        }
     }
 
     // -- tools
@@ -240,41 +308,75 @@ public class YoutubePackService {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows");
     }
 
-    /** The programs, probed once; a missing one is probed again after a minute, or when {@code refresh}. */
-    public synchronized Tools tools(boolean refresh) {
-        long now = System.currentTimeMillis();
-        if (tools != null && !refresh && (tools.ready() || now - toolsProbedAt < NEGATIVE_PROBE_TTL_MILLIS)) {
-            return tools;
+    /**
+     * The programs, probed once; a missing one is probed again after a minute, or when {@code refresh}.
+     * Probing starts processes and can take seconds: it is done outside the service lock, so that
+     * following or cancelling a creation never waits for it.
+     */
+    public Tools tools(boolean refresh) {
+        long startedBefore;
+        synchronized (this) {
+            long now = System.currentTimeMillis();
+            if (tools != null && !refresh && (tools.ready() || now - toolsProbedAt < NEGATIVE_PROBE_TTL_MILLIS)) {
+                return tools;
+            }
+            startedBefore = probesStarted;
         }
-        toolsProbedAt = now;
+        synchronized (probeLock) {
+            synchronized (this) {
+                // Probed by another request while this one waited: that answer is as fresh
+                if (probesStarted > startedBefore && tools != null) {
+                    return tools;
+                }
+                probesStarted++;
+            }
+            long now = System.currentTimeMillis();
+            Tools probed = probeTools();
+            synchronized (this) {
+                tools = probed;
+                toolsProbedAt = now;
+            }
+            return probed;
+        }
+    }
+
+    /**
+     * Python started with {@code -E} (environment variables ignored) from an empty folder, so that
+     * nothing is imported from the current folder, while the packages installed with
+     * {@code pip install --user} stay visible (they are not with {@code -I}).
+     */
+    static final String PYTHON_FLAG = "-E";
+
+    private Tools probeTools() {
         List<String> ytDlp = null;
         String version = null;
         String python = null;
         for (String candidate : pythonCandidates) {
             List<String> out = new ArrayList<>();
-            if (probe(List.of(candidate, "-I", "-c", "import yt_dlp.version as v; print(v.__version__)"), out)) {
-                ytDlp = List.of(candidate, "-I", "-m", "yt_dlp");
+            if (probe(List.of(candidate, PYTHON_FLAG, "-c", "import yt_dlp.version as v; print(v.__version__)"), out)) {
+                ytDlp = List.of(candidate, PYTHON_FLAG, "-m", "yt_dlp");
                 version = out.isEmpty() ? null : out.get(0).trim();
                 python = candidate;
                 break;
             }
         }
         if (ytDlp == null) {
-            String exe = System.getProperty(YTDLP_PROP, "yt-dlp");
+            String exe = TitleVoiceService.unquote(System.getProperty(YTDLP_PROP, "yt-dlp"));
             List<String> out = new ArrayList<>();
             if (probe(List.of(exe, "--version"), out)) {
                 ytDlp = List.of(exe);
                 version = out.isEmpty() ? null : out.get(0).trim();
             }
         }
-        String ffmpeg = System.getProperty(FFMPEG_PROP, "ffmpeg");
+        String ffmpeg = TitleVoiceService.unquote(System.getProperty(FFMPEG_PROP, "ffmpeg"));
         if (!probe(List.of(ffmpeg, "-version"), new ArrayList<>())) {
             ffmpeg = null;
         }
         // yt-dlp only enables Deno by default; Lunii Pack installs Deno beside its Python
         List<Path> dirs = new ArrayList<>();
-        if (python != null && Paths.get(python).isAbsolute() && Paths.get(python).getParent() != null) {
-            dirs.add(Paths.get(python).getParent());
+        Path pythonDir = python == null ? null : absoluteParent(python);
+        if (pythonDir != null) {
+            dirs.add(pythonDir);
         }
         dirs.addAll(searchDirs);
         List<String> js = new ArrayList<>();
@@ -287,9 +389,27 @@ public class YoutubePackService {
                 }
             }
         }
-        tools = new Tools(ytDlp, version, ffmpeg, js);
+        Tools found = new Tools(ytDlp, version, ffmpeg, js);
         LOGGER.info("YouTube tools: yt-dlp=" + ytDlp + " (" + version + "), ffmpeg=" + ffmpeg + ", js=" + js);
-        return tools;
+        return found;
+    }
+
+    /** The folder of a program given by an absolute path, or null (bare name, relative or malformed path). */
+    static Path absoluteParent(String program) {
+        try {
+            Path p = Paths.get(program);
+            return p.isAbsolute() ? p.getParent() : null;
+        } catch (InvalidPathException e) {
+            return null;
+        }
+    }
+
+    static boolean isAbsolutePath(String program) {
+        try {
+            return Paths.get(program).isAbsolute();
+        } catch (InvalidPathException e) {
+            return false;
+        }
     }
 
     private boolean probe(List<String> command, List<String> stdout) {
@@ -311,11 +431,9 @@ public class YoutubePackService {
     // -- jobs
 
     /** Starts a creation; refused while another one is running, or when a program is missing. */
-    public synchronized YoutubePackJob start(YoutubePackRequest request) {
-        YoutubePackJob running = jobs.values().stream().filter(YoutubePackJob::isRunning).findFirst().orElse(null);
-        if (running != null) {
-            throw new YoutubePackException(YoutubePackException.Code.BUSY, "Un pack est d\u00e9j\u00e0 en cours de cr\u00e9ation");
-        }
+    public YoutubePackJob start(YoutubePackRequest request) {
+        ensureIdle();
+        // Outside the lock: probing may take seconds
         Tools t = tools(false);
         if (!t.ready()) {
             t = tools(true);
@@ -323,14 +441,24 @@ public class YoutubePackService {
         if (!t.ready()) {
             throw new YoutubePackException(YoutubePackException.Code.TOOLS_MISSING, t.problem());
         }
-        YoutubePackJob job = new YoutubePackJob();
-        jobs.put(job.getId(), job);
-        while (jobs.size() > KEPT_JOBS) {
-            jobs.remove(jobs.keySet().iterator().next());
+        synchronized (this) {
+            // Checked again: another creation may have started while the tools were probed
+            ensureIdle();
+            YoutubePackJob job = new YoutubePackJob();
+            jobs.put(job.getId(), job);
+            while (jobs.size() > KEPT_JOBS) {
+                jobs.remove(jobs.keySet().iterator().next());
+            }
+            Tools used = t;
+            executor.submit(() -> execute(job, request, used));
+            return job;
         }
-        Tools used = t;
-        executor.submit(() -> execute(job, request, used));
-        return job;
+    }
+
+    private synchronized void ensureIdle() {
+        if (jobs.values().stream().anyMatch(YoutubePackJob::isRunning)) {
+            throw new YoutubePackException(YoutubePackException.Code.BUSY, "Un pack est d\u00e9j\u00e0 en cours de cr\u00e9ation");
+        }
     }
 
     public synchronized Optional<YoutubePackJob> job(String id) {
@@ -410,7 +538,15 @@ public class YoutubePackService {
                 String url = req.urls.get(k);
                 job.item(k + 1, req.urls.size(), url);
                 job.log("Analyse de " + url);
-                JsonObject info = metadata(t, url, job);
+                JsonObject info;
+                try {
+                    info = metadata(t, url, job);
+                } catch (IOException e) {
+                    // A link that does not answer in time (or yt-dlp that cannot start) costs this
+                    // link only, not the creation
+                    job.warn("lien ignor\u00e9, yt-dlp n'a pas pu le lire : " + url + " (" + describe(e) + ")");
+                    continue;
+                }
                 if (info == null) {
                     continue;
                 }
@@ -519,7 +655,7 @@ public class YoutubePackService {
                             + "arr\u00eat, le pack est cr\u00e9\u00e9 avec les vid\u00e9os d\u00e9j\u00e0 r\u00e9cup\u00e9r\u00e9es. R\u00e9essayez dans quelques heures.");
                     break;
                 } catch (IOException e) {
-                    job.warn("\u00e9chec du t\u00e9l\u00e9chargement, vid\u00e9o ignor\u00e9e : " + v.title + " (" + e.getMessage() + ")");
+                    job.warn("\u00e9chec du t\u00e9l\u00e9chargement, vid\u00e9o ignor\u00e9e : " + v.title + " (" + describe(e) + ")");
                 }
                 job.progress(0.05 + 0.6 * (i + 1) / videos.size());
             }
@@ -545,10 +681,11 @@ public class YoutubePackService {
                     converted.add(v);
                     job.log("  [" + (i + 1) + "/" + downloaded.size() + "] converti : " + v.title);
                 } catch (IOException e) {
-                    job.warn("conversion impossible, vid\u00e9o ignor\u00e9e : " + v.title + " (" + e.getMessage() + ")");
+                    job.warn("conversion impossible, vid\u00e9o ignor\u00e9e : " + v.title + " (" + describe(e) + ")");
                 }
                 job.progress(0.65 + 0.2 * (i + 1) / downloaded.size());
             }
+            keepReadableSizes(converted, job);
             if (converted.isEmpty()) {
                 throw new YoutubePackException(YoutubePackException.Code.FAILED, "aucune histoire n'a pu \u00eatre convertie");
             }
@@ -557,7 +694,7 @@ public class YoutubePackService {
             job.step(YoutubePackJob.Step.VOICES, 0.85);
             List<YoutubePackBuilder.Story> stories = new ArrayList<>();
             for (Video v : converted) {
-                stories.add(new YoutubePackBuilder.Story(v.title, "yt:" + v.id, v.group, v.converted, readImage(v.thumbnail)));
+                stories.add(new YoutubePackBuilder.Story(v.title, "yt:" + v.id, v.group, v.converted, thumbnail(v.thumbnail)));
             }
             int expectedVoices = stories.size() + 1 + (int) converted.stream().map(v -> v.group).distinct().count();
             Map<String, byte[]> spoken = new HashMap<>();
@@ -578,12 +715,21 @@ public class YoutubePackService {
                 if (voiceFailures[0] >= MAX_VOICE_FAILURES) {
                     return null;
                 }
+                // Nothing to read aloud (a title made of symbols only): left silent, and not held
+                // against the voice
+                if (!isSpeakable(text)) {
+                    spoken.put(text, null);
+                    return null;
+                }
                 byte[] wave;
                 try {
-                    wave = speaker.speak(text.length() > MAX_SPOKEN ? text.substring(0, MAX_SPOKEN) : text, req.engine, req.voice);
+                    wave = speaker.speak(spokenText(text), req.engine, req.voice);
                     voiceFailures[0] = 0;
                 } catch (TitleVoiceException e) {
-                    voiceFailures[0]++;
+                    // A text the voice service refuses says nothing about the voice itself
+                    if (e.getCode() != TitleVoiceException.Code.INVALID_REQUEST) {
+                        voiceFailures[0]++;
+                    }
                     job.warn("voix indisponible (" + e.getMessage() + ") : titre sans voix"
                             + (voiceFailures[0] >= MAX_VOICE_FAILURES ? " ; les titres suivants restent sans voix" : ""));
                     wave = null;
@@ -619,8 +765,7 @@ public class YoutubePackService {
         } catch (Exception | Error e) {
             // Errors too (out of memory, AWT without fonts\u2026): a job left RUNNING would refuse every later one
             LOGGER.error("Pack creation from YouTube failed", e);
-            failure = new YoutubePackException(YoutubePackException.Code.FAILED,
-                    e.getMessage() != null ? e.getMessage() : e.toString(), e);
+            failure = new YoutubePackException(YoutubePackException.Code.FAILED, describe(e), e);
         } finally {
             if (work != null) {
                 deleteQuietly(work);
@@ -633,6 +778,75 @@ public class YoutubePackService {
                         : new YoutubePackException(YoutubePackException.Code.FAILED, "cr\u00e9ation interrompue"));
             }
         }
+    }
+
+    /**
+     * A failure in words. A file system error's own message is often the bare path
+     * ({@code AccessDeniedException: C:\...}): what happened is added.
+     */
+    static String describe(Throwable e) {
+        if (e instanceof FileSystemException) {
+            FileSystemException f = (FileSystemException) e;
+            String what = e instanceof AccessDeniedException ? "acc\u00e8s refus\u00e9"
+                    : e instanceof NoSuchFileException ? "fichier ou dossier introuvable"
+                    : e instanceof FileAlreadyExistsException ? "le fichier existe d\u00e9j\u00e0"
+                    : e instanceof DirectoryNotEmptyException ? "dossier non vide"
+                    : "erreur de fichier";
+            StringBuilder sb = new StringBuilder(what);
+            if (f.getFile() != null) {
+                sb.append(" : ").append(f.getFile());
+            }
+            if (f.getOtherFile() != null) {
+                sb.append(" \u2192 ").append(f.getOtherFile());
+            }
+            if (f.getReason() != null && !f.getReason().isBlank()) {
+                sb.append(" (").append(f.getReason().trim()).append(')');
+            }
+            return sb.toString();
+        }
+        return e.getMessage() != null && !e.getMessage().isBlank() ? e.getMessage() : e.toString();
+    }
+
+    /** Whether a text has something to read aloud: a letter or a digit. */
+    static boolean isSpeakable(String text) {
+        return text != null && text.codePoints().anyMatch(Character::isLetterOrDigit);
+    }
+
+    /** The text cut to what the voice service accepts, never in the middle of a character. */
+    static String spokenText(String text) {
+        if (text.codePointCount(0, text.length()) <= MAX_SPOKEN) {
+            return text;
+        }
+        return text.substring(0, text.offsetByCodePoints(0, MAX_SPOKEN));
+    }
+
+    /**
+     * Leaves out the stories STUdio could not read back from the pack (and so neither convert nor
+     * send): an audio larger than {@link ArchiveStoryPackReader#DEFAULT_MAX_ENTRY_BYTES}, or those
+     * that would make the pack larger than {@link ArchiveStoryPackReader#DEFAULT_MAX_TOTAL_BYTES}.
+     */
+    void keepReadableSizes(List<Video> converted, YoutubePackJob job) throws IOException {
+        long total = packReserveBytes;
+        for (java.util.Iterator<Video> it = converted.iterator(); it.hasNext(); ) {
+            Video v = it.next();
+            long size = Files.size(v.converted);
+            if (size > maxAudioBytes) {
+                job.warn("vid\u00e9o ignor\u00e9e, trop longue pour la Lunii : " + v.title + " (" + megabytes(size)
+                        + " Mo une fois convertie, au plus " + megabytes(maxAudioBytes) + " Mo par histoire ; "
+                        + "r\u00e9duisez la dur\u00e9e maximale ou le d\u00e9bit)");
+                it.remove();
+            } else if (total + size + storyReserveBytes > maxPackBytes) {
+                job.warn("vid\u00e9o laiss\u00e9e de c\u00f4t\u00e9 : le pack d\u00e9passerait " + megabytes(maxPackBytes)
+                        + " Mo, la taille la plus grande que STUdio sait relire : " + v.title);
+                it.remove();
+            } else {
+                total += size + storyReserveBytes;
+            }
+        }
+    }
+
+    private static long megabytes(long bytes) {
+        return Math.round(bytes / (1024.0 * 1024.0));
     }
 
     private static final Pattern VIDEO_ID = Pattern.compile("[A-Za-z0-9_-]{11}");
@@ -686,7 +900,9 @@ public class YoutubePackService {
 
     /**
      * The pack identifier, from which node uuids derive: the links asked for, so that two packs of
-     * the same title stay two packs, and making the same pack again updates it on the device.
+     * the same title stay two packs. Making the same pack again gives the same uuid (and version 1):
+     * the device sees the pack it already has, and does not take the new one in its place; it must be
+     * removed from the device first.
      */
     static String packId(YoutubePackRequest req) {
         List<String> urls = new ArrayList<>(req.urls);
@@ -724,18 +940,21 @@ public class YoutubePackService {
     JsonObject metadata(Tools t, String url, YoutubePackJob job) throws IOException, InterruptedException {
         List<String> cmd = common(t);
         cmd.addAll(List.of("--flat-playlist", "--ignore-errors", "--no-warnings", "-J", "--", url));
-        StringBuilder out = new StringBuilder();
-        List<String> errors = new ArrayList<>();
-        boolean[] blocked = {false};
+        StringBuffer out = new StringBuffer();
+        // Filled by the threads reading the program's two outputs
+        List<String> errors = Collections.synchronizedList(new ArrayList<>());
+        AtomicBoolean blocked = new AtomicBoolean();
         int code = runner.run(cmd, (line, err) -> {
             if (err) {
                 errors.add(line);
-                blocked[0] |= isBlocked(line);
+                if (isBlocked(line)) {
+                    blocked.set(true);
+                }
             } else {
                 out.append(line).append('\n');
             }
         }, Duration.ofMinutes(5), job::isCancelRequested);
-        if (blocked[0]) {
+        if (blocked.get()) {
             throw new YoutubePackException(YoutubePackException.Code.BLOCKED,
                     "YouTube bloque les requ\u00eates (\u00ab confirmez que vous n'\u00eates pas un robot \u00bb) : r\u00e9essayez dans quelques heures");
         }
@@ -757,7 +976,12 @@ public class YoutubePackService {
         return BLOCKED_WORDS.stream().anyMatch(l::contains);
     }
 
-    private static String lastError(List<String> errors, int code) {
+    private static String lastError(List<String> lines, int code) {
+        List<String> errors;
+        synchronized (lines) {
+            // A synchronized list: an output thread may still be adding to it
+            errors = new ArrayList<>(lines);
+        }
         for (int i = errors.size() - 1; i >= 0; i--) {
             String e = errors.get(i).replaceAll("\u001b\\[[0-9;]*m", "").trim();
             if (!e.isEmpty()) {
@@ -784,15 +1008,16 @@ public class YoutubePackService {
         List<String> cmd = common(t);
         cmd.addAll(List.of("--newline", "--no-mtime", "--sleep-requests", "1",
                 "-f", "bestaudio/best",
-                "-o", dir.resolve("media.%(ext)s").toString(),
+                "-o", outputTemplate(dir),
                 "--write-thumbnail", "--convert-thumbnails", "jpg"));
-        if (Paths.get(t.ffmpeg).isAbsolute()) {
+        if (isAbsolutePath(t.ffmpeg)) {
             // A bare "ffmpeg" is found on the PATH by yt-dlp itself; a relative location would not be
             cmd.addAll(List.of("--ffmpeg-location", t.ffmpeg));
         }
         cmd.addAll(List.of("--", "https://www.youtube.com/watch?v=" + v.id));
-        List<String> errors = new ArrayList<>();
-        boolean[] blocked = {false};
+        // Filled by the threads reading the program's two outputs
+        List<String> errors = Collections.synchronizedList(new ArrayList<>());
+        AtomicBoolean blocked = new AtomicBoolean();
         int code = runner.run(cmd, (line, err) -> {
             Matcher m = DOWNLOAD_PROGRESS.matcher(line);
             if (m.find()) {
@@ -800,15 +1025,16 @@ public class YoutubePackService {
             } else if (err) {
                 errors.add(line);
             }
-            blocked[0] |= isBlocked(line);
+            if (isBlocked(line)) {
+                blocked.set(true);
+            }
         }, downloadTimeout, job::isCancelRequested);
-        if (blocked[0]) {
+        if (blocked.get()) {
             throw new BlockedException();
         }
         Path audio;
         try (Stream<Path> files = Files.list(dir)) {
-            audio = files.filter(p -> p.getFileName().toString().startsWith("media."))
-                    .filter(p -> !NOT_AUDIO.contains(extension(p)))
+            audio = files.filter(p -> isAudioFile(p.getFileName().toString()))
                     .max(Comparator.comparingLong(p -> p.toFile().length()))
                     .orElse(null);
         }
@@ -827,18 +1053,38 @@ public class YoutubePackService {
         v.thumbnail = Files.isRegularFile(thumb) ? thumb : null;
     }
 
-    private static String extension(Path p) {
-        String n = p.getFileName().toString();
-        int dot = n.lastIndexOf('.');
-        return dot < 0 ? "" : n.substring(dot + 1).toLowerCase(Locale.ROOT);
+    /**
+     * yt-dlp's {@code -o} template for {@code dir}: a "%" of the path is doubled, else yt-dlp would
+     * read it as a field of the template.
+     */
+    static String outputTemplate(Path dir) {
+        return dir.toString().replace("%", "%%") + File.separator + "media.%(ext)s";
     }
 
-    private static BufferedImage readImage(Path p) {
+    /**
+     * A finished audio download: {@code media.<ext>}, neither the thumbnail nor what yt-dlp leaves
+     * from an unfinished download ({@code .part}, {@code .part-Frag3}, {@code .ytdl}, {@code .temp}).
+     */
+    static boolean isAudioFile(String name) {
+        String n = name.toLowerCase(Locale.ROOT);
+        if (!n.startsWith("media.") || n.contains(".part") || n.contains("-frag") || n.contains(".ytdl") || n.contains(".temp.")) {
+            return false;
+        }
+        int dot = n.lastIndexOf('.');
+        return dot < n.length() - 1 && !NOT_AUDIO.contains(n.substring(dot + 1));
+    }
+
+    /**
+     * The thumbnail, already at the size of the device's screen: a full-resolution picture of every
+     * video kept in memory until the pack is written would weigh hundreds of megabytes.
+     */
+    static BufferedImage thumbnail(Path p) {
         if (p == null) {
             return null;
         }
         try {
-            return ImageIO.read(p.toFile());
+            BufferedImage img = ImageIO.read(p.toFile());
+            return img == null ? null : YoutubePackBuilder.fit(img, YoutubePackBuilder.WIDTH, YoutubePackBuilder.HEIGHT);
         } catch (IOException | RuntimeException e) {
             LOGGER.warn("Unreadable thumbnail " + p + ": " + e.getMessage());
             return null;
@@ -914,7 +1160,8 @@ public class YoutubePackService {
 
     /** Mono MP3 at 44.1 kHz, normalised volume, no metadata, as Lunii Pack makes them. */
     void convert(Tools t, Path in, Path out, List<double[]> keep, int bitrate, YoutubePackJob job) throws IOException, InterruptedException {
-        List<String> errors = new ArrayList<>();
+        // ffmpeg's two outputs are read by two threads: a plain list would lose lines or break
+        List<String> errors = Collections.synchronizedList(new ArrayList<>());
         int code = runner.run(convertCommand(t.ffmpeg, in, out, keep, bitrate), (line, err) -> errors.add(line),
                 convertTimeout, job::isCancelRequested);
         if (code != 0 || !Files.isRegularFile(out) || Files.size(out) == 0) {
@@ -1008,11 +1255,26 @@ public class YoutubePackService {
 
     /** Starts the program directly (no shell), reads its output as UTF-8, kills it on timeout or cancel. */
     static final class ProcessRunner implements CommandRunner {
+        /**
+         * Empty folder the programs start in, or null for STUdio's own. Python puts the current
+         * folder first in its module path (with {@code -E}, unlike {@code -I}): a {@code yt_dlp.py}
+         * or {@code edge_tts.py} lying in STUdio's folder would be run instead of the package.
+         */
+        private final Path directory;
+
+        ProcessRunner(Path directory) {
+            this.directory = directory;
+        }
+
         @Override
         public int run(List<String> command, LineSink sink, Duration timeout, BooleanSupplier cancelled) throws IOException, InterruptedException {
             ProcessBuilder pb = new ProcessBuilder(command);
+            if (directory != null) {
+                pb.directory(Files.createDirectories(directory).toFile());
+                pb.command(programRelativeToStudio(command));
+            }
             pb.redirectInput(ProcessBuilder.Redirect.from(new File(windows() ? "NUL" : "/dev/null")));
-            // A Python started without -I (a standalone yt-dlp) writes UTF-8 too
+            // A standalone yt-dlp writes UTF-8 too (Python with -E ignores this variable, and is given --encoding)
             pb.environment().put("PYTHONIOENCODING", "utf-8");
             Process process = pb.start();
             Thread out = pump(process.getInputStream(), false, sink);
@@ -1053,6 +1315,25 @@ public class YoutubePackService {
                     out.join(2000);
                     err.join(2000);
                 }
+            }
+        }
+
+        /** A program given by a relative path ("venv/bin/python") stays relative to STUdio's folder, not to the empty one. */
+        static List<String> programRelativeToStudio(List<String> command) {
+            String program = command.get(0);
+            if (program.indexOf('/') < 0 && program.indexOf('\\') < 0) {
+                return command;
+            }
+            try {
+                Path p = Paths.get(program);
+                if (p.isAbsolute()) {
+                    return command;
+                }
+                List<String> c = new ArrayList<>(command);
+                c.set(0, p.toAbsolutePath().toString());
+                return c;
+            } catch (InvalidPathException e) {
+                return command;
             }
         }
 

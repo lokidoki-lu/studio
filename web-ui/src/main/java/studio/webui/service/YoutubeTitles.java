@@ -10,10 +10,12 @@ import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -60,12 +62,12 @@ public final class YoutubeTitles {
             return "";
         }
         String t = Normalizer.normalize(title, Normalizer.Form.NFC);
-        // Emojis and pictograms
+        // Emojis and pictograms; not every symbol: "\u00b0", "\u2116", "\u00a9", "\u2122" are kept, and the
+        // box-drawing separators ("\u00a6", "\u2502", "\u2503") are needed to split the title below
         StringBuilder sb = new StringBuilder(t.length());
         t.codePoints().forEach(cp -> {
             int type = Character.getType(cp);
-            if (type != Character.OTHER_SYMBOL && type != Character.SURROGATE && type != Character.PRIVATE_USE
-                    && cp != 0x200d && cp != 0xfe0f) {
+            if (!isEmoji(cp) && type != Character.SURROGATE && type != Character.PRIVATE_USE) {
                 sb.appendCodePoint(cp);
             }
         });
@@ -98,6 +100,20 @@ public final class YoutubeTitles {
             t = capitalize(t);
         }
         return t.isEmpty() ? title.trim() : t;
+    }
+
+    /** Emoji, pictograms and the characters that join or vary them. */
+    static boolean isEmoji(int cp) {
+        return cp >= 0x1f000 && cp <= 0x1faff          // emoticons, pictographs, transport, flags, skin tones...
+                || cp >= 0x2600 && cp <= 0x27bf        // miscellaneous symbols, dingbats
+                || cp >= 0x2b00 && cp <= 0x2bff        // arrows and stars (\u2b50, \u2b55)
+                || cp >= 0x25a0 && cp <= 0x25ff        // geometric shapes (\u25b6, \u25fc)
+                || cp >= 0x2190 && cp <= 0x21ff        // arrows (\u2194, \u21aa)
+                || cp == 0x231a || cp == 0x231b || cp == 0x2328 || cp == 0x23cf
+                || cp >= 0x23e9 && cp <= 0x23f3 || cp >= 0x23f8 && cp <= 0x23fa
+                || cp == 0x3030 || cp == 0x303d || cp == 0x3297 || cp == 0x3299
+                || cp == 0x200d || cp == 0x20e3 || cp == 0xfe0e || cp == 0xfe0f
+                || cp >= 0xe0020 && cp <= 0xe007f;     // tags (subdivision flags)
     }
 
     private static boolean isParasite(String segment, String author) {
@@ -191,11 +207,18 @@ public final class YoutubeTitles {
                 }
             }
         }
+        // Compared character by character, ignoring case: lower-casing whole strings can change
+        // their length ("\u0130" gives two characters), and the prefix length is used on each title
         String prefix = titles.get(0);
         for (String t : titles.subList(1, titles.size())) {
-            while (!prefix.isEmpty() && !t.toLowerCase(Locale.ROOT).startsWith(prefix.toLowerCase(Locale.ROOT))) {
-                prefix = prefix.substring(0, prefix.length() - 1);
+            int len = Math.min(prefix.length(), t.length());
+            while (len > 0 && !t.regionMatches(true, 0, prefix, 0, len)) {
+                len--;
             }
+            if (len > 0 && Character.isHighSurrogate(prefix.charAt(len - 1))) {
+                len--;
+            }
+            prefix = prefix.substring(0, len);
         }
         int sep = -1;
         for (char c : "-\u2013\u2014:|\u00b7".toCharArray()) {
@@ -275,11 +298,27 @@ public final class YoutubeTitles {
 
     /** Numbers the titles that remain identical ("Titre", "Titre 2"\u2026), ignoring case. */
     public static List<String> numberDuplicates(List<String> titles) {
-        Map<String, Integer> seen = new HashMap<>();
+        // A number is never one that another title already has ("A", "A", "A 2" -> "A", "A 3", "A 2")
+        Set<String> original = new HashSet<>();
+        titles.forEach(t -> original.add(t.toLowerCase(Locale.ROOT)));
+        Set<String> used = new HashSet<>();
+        Map<String, Integer> next = new HashMap<>();
         List<String> res = new ArrayList<>();
         for (String t : titles) {
-            int n = seen.merge(t.toLowerCase(Locale.ROOT), 1, Integer::sum);
-            res.add(n > 1 ? t + " " + n : t);
+            String key = t.toLowerCase(Locale.ROOT);
+            if (used.add(key)) {
+                res.add(t);
+                continue;
+            }
+            int n = next.getOrDefault(key, 2);
+            String numbered = t + " " + n;
+            while (used.contains(numbered.toLowerCase(Locale.ROOT)) || original.contains(numbered.toLowerCase(Locale.ROOT))) {
+                n++;
+                numbered = t + " " + n;
+            }
+            next.put(key, n + 1);
+            used.add(numbered.toLowerCase(Locale.ROOT));
+            res.add(numbered);
         }
         return res;
     }
@@ -349,7 +388,8 @@ public final class YoutubeTitles {
         String n = title == null ? "" : title.replaceAll("[<>:\"/\\\\|?*\\x00-\\x1f]", "-");
         n = strip(n.trim(), " .");
         if (n.length() > 80) {
-            n = strip(n.substring(0, 80), " .");
+            // Never between the two halves of a character outside the BMP (an emoji)
+            n = strip(n.substring(0, Character.isHighSurrogate(n.charAt(79)) ? 79 : 80), " .");
         }
         if (n.isEmpty()) {
             return "pack";

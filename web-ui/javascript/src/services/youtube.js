@@ -4,7 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-import {handleJsonOrError} from "../utils/fetch";
+import {apiFetch, handleJsonOrError} from "../utils/fetch";
 
 /*
  * Packs made from YouTube links (see API.md, "Packs from YouTube"). The creation runs in the
@@ -13,12 +13,12 @@ import {handleJsonOrError} from "../utils/fetch";
 
 // {ready, ytDlp, ytDlpVersion, ffmpeg, jsRuntime, message, voices, defaultVoice, bitrates, ...}
 export const fetchYoutubeTools = (refresh) => {
-    return fetch('/api/youtube/tools' + (refresh ? '?refresh=true' : ''))
+    return apiFetch('/api/youtube/tools' + (refresh ? '?refresh=true' : ''))
         .then(handleJsonOrError);
 };
 
 export const startYoutubePack = (body) => {
-    return fetch('/api/youtube/jobs', {
+    return apiFetch('/api/youtube/jobs', {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(body)
@@ -27,18 +27,18 @@ export const startYoutubePack = (body) => {
 };
 
 export const fetchYoutubeJob = (id) => {
-    return fetch('/api/youtube/jobs/' + encodeURIComponent(id))
+    return apiFetch('/api/youtube/jobs/' + encodeURIComponent(id))
         .then(handleJsonOrError);
 };
 
 // The running creation or the last one, or null when there has been none
 export const fetchCurrentYoutubeJob = () => {
-    return fetch('/api/youtube/jobs/current')
+    return apiFetch('/api/youtube/jobs/current')
         .then(response => response.status === 404 ? null : handleJsonOrError(response));
 };
 
 export const cancelYoutubePack = (id) => {
-    return fetch('/api/youtube/jobs/' + encodeURIComponent(id) + '/cancel', {
+    return apiFetch('/api/youtube/jobs/' + encodeURIComponent(id) + '/cancel', {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: "{}"
