@@ -1138,7 +1138,11 @@ public class LibraryService {
 
     /** Bytes on disk: the file's size, or the sum of the regular files of a folder. */
     private static long sizeOf(PurgeEntry entry) {
-        Path path = entry.pack.getPath();
+        return diskSize(entry.pack.getPath());
+    }
+
+    /** Bytes on disk: the file's size, or the sum of the regular files of a folder; -1 if unreadable. */
+    private static long diskSize(Path path) {
         try {
             if (!Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
                 return Files.size(path);
@@ -1283,7 +1287,7 @@ public class LibraryService {
             attributes = Files.readAttributes(path, BasicFileAttributes.class);
         } catch (IOException e) {
             LOGGER.debug("Cannot read attributes, parsing without the cache: " + path.toString());
-            return readPackFile(path);
+            return readPackFileWithSize(path);
         }
 
         CachedPack cached = cachedPacks.getIfPresent(path);
@@ -1291,8 +1295,15 @@ public class LibraryService {
             return cached.pack;
         }
 
-        Optional<LibraryPack> pack = readPackFile(path);
+        Optional<LibraryPack> pack = readPackFileWithSize(path);
         cachedPacks.put(path, new CachedPack(pack, attributes));
+        return pack;
+    }
+
+    /** A parse plus its size on disk, measured once and kept with the cached parse. */
+    private Optional<LibraryPack> readPackFileWithSize(Path path) {
+        Optional<LibraryPack> pack = readPackFile(path);
+        pack.ifPresent(p -> p.setSize(diskSize(path)));
         return pack;
     }
 
@@ -1364,6 +1375,9 @@ public class LibraryService {
         Optional.ofNullable(pack.getMetadata().getDescription()).ifPresent(desc -> json.put("description", desc));
         Optional.ofNullable(pack.getMetadata().getThumbnail()).ifPresent(thumb -> json.put("image", "data:image/png;base64," + Base64.getEncoder().encodeToString(thumb)));
         Optional.ofNullable(pack.getMetadata().getSectorSize()).ifPresent(size -> json.put("sectorSize", size));
+        if (pack.getSize() >= 0) {
+            json.put("size", pack.getSize());
+        }
         return databaseMetadataService.getPackMetadata(pack.getMetadata().getUuid())
                 .map(metadata -> json
                         .put("title", metadata.getTitle())

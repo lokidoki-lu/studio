@@ -214,6 +214,16 @@ class LibraryCacheCoherenceTest {
         assertEquals(1, exposedVersion(), "documented limit: size and modification time are all this checks");
     }
 
+    @Test
+    @DisplayName("The listing exposes the pack's size on disk, and a replacement updates it")
+    void sizeOnDiskIsExposedAndFollowsAReplacement() throws IOException {
+        writePack(version(1));
+        assertEquals(Files.size(pack), exposedPack().getLong("size"));
+
+        writePack(version(2) + padding(128));
+        assertEquals(Files.size(pack), exposedPack().getLong("size"));
+    }
+
     // ---------------------------------------------------------------- STUdio overwriting its own library
 
     @Test
