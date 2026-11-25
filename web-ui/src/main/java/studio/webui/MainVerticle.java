@@ -27,6 +27,7 @@ import studio.webui.api.DeviceController;
 import studio.webui.api.EvergreenController;
 import studio.webui.api.LibraryController;
 import studio.webui.api.TitleVoiceController;
+import studio.webui.api.YoutubeController;
 import studio.webui.service.*;
 import studio.webui.service.mock.MockStoryTellerService;
 
@@ -253,7 +254,11 @@ public class MainVerticle extends AbstractVerticle {
         router.mountSubRouter("/evergreen", EvergreenController.apiRouter(vertx, evergreenService));
 
         // Spoken titles for the editor
-        router.mountSubRouter("/tts", TitleVoiceController.apiRouter(vertx, new TitleVoiceService()));
+        TitleVoiceService titleVoiceService = new TitleVoiceService();
+        router.mountSubRouter("/tts", TitleVoiceController.apiRouter(vertx, titleVoiceService));
+
+        // Packs made from YouTube links, in the background
+        router.mountSubRouter("/youtube", YoutubeController.apiRouter(vertx, new YoutubePackService(titleVoiceService, libraryService)));
 
         return router;
     }

@@ -55,6 +55,81 @@
     "nightMode": "Mode nuit disponible"
   },
 
+  "youtubePack": {
+    "button": "Depuis YouTube",
+    "buttonRunning": "YouTube… {{percent}} %",
+    "buttonTitle": "Créer un pack à partir de liens YouTube (vidéos ou playlists)",
+    "dialogTitle": "Créer un pack depuis YouTube",
+    "checking": "Recherche de yt-dlp et ffmpeg…",
+    "toolsError": "Impossible de vérifier les outils : {{message}}",
+    "missingTitle": "Il manque des outils pour télécharger depuis YouTube :",
+    "missingYtDlp": "yt-dlp : installez Lunii Pack (son Python le contient) ou « pip install yt-dlp », puis indiquez ce Python avec la variable STUDIO_TTS_PYTHON.",
+    "missingFfmpeg": "ffmpeg : installez-le (https://ffmpeg.org) et ajoutez-le au PATH, puis relancez STUdio.",
+    "recheck": "Vérifier à nouveau",
+    "noJsRuntime": "Aucun moteur JavaScript (Deno, Node) trouvé : YouTube peut refuser certains téléchargements.",
+    "links": "Liens YouTube",
+    "linksPlaceholder": "https://www.youtube.com/watch?v=…\nhttps://www.youtube.com/playlist?list=…",
+    "linksHint": "Un lien par ligne : vidéos ou playlists. Une playlist devient un sous-menu quand le pack est grand.",
+    "title": "Titre du pack",
+    "titlePlaceholder": "Titre de la playlist ou de la vidéo",
+    "description": "Description",
+    "voice": "Voix des titres",
+    "options": "Réglages",
+    "option": {
+      "cleanTitles": "Nettoyer les titres (emojis, [HD], nom de la chaîne…)",
+      "sponsorBlock": "Retirer génériques et autopromos (SponsorBlock)",
+      "seasons": "Ranger par saison quand les titres portent « S01E05 »",
+      "autoplayNext": "Enchaîner les histoires",
+      "pauses": "Pause entre deux téléchargements (évite le blocage par YouTube)"
+    },
+    "help": {
+      "cleanTitles": "Les titres sont lus à voix haute sur la Lunii : sans ce nettoyage, ils sont gardés tels quels.",
+      "sponsorBlock": "Les passages signalés par les utilisateurs de SponsorBlock sont coupés. L'identifiant de la vidéo est envoyé à sponsor.ajay.app.",
+      "seasons": "Les épisodes sont triés par saison et par numéro, une saison par sous-menu.",
+      "autoplayNext": "À la fin d'une histoire, la suivante commence.",
+      "pauses": "De 10 à 30 secondes entre deux vidéos : YouTube bloque les rafales de téléchargements.",
+      "menuSize": "Au-delà, les histoires sont rangées en sous-menus. 0 : jamais de sous-menu."
+    },
+    "minMinutes": "Durée minimale (min)",
+    "maxMinutes": "Durée maximale (min)",
+    "menuSize": "Histoires par menu",
+    "bitrate": "Qualité audio",
+    "kbps": "{{value}} kbit/s",
+    "maxVideos": "Vidéos au plus",
+    "privacy": "Les vidéos sont téléchargées par yt-dlp ; les titres sont lus par la voix en ligne (Microsoft) quand elle est disponible. Réservé à des contenus dont vous avez les droits, à titre privé.",
+    "problems": {
+      "noLink": "Collez au moins un lien YouTube.",
+      "tooManyLinks": "Au plus {{max}} liens à la fois.",
+      "durations": "La durée minimale dépasse la durée maximale."
+    },
+    "start": "Créer le pack",
+    "starting": "Démarrage…",
+    "close": "Fermer",
+    "cancel": "Annuler la création",
+    "cancelling": "Annulation…",
+    "another": "Créer un autre pack",
+    "steps": {
+      "CHECKING": "Préparation",
+      "ANALYSING": "Lecture des liens",
+      "DOWNLOADING": "Téléchargement",
+      "CONVERTING": "Conversion audio",
+      "VOICES": "Voix des titres et images",
+      "WRITING": "Ajout à la bibliothèque",
+      "FINISHED": "Terminé"
+    },
+    "done": "Pack « {{title}} » ajouté à la bibliothèque : {{count}} histoire(s) ({{path}}).",
+    "silent": "{{count}} titre(s) sans voix : générez-les dans l'éditeur avant d'envoyer le pack sur la Lunii.",
+    "blocked": "YouTube a bloqué la suite des téléchargements : réessayez dans quelques heures pour les vidéos manquantes.",
+    "failed": "Échec : {{message}}",
+    "cancelled": "Création annulée : rien n'a été ajouté à la bibliothèque.",
+    "warnings": "{{count}} avertissement(s) : voyez le journal ci-dessous.",
+    "background": "Vous pouvez fermer cette fenêtre : la création continue, le bouton « Depuis YouTube » suit sa progression.",
+    "toasts": {
+      "done": "Pack « {{title}} » créé depuis YouTube : {{count}} histoire(s).",
+      "failed": "La création du pack depuis YouTube a échoué : {{message}}"
+    }
+  },
+
   "libraryPurge": {
     "button": "Supprimer les vieux packs de la bibliothèque",
     "title": "Supprimer les vieux packs",
