@@ -1,0 +1,314 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+/* The simplified library. Colours, radii and shadows come from the tokens declared in index.css. */
+
+.pack-library-simple h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--ui-text);
+}
+
+.pack-library-simple .simple-count,
+.pack-library-simple .simple-total {
+    font-weight: 500;
+    font-size: 13px;
+    color: var(--ui-text-muted);
+}
+
+.pack-library-simple .simple-total {
+    margin-left: 10px;
+}
+
+.pack-library-simple .simple-note {
+    margin: 6px 0 0;
+    font-size: 12px;
+    color: var(--ui-text-muted);
+}
+
+.pack-library-simple .simple-error {
+    color: var(--ui-danger);
+}
+
+.pack-library-simple .simple-empty {
+    padding: 30px 10px;
+    text-align: center;
+    color: var(--ui-text-muted);
+}
+
+.pack-library-simple .ui-btn:focus-visible,
+.pack-library-simple select:focus-visible,
+.pack-library-simple input[type="checkbox"]:focus-visible {
+    outline: 2px solid var(--ui-accent);
+    outline-offset: 2px;
+}
+
+/* Device panel, on the left like the full library's */
+.pack-library-simple .simple-device {
+    width: 22vw;
+    min-width: 240px;
+    max-width: 360px;
+    padding: 18px 14px;
+    overflow-y: auto;
+    background-color: var(--ui-surface-muted);
+    border-right: 1px solid var(--ui-border);
+}
+
+.pack-library-simple .simple-storage {
+    height: 6px;
+    margin-top: 6px;
+    border-radius: 999px;
+    background-color: var(--ui-border);
+    overflow: hidden;
+}
+
+.pack-library-simple .simple-storage > div {
+    height: 100%;
+    background-color: var(--ui-accent);
+}
+
+.pack-library-simple .simple-storage.warning > div {
+    background-color: var(--ui-format-archive);
+}
+
+.pack-library-simple .simple-storage.critical > div {
+    background-color: var(--ui-danger);
+}
+
+.pack-library-simple .simple-device-list {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+}
+
+.pack-library-simple .simple-device-pack {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px;
+    margin-bottom: 6px;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-sm);
+    background-color: var(--ui-surface);
+}
+
+.pack-library-simple .simple-device-pack img,
+.pack-library-simple .simple-thumb-none {
+    flex: none;
+    width: 40px;
+    height: 40px;
+    border-radius: var(--ui-radius-sm);
+    object-fit: cover;
+    background-color: var(--ui-surface-muted);
+    display: grid;
+    place-items: center;
+    color: var(--ui-text-muted);
+}
+
+.pack-library-simple .simple-device-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pack-library-simple .simple-device-actions {
+    display: flex;
+    gap: 3px;
+    flex: none;
+}
+
+.pack-library-simple .simple-device-actions .ui-btn {
+    padding: 3px 7px;
+    font-size: 12px;
+}
+
+/* Library */
+.pack-library-simple .simple-library {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.pack-library-simple .simple-header > h2 {
+    flex-basis: 100%;
+}
+
+.pack-library-simple .simple-sort {
+    padding: 6px 8px;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-sm);
+    background-color: var(--ui-surface-muted);
+    color: var(--ui-text);
+    font-size: 13px;
+}
+
+.pack-library-simple .simple-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    font-weight: 500;
+    color: var(--ui-text);
+    cursor: pointer;
+}
+
+.pack-library-simple .simple-header-actions {
+    display: inline-flex;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.pack-library-simple .simple-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 24px 24px;
+}
+
+.pack-library-simple .simple-grid {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+    gap: 14px;
+}
+
+.pack-library-simple .simple-card {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius);
+    background-color: var(--ui-surface);
+    box-shadow: var(--ui-shadow);
+    transition: box-shadow .15s;
+}
+
+.pack-library-simple .simple-card:hover,
+.pack-library-simple .simple-card:focus-within {
+    box-shadow: var(--ui-shadow-hover);
+}
+
+.pack-library-simple .simple-cover {
+    aspect-ratio: 4 / 3;
+    display: grid;
+    place-items: center;
+    background-color: var(--ui-surface-muted);
+    color: var(--ui-text-muted);
+    font-size: 30px;
+}
+
+.pack-library-simple .simple-cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.pack-library-simple .simple-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 12px 12px;
+}
+
+.pack-library-simple .simple-title {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1.25;
+    color: var(--ui-text);
+    overflow-wrap: anywhere;
+}
+
+.pack-library-simple .simple-desc {
+    margin: 0;
+    font-size: 12px;
+    color: var(--ui-text-muted);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.pack-library-simple .simple-meta {
+    margin: 0;
+    font-size: 11px;
+    color: var(--ui-text-muted);
+}
+
+.pack-library-simple .simple-badges {
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.pack-library-simple .simple-badge {
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    background-color: var(--ui-surface-muted);
+    color: var(--ui-text-muted);
+}
+
+.pack-library-simple .simple-badge.ok {
+    background-color: rgba(47, 179, 109, .15);
+    color: #23885a;
+}
+
+.pack-library-simple .simple-actions {
+    margin-top: auto;
+    padding-top: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+/* The main action on its own line, the secondary ones (icons) below it, on every card alike */
+.pack-library-simple .simple-actions .ui-btn:first-child {
+    flex: 1 1 100%;
+    min-width: 0;
+    white-space: normal;
+}
+
+.pack-library-simple .simple-card.on-device {
+    border-color: rgba(47, 179, 109, .5);
+}
+
+/* Dark theme, as in index.css: per the system unless the header switch forces light, or forced dark */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .pack-library-simple .simple-badge.ok {
+        color: #5fd49a;
+    }
+}
+:root[data-theme="dark"] .pack-library-simple .simple-badge.ok {
+    color: #5fd49a;
+}
+
+@media (max-width: 720px) {
+    .pack-library-simple {
+        flex-direction: column;
+        overflow-y: auto;
+    }
+    .pack-library-simple .simple-device {
+        width: auto;
+        max-width: none;
+        border-right: 0;
+        border-bottom: 1px solid var(--ui-border);
+    }
+    .pack-library-simple .simple-scroll {
+        overflow: visible;
+    }
+}

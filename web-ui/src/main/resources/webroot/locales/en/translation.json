@@ -175,6 +175,54 @@
     }
   },
 
+  "libraryMode": {
+    "label": "View",
+    "simple": "Simple",
+    "full": "Full",
+    "simpleTitle": "One card per pack and one button to send it to the Lunii, as in Lunii Pack",
+    "fullTitle": "Every file, format and conversion, with drag and drop"
+  },
+
+  "simpleLibrary": {
+    "device": {
+      "title": "My Lunii",
+      "unplugged": "No Lunii plugged in. Plug it in to send stories to it.",
+      "storage": "{{free}} free of {{total}}",
+      "used": "{{percent}}% of the card used",
+      "error": "The Lunii reports errors.",
+      "moveUp": "Move “{{title}}” up in the Lunii menu",
+      "moveDown": "Move “{{title}}” down in the Lunii menu",
+      "save": "Copy “{{title}}” to the library",
+      "remove": "Remove “{{title}}” from the Lunii"
+    },
+    "library": {
+      "title": "Library",
+      "search": "Search a title…",
+      "sort": "Sort by",
+      "sorts": {
+        "title": "Title",
+        "recent": "Most recent",
+        "size": "Largest"
+      },
+      "notOnDevice": "Not on the Lunii yet",
+      "empty": "No pack in the library. Import a file or create a pack from YouTube."
+    },
+    "card": {
+      "send": "Send to the Lunii",
+      "removeFromDevice": "Remove from the Lunii",
+      "onDevice": "On the Lunii",
+      "plugFirst": "Plug in the Lunii first",
+      "files": "{{count}} files",
+      "preview": "Preview “{{title}}”",
+      "edit": "Open “{{title}}” in the editor",
+      "remove": "Delete “{{title}}” from the library"
+    },
+    "removeDialog": {
+      "content": "Delete “{{title}}” from the library?",
+      "contentMany": "Delete “{{title}}” from the library, with its {{count}} files (original pack and conversions)?"
+    }
+  },
+
   "editor": {
     "titleVoice": {
       "choose": "Title voice",
