@@ -167,7 +167,7 @@ class YoutubeControllerApiTest {
         assertEquals(400, post("/api/youtube/jobs", "{\"urls\": \"https://youtu.be/abcdefghijk\", \"bitrate\": 100}").statusCode());
         assertEquals(400, post("/api/youtube/jobs", "{}").statusCode());
         assertEquals(404, get("/api/youtube/jobs/nope").statusCode());
-        assertEquals(404, get("/api/youtube/jobs/current").statusCode());
+        assertEquals(204, get("/api/youtube/jobs/current").statusCode());
         assertEquals(404, post("/api/youtube/jobs/nope/cancel", "{}").statusCode());
     }
 
