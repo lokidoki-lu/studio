@@ -548,7 +548,8 @@
       "loadingFailed": "Échec du chargement de la version actuelle.",
       "fetchingFailed": "Échec de la récupération de la dernière version."
     },
-    "reportIssue": "Signaler cette anomalie"
+    "reportIssue": "Signaler cette anomalie",
+    "unreachable": "STUdio ne répond pas : vérifiez qu'il est toujours lancé."
   },
 
   "dialogs": {

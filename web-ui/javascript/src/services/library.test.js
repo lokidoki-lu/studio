@@ -63,7 +63,8 @@ describe('uploadToLibrary', () => {
         lastXhr.respond(409, 'Conflict', '{"success":false,"error":"PACK_EXISTS","message":"The pack is already in the library"}');
         const error = await upload.catch(e => e);
         expect(error).toBeInstanceOf(Error);
-        expect(error.message).toBe('Conflict: The pack is already in the library');
+        // The backend's message alone, the status kept apart
+        expect(error.message).toBe('The pack is already in the library');
         expect(error.status).toBe(409);
         expect(error.code).toBe('PACK_EXISTS');
     });
@@ -86,7 +87,7 @@ describe('uploadToLibrary', () => {
     it('rejects on a network error', async () => {
         const upload = start();
         lastXhr.onerror();
-        await expect(upload).rejects.toThrow('Network error');
+        await expect(upload).rejects.toMatchObject({code: 'UNREACHABLE'});
     });
 
     it('rejects when the upload is aborted', async () => {

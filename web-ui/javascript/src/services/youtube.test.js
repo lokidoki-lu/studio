@@ -54,7 +54,7 @@ describe('YouTube service', () => {
     it('keeps the backend explanation and code of a refusal', async () => {
         answer(503, {success: false, error: 'TOOLS_MISSING', message: 'Outils manquants : ffmpeg'});
         await expect(startYoutubePack({urls: ['x']})).rejects.toMatchObject({
-            code: 'TOOLS_MISSING', status: 503, message: 'Service Unavailable: Outils manquants : ffmpeg'
+            code: 'TOOLS_MISSING', status: 503, message: 'Outils manquants : ffmpeg'
         });
     });
 
