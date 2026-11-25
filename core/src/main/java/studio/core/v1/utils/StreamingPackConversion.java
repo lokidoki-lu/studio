@@ -6,6 +6,7 @@
 
 package studio.core.v1.utils;
 
+import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.codec.digest.DigestUtils;
 import studio.core.v1.model.Asset;
 import studio.core.v1.model.AudioAsset;
@@ -20,6 +21,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Path;
+import java.security.DigestInputStream;
+import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -156,6 +159,10 @@ public final class StreamingPackConversion {
      * The assets of an FS pack, streamed from their files: the digest is computed by reading the
      * file once (remembered by file, several nodes sharing one), the bytes are copied into the
      * archive by reading it again. Nothing larger than a read buffer is held.
+     *
+     * <p>The bytes copied are digested as they go, and must give the digest the entry is named
+     * after: a file changed between the two reads would otherwise be stored under a name that is
+     * not its content's. The conversion then fails (and its output is thrown away).
      */
     static final class FsAssetSource implements ArchiveStoryPackWriter.AssetSource {
         private final FsStoryPackReader.OpenedFsPack pack;
@@ -189,8 +196,15 @@ public final class StreamingPackConversion {
 
         @Override
         public void copy(Asset asset, OutputStream out) throws IOException {
-            try (InputStream in = open(asset)) {
+            MessageDigest digest = DigestUtils.getSha1Digest();
+            try (InputStream in = new DigestInputStream(open(asset), digest)) {
                 in.transferTo(out);
+            }
+            String named = (isImage(asset) ? imageDigests : audioDigests).get(asset.getName());
+            String copied = Hex.encodeHexString(digest.digest());
+            if (named != null && !named.equals(copied)) {
+                throw new IOException("Asset " + asset.getName() + " changed while the pack was being converted"
+                        + " (SHA-1 " + named + " when named, " + copied + " when copied)");
             }
         }
     }

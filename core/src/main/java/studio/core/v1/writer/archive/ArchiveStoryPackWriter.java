@@ -64,9 +64,14 @@ public class ArchiveStoryPackWriter {
      * with the same names and contents, whatever the source.
      */
     public void write(StoryPack pack, OutputStream outputStream, AssetSource source) throws IOException {
+        // Zip archive contains a json file and separate assets. Closed (with its deflater) whatever
+        // happens, a failing asset included.
+        try (ZipOutputStream zos = new ZipOutputStream(outputStream)) {
+            writeEntries(pack, zos, source);
+        }
+    }
 
-        // Zip archive contains a json file and separate assets
-        ZipOutputStream zos = new ZipOutputStream(outputStream);
+    private void writeEntries(StoryPack pack, ZipOutputStream zos, AssetSource source) throws IOException {
 
         // Assets to add, by entry name (first one met wins, as with putIfAbsent on the bytes)
         TreeMap<String, Asset> assets = new TreeMap<>();
@@ -213,7 +218,6 @@ public class ArchiveStoryPackWriter {
         }
 
         zos.flush();
-        zos.close();
     }
 
     private void writeEnrichedNodeMetadata(JsonWriter writer, Node node) throws IOException {
