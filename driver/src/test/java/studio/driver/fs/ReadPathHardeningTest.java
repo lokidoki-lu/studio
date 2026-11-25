@@ -244,22 +244,20 @@ class ReadPathHardeningTest {
         }
 
         @Test
-        @DisplayName("a pack whose 'ni' is truncated is left out, the others are listed, nothing is repaired")
-        void aTruncatedNodeIndexIsSkipped() throws IOException {
-            // Revised (review D5): a `ni` too short to hold a version is what an interrupted copy
-            // leaves, and it is local to its pack like a missing one. Failing the whole listing hid
-            // every other pack of the device. It is logged, and left exactly as found.
+        @DisplayName("a pack whose 'ni' is present but unreadable still fails the listing")
+        void aCorruptNodeIndexIsNotSwallowed() throws IOException {
+            // The tolerance is deliberately narrow. A `ni` that exists but cannot be parsed is a real
+            // parsing defect of an existing pack, not an orphan entry, and it must keep surfacing.
+            // Turning this into a silent skip would hide genuine corruption.
             FsStoryTellerAsyncDriver driver = DriverTestSupport.pluggedDriverMountedOn(partition);
             materialise(driver, PRESENT);
             Path folder = partition.resolve(".content").resolve(driver.computePackFolderName(ORPHAN.toString()));
             Files.createDirectories(folder);
             Files.write(folder.resolve("ni"), new byte[]{0x01});   // too short to hold a version
-            byte[] index = encode(PRESENT, ORPHAN);
-            writeIndex(index);
+            writeIndex(encode(PRESENT, ORPHAN));
 
-            assertEquals(List.of(PRESENT), listedUuids(driver));
-            assertArrayEquals(index, Files.readAllBytes(partition.resolve(".pi")), "the index must not be rewritten");
-            assertArrayEquals(new byte[]{0x01}, Files.readAllBytes(folder.resolve("ni")), "the 'ni' must not be touched");
+            assertThrows(Throwable.class, () -> driver.getPacksList().join(),
+                    "an unparseable pack must not be silently skipped");
         }
 
         @Test
