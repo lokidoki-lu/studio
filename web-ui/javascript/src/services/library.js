@@ -145,3 +145,17 @@ export const verifyConversion = async (sourcePath, convertedPath) => {
     })
         .then(handleJsonOrError);
 };
+
+/*
+ * What the library preview shows of a pack beyond its listed metadata, read by the backend from headers
+ * only: {path, format, size}, plus {stageNodes, stories} for raw and FS packs and
+ * {audio: {seconds, measured, estimated, unmeasured}} for archives.
+ */
+export const fetchLibraryPackDetails = (path) => {
+    return fetch('/api/library/details', {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({path})
+    })
+        .then(handleJsonOrError);
+};
