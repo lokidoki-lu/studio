@@ -939,15 +939,29 @@ public class YoutubePackService {
         }
     }
 
-    private static void deleteQuietly(Path dir) {
-        try (Stream<Path> paths = Files.walk(dir)) {
-            paths.sorted(Comparator.reverseOrder()).forEach(p -> {
-                if (!p.toFile().delete() && p.toFile().exists()) {
-                    LOGGER.warn("Could not remove temporary file " + p);
+    /**
+     * Removes the temporary folder. On Windows a file just written or just released can stay
+     * locked for a moment (antivirus, indexer, a process being killed): tried again a few times
+     * before giving up.
+     */
+    static void deleteQuietly(Path dir) {
+        for (int attempt = 0; attempt < 10 && Files.exists(dir); attempt++) {
+            if (attempt > 0) {
+                try {
+                    Thread.sleep(100L * attempt);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
                 }
-            });
-        } catch (IOException e) {
-            LOGGER.debug("Could not remove " + dir);
+            }
+            try (Stream<Path> paths = Files.walk(dir)) {
+                paths.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+            } catch (IOException | java.io.UncheckedIOException e) {
+                LOGGER.debug("Could not walk " + dir + ": " + e.getMessage());
+            }
+        }
+        if (Files.exists(dir)) {
+            LOGGER.warn("Could not remove the temporary folder " + dir);
         }
     }
 
@@ -1020,13 +1034,24 @@ public class YoutubePackService {
                 return process.exitValue();
             } finally {
                 if (!finished) {
-                    process.descendants().forEach(ProcessHandle::destroyForcibly);
+                    // The children too (ffmpeg started by yt-dlp), and waited for: on Windows a
+                    // process still running keeps its files locked, and the temporary folder could
+                    // not be removed
+                    List<ProcessHandle> children = process.descendants().collect(Collectors.toList());
+                    children.forEach(ProcessHandle::destroyForcibly);
                     process.destroyForcibly();
                     try {
                         process.onExit().get(5, TimeUnit.SECONDS);
+                        for (ProcessHandle child : children) {
+                            child.onExit().get(5, TimeUnit.SECONDS);
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
                     } catch (Exception e) {
                         LOGGER.warn("Process did not exit after being killed: " + command.get(0));
                     }
+                    out.join(2000);
+                    err.join(2000);
                 }
             }
         }
