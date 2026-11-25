@@ -36,6 +36,9 @@ import {chooseDropAction, applyProvenanceVerdict} from "../utils/packs";
 import {verifyConversion} from "../services/library";
 import {matchingGroups} from "../utils/librarySearch";
 import {sizeUnit} from "../utils/purge";
+import {estimateOnDevice} from "../services/spaceEstimate";
+import LibrarySendQueue from "./LibrarySendQueue";
+import SendQueue from "./SendQueue";
 
 import './PackLibrary.css';
 
@@ -77,8 +80,15 @@ export class PackLibrary extends React.Component {
             confirmConversionDialog: {
                 show: false,
                 data: null
-            }
+            },
+            // Selection of packs, space estimate and send queue (LibrarySendQueue)
+            sendQueue: LibrarySendQueue.initialState()
         };
+        this.sendQueue = new LibrarySendQueue(this);
+    }
+
+    componentWillUnmount() {
+        this.sendQueue.dispose();
     }
 
     componentDidMount() {
@@ -107,9 +117,25 @@ export class PackLibrary extends React.Component {
 
     /**
      * Sends a library group ({uuid, packs}) to the plugged device, converting it first if needed.
-     * Returns a promise settled once the transfer is started, or a dialog asks what to do.
+     * Returns a promise settled once the transfer is started, or a dialog asks what to do. The space
+     * it will take is checked first (LibrarySendQueue.checkSpace): a pack that does not fit is not
+     * converted nor sent, and the user is told why.
+     *
+     * With options.queue (the send queue), the promise settles with the outcome of the whole
+     * sending ({status, reason?}), once the transfer is over or the question asked is answered;
+     * options.answers holds the answers already given for the selection, which are not asked again.
      */
-    sendToDevice = (data) => {
+    sendToDevice = (data, options = {}) => {
+        if (!options.queue && !options.spaceChecked && this.sendQueue.canEstimate()) {
+            return this.sendQueue.checkSpace([data]).then(fits => fits
+                ? this.sendToDevice(data, {...options, spaceChecked: true})
+                : {status: 'skipped', reason: 'space'});
+        }
+        if (!this.state.device.metadata) {
+            // Unplugged meanwhile (during the space check)
+            return Promise.resolve({status: 'failed', reason: 'noDevice'});
+        }
+        const answers = options.answers || {};
         const driverFormat = this.state.device.metadata.driver;
         // Which artefact goes to the device is decided in utils/packs. It compares no timestamps and
         // selects on more than format: nothing records which source a conversion output came from,
@@ -120,43 +146,35 @@ export class PackLibrary extends React.Component {
 
         if (action === 'none') {
             // Nothing to transfer
-            return;
+            return Promise.resolve({status: 'skipped', reason: 'nothing'});
         }
 
         if (action === 'transfer') {
             // No identifiable non-converted source is currently in the library, so there is no
             // current source to compare this against and none to offer for re-conversion
             console.log('OK, transferring pack: %o', cached);
-            return this.doAddToDevice(cached, cached.path);
+            return this.doAddToDevice(cached, cached.path, options);
         }
 
         if (action === 'convert') {   // No compatible pack: convert the source
             console.log('pack must be converted for driver: %s', driverFormat);
             // Ask for enriched raw format preference
-            if (driverFormat === 'raw' && localStorage.getItem(LOCAL_STORAGE_ALLOW_ENRICHED_BINARY_FORMAT) === null) {
-                this.setState({
-                    allowEnrichedDialog: {
-                        show: true,
-                        data: { pack: {...source, format: driverFormat}, format: driverFormat, addToDevice: true }
-                    }
-                });
-            } else {
-                // Pack is converted and stored in the local library, then transferred to the device
-                return this.props.convertPackInLibrary(source.uuid, source.path, driverFormat, this.props.settings.allowEnriched, this.context)
-                    .then(path => {
-                        // A failed conversion has already been reported, and yields no path
-                        if (path) {
-                            return this.doAddToDevice({...source, format: driverFormat}, path);
-                        }
-                    });
+            if (driverFormat === 'raw' && localStorage.getItem(LOCAL_STORAGE_ALLOW_ENRICHED_BINARY_FORMAT) === null
+                && answers.enriched === undefined) {
+                return this.askInDialog('allowEnrichedDialog',
+                    { pack: {...source, format: driverFormat}, format: driverFormat, addToDevice: true }, options);
             }
-            return;
+            // Pack is converted and stored in the local library, then transferred to the device
+            return this.convertThenSend({...source, format: driverFormat}, driverFormat, this.allowEnrichedFor(options), options);
         }
 
         // A device-compatible pack exists, and so does a candidate that could be converted into one.
         // The backend is the only thing that can say whether they correspond: it holds what was
         // recorded when the conversion was made, and it reads both artefacts to compare. A verdict
         // it cannot give, for any reason at all, leaves the choice with the user.
+        if (options.onPhase) {
+            options.onPhase('verifying');
+        }
         return this.props.verifyConversion(source.path, cached.path)
             .then(response => response && response.verdict)
             .catch(e => {
@@ -167,31 +185,81 @@ export class PackLibrary extends React.Component {
                 const verified = applyProvenanceVerdict(decision, verdict);
                 if (verified.action === 'transfer') {
                     console.log('conversion proven to match the source, transferring: %o', cached);
-                    return this.doAddToDevice(cached, cached.path);
+                    return this.doAddToDevice(cached, cached.path, options);
+                }
+                const question = {
+                    pack: {...source, format: driverFormat},
+                    format: driverFormat,
+                    cached,
+                    verdict: verified.verdict
+                };
+                if (answers.confirm) {
+                    // Already answered for this selection
+                    return this.answerConfirmConversion(answers.confirm, question, options);
                 }
                 console.log('conversion not proven (%s), asking', verified.verdict);
-                this.setState({
-                    confirmConversionDialog: {
-                        show: true,
-                        data: {
-                            pack: {...source, format: driverFormat},
-                            format: driverFormat,
-                            cached,
-                            verdict: verified.verdict
-                        }
-                    }
-                });
+                return this.askInDialog('confirmConversionDialog', question, options);
             });
     };
 
-    doAddToDevice = (data, path) => {
+    /**
+     * Shows a question. Outside the send queue, as before: nothing waits for the answer. In the
+     * queue, the promise settles with the outcome of what the answer starts (see the dismiss handlers).
+     */
+    askInDialog = (name, data, options = {}) => {
+        if (!options.queue) {
+            this.setState({[name]: {show: true, data}});
+            return undefined;
+        }
+        return new Promise(settle => this.setState({[name]: {show: true, data: {...data, options, settle}}}));
+    };
+
+    allowEnrichedFor = (options = {}) => {
+        return options.answers && options.answers.enriched !== undefined ? options.answers.enriched : this.props.settings.allowEnriched;
+    };
+
+    /** Converts `pack` (stored in the library), then transfers the conversion. */
+    convertThenSend = (pack, format, allowEnriched, options = {}) => {
+        if (options.onPhase) {
+            options.onPhase('converting');
+        }
+        return this.props.convertPackInLibrary(pack.uuid, pack.path, format, allowEnriched, this.context)
+            .then(path => {
+                // A failed conversion has already been reported, and yields no path
+                if (path) {
+                    return this.doAddToDevice({...pack, format}, path, options);
+                }
+                return {status: 'failed', reason: 'conversion'};
+            });
+    };
+
+    answerConfirmConversion = (answer, data, options = {}) => {
+        if (answer === 'convert') {
+            return this.convertThenSend(data.pack, data.format, this.allowEnrichedFor(options), options);
+        }
+        if (answer === 'transfer') {
+            // The user decides the existing pack is the one they want. STUdio cannot tell.
+            return this.doAddToDevice(data.cached, data.cached.path, options);
+        }
+        return Promise.resolve({status: 'skipped', reason: 'declined'});
+    };
+
+    doAddToDevice = (data, path, options) => {
+        if (options && options.queue) {
+            // Settled with the verdict of the transfer, tried again while the device is busy
+            return this.sendQueue.transfer(data, path, options);
+        }
         // Transfer pack and show progress
         return this.props.addFromLibrary(data.uuid, path, data.format, this.state.device.metadata.driver, this.context);
     };
 
     // Échap or ×: the dialog is closed and nothing is converted nor sent
     closeEnrichedDialog = () => {
+        const data = this.state.allowEnrichedDialog.data;
         this.setState({allowEnrichedDialog: {show: false, data: null}});
+        if (data && data.settle) {
+            data.settle({status: 'skipped', reason: 'declined'});
+        }
     };
 
     dismissEnrichedDialog = (allow) => {
@@ -209,14 +277,17 @@ export class PackLibrary extends React.Component {
                 }
             });
             this.props.setAllowEnriched(allow);
+            if (data.options && data.options.answers) {
+                // One question for the whole selection
+                data.options.answers.enriched = allow;
+            }
             // Pack is converted and stored in the local library, then transferred to the device
-            this.props.convertPackInLibrary(data.pack.uuid, data.pack.path, data.format, allow, this.context)
-                .then(path => {
-                    // A failed conversion has already been reported, and yields no path
-                    if (path && data.addToDevice) {
-                        this.doAddToDevice(data.pack, path);
-                    }
-                });
+            const result = data.addToDevice
+                ? this.convertThenSend(data.pack, data.format, allow, data.options)
+                : this.props.convertPackInLibrary(data.pack.uuid, data.pack.path, data.format, allow, this.context);
+            if (data.settle) {
+                data.settle(result);
+            }
         }
     };
 
@@ -234,18 +305,13 @@ export class PackLibrary extends React.Component {
                 // Already dismissed (double click)
                 return;
             }
-            if (answer === 'convert') {
-                // Pack is converted and stored in the local library, then transferred to the device
-                this.props.convertPackInLibrary(data.pack.uuid, data.pack.path, data.format, this.props.settings.allowEnriched, this.context)
-                    .then(path => {
-                        // A failed conversion has already been reported, and yields no path
-                        if (path) {
-                            this.doAddToDevice(data.pack, path);
-                        }
-                    });
-            } else if (answer === 'transfer') {
-                // The user decides the existing pack is the one they want. STUdio cannot tell.
-                this.doAddToDevice(data.cached, data.cached.path);
+            if (data.options && data.options.answers) {
+                // Applied to the rest of the selection as well, as the dialog says
+                data.options.answers.confirm = answer;
+            }
+            const result = this.answerConfirmConversion(answer, data, data.options);
+            if (data.settle) {
+                data.settle(result);
             }
         }
     };
@@ -390,6 +456,21 @@ export class PackLibrary extends React.Component {
         this.props.loadSampleInEditor();
     };
 
+    /** The selection bar, the progress of a send queue and its dialogs (both views). */
+    renderSendQueue(visibleUuids) {
+        return <SendQueue t={this.props.t} queue={this.sendQueue} state={this.state.sendQueue}
+                          device={this.state.device} visible={visibleUuids} />;
+    }
+
+    /** The selection box of a pack, for the send queue (both views). */
+    renderSelectBox(uuid, title) {
+        const { t } = this.props;
+        return <label className="send-select" title={t('sendQueue.select', { title })} onClick={e => e.stopPropagation()}>
+            <input type="checkbox" checked={this.sendQueue.isSelected(uuid)} onChange={() => this.sendQueue.toggle(uuid)}
+                   aria-label={t('sendQueue.select', { title })} />
+        </label>;
+    }
+
     /** The confirmation dialogs, shared with the simplified library (PackLibrarySimple). */
     renderDialogs() {
         const { t } = this.props;
@@ -419,7 +500,8 @@ export class PackLibrary extends React.Component {
             {this.state.allowEnrichedDialog.show &&
             <Modal id="ask-allow-enriched"
                    title={t('dialogs.library.askAllowEnriched.title')}
-                   content={<div dangerouslySetInnerHTML={{__html: t('dialogs.library.askAllowEnriched.content')}} ></div>}
+                   content={<div><div dangerouslySetInnerHTML={{__html: t('dialogs.library.askAllowEnriched.content')}} ></div>
+                       {this.state.allowEnrichedDialog.data && this.state.allowEnrichedDialog.data.options && <p className="send-queue-note">{t('sendQueue.appliesToAll')}</p>}</div>}
                    buttons={[
                        { label: t('dialogs.shared.no'), onClick: this.dismissEnrichedDialog(false)},
                        { label: t('dialogs.shared.yes'), onClick: this.dismissEnrichedDialog(true)}
@@ -429,9 +511,10 @@ export class PackLibrary extends React.Component {
             {this.state.confirmConversionDialog.show &&
             <Modal id="ask-confirm-conversion"
                    title={t('dialogs.library.askConfirmConversion.title')}
-                   content={<div dangerouslySetInnerHTML={{__html: t(this.state.confirmConversionDialog.data.verdict === 'MISMATCH'
+                   content={<div><div dangerouslySetInnerHTML={{__html: t(this.state.confirmConversionDialog.data.verdict === 'MISMATCH'
                        ? 'dialogs.library.askConfirmConversion.contentMismatch'
-                       : 'dialogs.library.askConfirmConversion.content')}} ></div>}
+                       : 'dialogs.library.askConfirmConversion.content')}} ></div>
+                       {this.state.confirmConversionDialog.data.options && <p className="send-queue-note">{t('sendQueue.appliesToAll')}</p>}</div>}
                    buttons={[
                        { label: t('dialogs.library.askConfirmConversion.cancel'), onClick: this.dismissConfirmConversionDialog('cancel')},
                        { label: t('dialogs.library.askConfirmConversion.transfer'), onClick: this.dismissConfirmConversionDialog('transfer')},
@@ -579,6 +662,7 @@ export class PackLibrary extends React.Component {
                             <p><button className="library-action" onClick={this.onCreateNewPackInEditor}>{t('library.local.empty.link1')}</button> <button className="library-action" onClick={this.onOpenSamplePackInEditor}>{t('library.local.empty.link2')}</button> {t('library.local.empty.suffix')}</p>
                         </div>
                     </div>
+                    {this.renderSendQueue(matchingGroups(this.state.library.packs, this.state.search).map(g => g.uuid))}
                     <div className={`library-dropzone ${this.state.dragging === 'device-pack' ? 'highlighted-dropzone' : ''}`}
                          onDrop={this.onDropPackIntoLibrary}
                          onDragOver={event => { event.preventDefault(); }}>
@@ -593,7 +677,8 @@ export class PackLibrary extends React.Component {
                                 <div key={group.uuid}
                                      title={group.uuid}
                                      draggable={this.isPackDraggable(group.packs[0])}
-                                     className={`pack-tile ${this.isPackDraggable(group.packs[0]) ? 'pack-draggable' : 'pack-not-draggable'} ${group.packs[0].nightModeAvailable && 'pack-night-mode'}`}
+                                     className={`pack-tile ${this.isPackDraggable(group.packs[0]) ? 'pack-draggable' : 'pack-not-draggable'} ${group.packs[0].nightModeAvailable && 'pack-night-mode'} ${this.sendQueue.isSelected(group.uuid) ? 'send-selected' : ''}`}
+                                     onClick={event => this.sendQueue.click(group.uuid, event, matchingGroups(this.state.library.packs, this.state.search).map(g => g.uuid))}
                                      onDragStart={event => {
                                          // Drag first pack
                                          event.dataTransfer.setDragImage(event.target.querySelector('.pack-entry'), 0, 0);
@@ -605,6 +690,7 @@ export class PackLibrary extends React.Component {
                                      }}>
                                     <div className="pack-left">
                                         <div className="pack-title">
+                                            {this.renderSelectBox(group.uuid, group.packs[0].title && group.packs[0].title !== "MISSING_PACK_TITLE" ? group.packs[0].title : group.uuid)}{' '}
                                             <span>{group.packs[0].title && group.packs[0].title !== "MISSING_PACK_TITLE" ? group.packs[0].title : group.uuid}</span>&nbsp;
                                         </div>
                                         <div className="pack-thumb" title={group.packs[0].nightModeAvailable && t('library.nightMode')}>
@@ -668,7 +754,7 @@ export const mapStateToProps = (state, ownProps) => ({
 });
 
 export const mapDispatchToProps = (dispatch, ownProps) => ({
-    addFromLibrary: (uuid, path, format, driver, context) => dispatch(actionAddFromLibrary(uuid, path, format, driver, context, ownProps.t)),
+    addFromLibrary: (uuid, path, format, driver, context, options) => dispatch(actionAddFromLibrary(uuid, path, format, driver, context, ownProps.t, options)),
     removeFromDevice: (uuid) => dispatch(actionRemoveFromDevice(uuid, ownProps.t)),
     reorderOnDevice: (uuids) => dispatch(actionReorderOnDevice(uuids, ownProps.t)),
     addToLibrary: (uuid, driver, context) => dispatch(actionAddToLibrary(uuid, driver, context, ownProps.t)),
@@ -679,6 +765,7 @@ export const mapDispatchToProps = (dispatch, ownProps) => ({
     uploadPackToLibrary: (path, packData) => dispatch(actionUploadToLibrary(null, path, packData, ownProps.t)),
     uploadPacksToLibrary: (files) => dispatch(actionUploadManyToLibrary(files, ownProps.t)),
     verifyConversion: (sourcePath, convertedPath) => verifyConversion(sourcePath, convertedPath),
+    estimateOnDevice: (paths, format) => estimateOnDevice(paths, format),
     createPackInEditor: () => dispatch(actionCreatePackInEditor(ownProps.t)),
     loadSampleInEditor: () => dispatch(actionLoadSampleInEditor(ownProps.t)),
     setAllowEnriched: (allowEnriched) => dispatch(setAllowEnriched(allowEnriched))
