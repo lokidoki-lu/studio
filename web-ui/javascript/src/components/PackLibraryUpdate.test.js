@@ -185,8 +185,15 @@ describe('in-place update', () => {
         const update = buttons(container.querySelector('.plugged-device .pack-tile'), 'deviceUpdate.update');
         act(() => { update[0].click(); });
         await flush();
+        // The update is confirmed first ("current version → new one"): the space is only checked then
+        expect(document.getElementById('modal-space-refusal')).toBeNull();
+        expect(props.estimateOnDevice).not.toHaveBeenCalled();
+        act(() => { buttons(container, 'deviceUpdate.confirm.yes')[0].click(); });
+        await flush();
+        expect(props.estimateOnDevice).toHaveBeenCalledWith(['yt.fs'], 'fs');
         const refusal = document.getElementById('modal-space-refusal');
         expect(refusal.textContent).toContain('spaceEstimate.refusal.sendAnywayExplain');
+        expect(props.updateOnDevice).not.toHaveBeenCalled();
         act(() => { buttons(refusal, 'spaceEstimate.refusal.sendAnyway')[0].click(); });
         await flush();
         expect(props.updateOnDevice).toHaveBeenCalledWith('u-yt', 'yt.fs', 'fs', 'fs', expect.anything());
