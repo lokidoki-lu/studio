@@ -111,15 +111,28 @@ const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
  * Replaces whole words, ignoring case; a plural follows ("Dalton=Daltonne" also turns "Daltons"
- * into "Daltonnes"). Same rule as Lunii Pack.
+ * into "Daltonnes"). Same rule as Lunii Pack. One pass over the text, the longest written forms
+ * tried first: a spoken form is never replaced again ("Dalton=Daltonne; Daltonne=Daltone").
  */
 export function applyPronunciations(text, pairs) {
-    let result = String(text || '');
-    (pairs || []).forEach(([written, spoken]) => {
-        const re = new RegExp(`(^|[^\\p{L}\\p{N}_])${escapeRegExp(written)}(s?)(?![\\p{L}\\p{N}_])`, 'giu');
-        result = result.replace(re, (m, before, plural) => before + spoken + plural);
+    const result = String(text || '');
+    const sorted = (pairs || []).filter(([written]) => written).sort((a, b) => b[0].length - a[0].length);
+    if (sorted.length === 0) {
+        return result;
+    }
+    const spokenOf = new Map();
+    sorted.forEach(([written, spoken]) => {
+        const key = written.toLowerCase();
+        if (!spokenOf.has(key)) {
+            spokenOf.set(key, spoken);
+        }
     });
-    return result;
+    const alternatives = sorted.map(([written]) => escapeRegExp(written)).join('|');
+    const re = new RegExp(`(^|[^\\p{L}\\p{N}_])(${alternatives})(s?)(?![\\p{L}\\p{N}_])`, 'giu');
+    return result.replace(re, (m, before, written, plural) => {
+        const key = written.toLowerCase();
+        return spokenOf.has(key) ? before + spokenOf.get(key) + plural : m;
+    });
 }
 
 /**
@@ -128,7 +141,9 @@ export function applyPronunciations(text, pairs) {
  * dropped file would be.
  */
 export async function speakTitle(text, setting = getTitleVoice(), pronunciation = getTitlePronunciation()) {
-    const spoken = applyPronunciations(text, parsePronunciations(pronunciation)).trim() || text;
+    // The server refuses more than TITLE_MAX_LENGTH characters: a pronunciation may lengthen the text
+    const spoken = (applyPronunciations(text, parsePronunciations(pronunciation)).trim() || text)
+        .substring(0, TITLE_MAX_LENGTH);
     const answer = await fetch('/api/tts/speak', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -266,26 +281,43 @@ function isRealTitle(name) {
  * The titles of the diagram that have no audio: cover and stage nodes, menu questions and menu
  * options. Story nodes are left out, their audio being the story itself, and so are nodes still
  * carrying the editor's placeholder name. Each entry is {text, isMissing(), apply(dataUrl)}:
- * isMissing() tells, when its turn comes, whether the title still has no audio.
+ * isMissing() tells, when its turn comes, whether the title is still in the diagram (isInModel(node)),
+ * still reads the same, and still has no audio; otherwise the batch leaves it alone. A menu option is
+ * followed as such, not by its place: options removed or moved meanwhile do not shift the others.
  */
-export function collectMissingTitleAudio(nodes) {
+export function collectMissingTitleAudio(nodes, {isInModel = () => true} = {}) {
     const missing = [];
+    const same = (current, text) => typeof current === 'string' && current.trim() === text;
     (nodes || []).forEach(node => {
         const type = typeof node.getType === 'function' ? node.getType() : undefined;
         if (type === 'cover' || type === 'stage') {
             if (!node.getAudio() && isRealTitle(node.getName())) {
-                missing.push({text: node.getName().trim(), isMissing: () => !node.getAudio(),
+                const text = node.getName().trim();
+                missing.push({text, isMissing: () => isInModel(node) && same(node.getName(), text) && !node.getAudio(),
                     apply: (dataUrl) => node.setAudio(dataUrl)});
             }
         } else if (type === 'menu') {
             if (!node.getQuestionAudio() && isRealTitle(node.getName())) {
-                missing.push({text: node.getName().trim(), isMissing: () => !node.getQuestionAudio(),
+                const text = node.getName().trim();
+                missing.push({text, isMissing: () => isInModel(node) && same(node.getName(), text) && !node.getQuestionAudio(),
                     apply: (dataUrl) => node.setQuestionAudio(dataUrl)});
             }
             node.optionsStages.forEach((option, idx) => {
                 if (!node.getOptionAudio(idx) && isRealTitle(node.getOptionName(idx))) {
-                    missing.push({text: node.getOptionName(idx).trim(), isMissing: () => !node.getOptionAudio(idx),
-                        apply: (dataUrl) => node.setOptionAudio(idx, dataUrl)});
+                    const text = node.getOptionName(idx).trim();
+                    // The option's index now, or -1 once it is removed
+                    const index = () => node.optionsStages.indexOf(option);
+                    missing.push({text,
+                        isMissing: () => {
+                            const i = index();
+                            return i !== -1 && isInModel(node) && same(node.getOptionName(i), text) && !node.getOptionAudio(i);
+                        },
+                        apply: (dataUrl) => {
+                            const i = index();
+                            if (i !== -1) {
+                                node.setOptionAudio(i, dataUrl);
+                            }
+                        }});
                 }
             });
         }
@@ -293,10 +325,18 @@ export function collectMissingTitleAudio(nodes) {
     return missing;
 }
 
+/** A refusal of one title (too long, empty once spoken…): the batch goes on with the others. */
+function isRefusedTitle(e) {
+    return !!e && (e.code === 'INVALID_REQUEST' || e.status === 400);
+}
+
 /**
- * Speaks every entry, one at a time. onProgress(done, total) after each one. Stops at the first
- * failure (the server or the voice is down: the next ones would fail the same way) and rejects with
- * that error, error.generated telling how many were done.
+ * Speaks every entry, one at a time. onProgress(done, total) after each one. A title the server
+ * refuses (INVALID_REQUEST) is skipped and counted; any other failure (the server or the voice is
+ * down: the next ones would fail the same way) stops the batch, which rejects with that error,
+ * error.generated telling how many were done and error.skipped how many were refused. Resolves to
+ * {done, skipped, fallbackReason}: fallbackReason is the first reason the server gave for speaking
+ * with another voice than the one chosen (the computer voice instead of the online one).
  *
  * The batch takes minutes, and the user keeps editing meanwhile: a title given an audio since the
  * list was made is left as the user set it, and once isCurrent() turns false (another pack opened
@@ -304,6 +344,8 @@ export function collectMissingTitleAudio(nodes) {
  */
 export async function generateMissingTitleAudio(missing, {speak = speakTitle, onProgress = () => {}, isCurrent = () => true} = {}) {
     let done = 0;
+    let skipped = 0;
+    let fallbackReason = null;
     for (const entry of missing) {
         try {
             if (!isCurrent()) {
@@ -312,22 +354,37 @@ export async function generateMissingTitleAudio(missing, {speak = speakTitle, on
                 throw stopped;
             }
             if (!entry.isMissing || entry.isMissing()) {
-                const speech = await speak(entry.text);
+                let speech = null;
+                try {
+                    speech = await speak(entry.text);
+                } catch (e) {
+                    if (!isRefusedTitle(e)) {
+                        throw e;
+                    }
+                    console.warn('title refused by the voice, skipped', entry.text, e);
+                    skipped++;
+                }
                 if (!isCurrent()) {
                     const stopped = new Error('The editor now shows another pack');
                     stopped.code = 'PACK_CHANGED';
                     throw stopped;
                 }
-                if (!entry.isMissing || entry.isMissing()) {
-                    entry.apply(speech.dataUrl);
+                if (speech) {
+                    if (speech.fallbackReason && !fallbackReason) {
+                        fallbackReason = speech.fallbackReason;
+                    }
+                    if (!entry.isMissing || entry.isMissing()) {
+                        entry.apply(speech.dataUrl);
+                    }
                 }
             }
         } catch (e) {
             e.generated = done;
+            e.skipped = skipped;
             throw e;
         }
         done++;
         onProgress(done, missing.length);
     }
-    return done;
+    return {done, skipped, fallbackReason};
 }

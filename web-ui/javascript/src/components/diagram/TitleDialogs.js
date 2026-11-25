@@ -36,6 +36,7 @@ const stop = (e) => e.stopPropagation();
  * mouse and key events stop here instead of dragging the node it was opened from.
  */
 export const TitleDialogFrame = ({id, title, model, onClose, footer, children}) => {
+    const {t} = useTranslation();
     React.useEffect(() => {
         if (!model) {
             return undefined;
@@ -62,7 +63,7 @@ export const TitleDialogFrame = ({id, title, model, onClose, footer, children}) 
             <div className="modal-dialog modal-dialog-centered" role="document">
                 <div className="modal-content">
                     <div className="modal-header">
-                        <button type="button" className="close" aria-label="Close" onClick={onClose}>
+                        <button type="button" className="close" aria-label={t('dialogs.shared.close')} onClick={onClose}>
                             <span aria-hidden="true">&times;</span>
                         </button>
                         <h4 className="modal-title">{title}</h4>
@@ -75,14 +76,22 @@ export const TitleDialogFrame = ({id, title, model, onClose, footer, children}) 
         document.body);
 };
 
-/** Fetches once which engines the server can use; null until known. */
+/** What useVoiceEngines gives when the server could not say which engines it has. */
+export const ENGINES_UNKNOWN = Object.freeze({unknown: true});
+
+/** Fetches once which engines the server can use; null until known, ENGINES_UNKNOWN if it failed. */
 export function useVoiceEngines() {
     const [engines, setEngines] = React.useState(null);
     React.useEffect(() => {
         let alive = true;
         fetchVoiceEngines()
             .then(e => alive && setEngines(e))
-            .catch(e => console.warn('title voice engines unknown', e));
+            .catch(e => {
+                console.warn('title voice engines unknown', e);
+                if (alive) {
+                    setEngines(ENGINES_UNKNOWN);
+                }
+            });
         return () => { alive = false; };
     }, []);
     return engines;
@@ -103,8 +112,10 @@ export function useVoiceSettings() {
     return {voice, setVoice, pronunciation, setPronunciation};
 }
 
-const VoiceSettingsFields = ({settings, engines, idPrefix}) => {
+const VoiceSettingsFields = ({settings, engines: answer, idPrefix}) => {
     const {t} = useTranslation();
+    // Unknown engines: nothing is said to be missing
+    const engines = answer && !answer.unknown ? answer : null;
     const unavailable = ' ' + t('editor.titleVoice.unavailable');
     const known = ['system', 'auto'].indexOf(settings.voice) !== -1 || TITLE_VOICES.some(v => v.value === settings.voice);
     return <>
@@ -137,7 +148,11 @@ const VoiceSettingsFields = ({settings, engines, idPrefix}) => {
 /** Speaks text with the settings and keeps the result to play or attach. */
 function useSpeech(settings) {
     const {t} = useTranslation();
-    const [state, setState] = React.useState({busy: false, speech: null, key: null});
+    const [state, setStateNow] = React.useState({busy: false, speech: null, key: null});
+    // The dialog may close while the server speaks
+    const alive = React.useRef(true);
+    React.useEffect(() => () => { alive.current = false; }, []);
+    const setState = (value) => alive.current && setStateNow(value);
     const speak = async (text) => {
         const key = `${settings.voice}|${settings.pronunciation}|${text}`;
         if (state.speech && state.key === key) {
@@ -182,18 +197,25 @@ export const TitleAssetDialog = ({kind, title, model, onClose, onGenerated}) => 
     const engines = useVoiceEngines();
     const speech = useSpeech(settings);
     const player = React.useRef(null);
+    // Closed or cancelled while the voice was being made: nothing is attached afterwards
+    const mounted = React.useRef(true);
+    React.useEffect(() => () => { mounted.current = false; }, []);
     const trimmed = text.trim();
     const preview = React.useMemo(() => (!audio && trimmed ? renderTitleImage(trimmed) : null), [audio, trimmed]);
     const ready = audio ? speech.current(trimmed) : null;
 
     const listen = async () => {
-        if (await speech.speak(trimmed) && player.current) {
+        if (speech.busy) {
+            return;
+        }
+        if (await speech.speak(trimmed) && mounted.current && player.current) {
             // The player shows the new source on the next render
             setTimeout(() => player.current && player.current.play().catch(() => {}), 0);
         }
     };
     const attach = async () => {
-        if (!trimmed) {
+        // Enter in the text area while the voice is being made: one request at a time
+        if (!trimmed || speech.busy) {
             return;
         }
         if (!audio) {
@@ -202,7 +224,7 @@ export const TitleAssetDialog = ({kind, title, model, onClose, onGenerated}) => 
             return;
         }
         const result = await speech.speak(trimmed);
-        if (result) {
+        if (result && mounted.current) {
             onGenerated(result.dataUrl);
             onClose();
         }
@@ -255,11 +277,15 @@ export const TitleVoiceSettingsDialog = ({model, onClose}) => {
     const ready = speech.current(sample.trim());
 
     const listen = async () => {
+        if (speech.busy) {
+            return;
+        }
         if (sample.trim() && await speech.speak(sample.trim())) {
             setTimeout(() => player.current && player.current.play().catch(() => {}), 0);
         }
     };
-    const status = (ok) => ok == null ? '…' : ok ? t('editor.titleVoice.available') : t('editor.titleVoice.notInstalled');
+    const status = (ok) => engines && engines.unknown ? t('editor.titleVoice.unknown')
+        : ok == null ? '…' : ok ? t('editor.titleVoice.available') : t('editor.titleVoice.notInstalled');
 
     return <TitleDialogFrame id="title-voice-settings" model={model} onClose={onClose}
                              title={t('editor.titleVoice.settingsTitle')}

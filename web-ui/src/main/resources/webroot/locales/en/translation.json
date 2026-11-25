@@ -260,7 +260,8 @@
       "available": "available",
       "notInstalled": "not installed",
       "generatedOnline": "Online voice: {{voice}}",
-      "generatedOffline": "Computer voice"
+      "generatedOffline": "Computer voice",
+      "unknown": "unknown (STUdio is not answering)"
     },
     "titleGenerator": {
       "audio": "Generate the voice from the title",
@@ -522,7 +523,9 @@
       "verifyDiagramErrors": "The diagram contains {{count}} node with errors.",
       "verifyDiagramErrors_plural": "The diagram contains {{count}} nodes with errors.",
       "verifyDiagramOK": "The diagram is valid.",
-      "verifyDiagramNightModeNoActionNodes": "Night mode is enabled but the diagram does not contain any action node."
+      "verifyDiagramNightModeNoActionNodes": "Night mode is enabled but the diagram does not contain any action node.",
+      "titleVoiceSkipped": "{{count}} title refused by the voice (too long or empty), left without audio.",
+      "titleVoiceSkipped_plural": "{{count}} titles refused by the voice (too long or empty), left without audio."
     },
     "viewer": {
       "missingPrev": "Cannot find previous option.",
@@ -553,7 +556,8 @@
       "cancel": "Cancel",
       "yes": "Yes",
       "no": "No",
-      "ok": "OK"
+      "ok": "OK",
+      "close": "Close"
     },
     "announce": {
       "optout": "Do not show these announces anymore"
