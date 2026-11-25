@@ -15,6 +15,7 @@ import io.vertx.core.logging.LoggerFactory;
 import io.vertx.ext.web.Router;
 import studio.driver.StoryTellerException;
 import studio.webui.service.ApiErrors;
+import studio.webui.service.DeviceUpdateService;
 import studio.webui.service.IStoryTellerService;
 import studio.webui.service.LibraryService;
 
@@ -189,6 +190,9 @@ public class DeviceController {
                     });
         }, false);
 
+        // Device check, repairs and in-place updates: see API.md, "Device check and repairs".
+        mountMaintenanceRoutes(router, storyTellerService, libraryService);
+
         // Remove pack from device
         router.post("/removeFromDevice").blockingHandler(ctx -> {
             JsonObject body = jsonBody(ctx);
@@ -335,6 +339,129 @@ public class DeviceController {
         }, false);
 
         return router;
+    }
+
+    private static void sendJson(RoutingContext ctx, Object body) {
+        ctx.response().putHeader("content-type", "application/json").end(Json.encode(body));
+    }
+
+    private static void mountMaintenanceRoutes(Router router, IStoryTellerService storyTellerService, LibraryService libraryService) {
+        DeviceUpdateService updates = new DeviceUpdateService(storyTellerService, libraryService);
+        storyTellerService.setDevicePackListener(updates);
+
+        // Read-only check of the device's bookkeeping. Runs in the device queue.
+        router.get("/diagnosis").blockingHandler(ctx -> storyTellerService.diagnosis()
+                .whenComplete((diagnosis, e) -> {
+                    if (e != null) {
+                        LOGGER.error("Failed to check the device", e);
+                        ApiErrors.respond(ctx, e);
+                    } else {
+                        sendJson(ctx, diagnosis);
+                    }
+                }), false);
+
+        // Discards or adopts a pending .pi.new: {"action": "discard"|"adopt", "fingerprint": "..."}.
+        router.post("/repair/pendingIndex").blockingHandler(ctx -> {
+            JsonObject body = jsonBody(ctx);
+            if (body == null) {
+                return;
+            }
+            String action = stringField(body, "action");
+            String fingerprint = stringField(body, "fingerprint");
+            if (!("discard".equals(action) || "adopt".equals(action)) || fingerprint == null) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                        "'action' must be 'discard' or 'adopt', and 'fingerprint' the one the check reported"));
+                return;
+            }
+            storyTellerService.resolvePendingIndex("adopt".equals(action), fingerprint)
+                    .whenComplete((done, e) -> {
+                        if (e != null) {
+                            LOGGER.error("Failed to resolve the pending pack index", e);
+                            ApiErrors.respond(ctx, e);
+                        } else {
+                            sendJson(ctx, new JsonObject().put("success", Boolean.TRUE.equals(done)));
+                        }
+                    });
+        }, false);
+
+        // Finishes or cleans up an interrupted in-place update: {"folder": "1A2B3C4D"}.
+        router.post("/repair/interruptedUpdate").blockingHandler(ctx -> {
+            JsonObject body = jsonBody(ctx);
+            if (body == null) {
+                return;
+            }
+            String folder = stringField(body, "folder");
+            if (folder == null) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "'folder' is required"));
+                return;
+            }
+            storyTellerService.resolveInterruptedUpdate(folder)
+                    .whenComplete((done, e) -> {
+                        if (e != null) {
+                            LOGGER.error("Failed to resolve the interrupted update", e);
+                            ApiErrors.respond(ctx, e);
+                        } else {
+                            sendJson(ctx, new JsonObject().put("success", Boolean.TRUE.equals(done)));
+                        }
+                    });
+        }, false);
+
+        // Starts a read-only integrity check of every pack; its progress and results at GET /integrity/:id.
+        router.post("/integrity").blockingHandler(ctx -> storyTellerService.startIntegrityCheck()
+                .whenComplete((id, e) -> {
+                    if (e != null) {
+                        ApiErrors.respond(ctx, e);
+                    } else {
+                        sendJson(ctx, new JsonObject().put("checkId", id));
+                    }
+                }), false);
+
+        router.get("/integrity/:id").handler(ctx -> storyTellerService.integrityCheck(ctx.pathParam("id")).ifPresentOrElse(
+                state -> sendJson(ctx, state),
+                () -> ctx.response().setStatusCode(404).putHeader("content-type", "application/json")
+                        .end(Json.encode(new JsonObject().put("success", false).put("error", "CHECK_NOT_FOUND")
+                                .put("message", "No integrity check with id " + ctx.pathParam("id"))))));
+
+        // Which packs of the device the library holds in another version.
+        router.get("/updates").blockingHandler(ctx -> updates.statuses()
+                .whenComplete((statuses, e) -> {
+                    if (e != null) {
+                        LOGGER.error("Failed to compare the device with the library", e);
+                        ApiErrors.respond(ctx, e);
+                    } else {
+                        sendJson(ctx, statuses);
+                    }
+                }), false);
+
+        // Replaces a pack already on the device by a library folder, keeping its place: {"uuid", "path"}.
+        router.post("/updateFromLibrary").blockingHandler(ctx -> {
+            JsonObject body = jsonBody(ctx);
+            if (body == null) {
+                return;
+            }
+            String uuid = canonicalUuid(stringField(body, "uuid"));
+            String packPath = stringField(body, "path");
+            if (uuid == null || packPath == null) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "Both 'uuid' (a pack UUID) and 'path' are required"));
+                return;
+            }
+            File packFile = libraryService.libraryEntry(packPath).map(Path::toFile).orElse(null);
+            if (packFile == null) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "Not an entry of the local library: " + packPath));
+                return;
+            }
+            storyTellerService.updatePack(uuid, packFile)
+                    .whenComplete((maybeTransferId, e) -> {
+                        if (e != null) {
+                            LOGGER.error("Failed to update pack on device", e);
+                            ApiErrors.respond(ctx, e);
+                        } else if (maybeTransferId.isPresent()) {
+                            sendJson(ctx, new JsonObject().put("transferId", maybeTransferId.get()));
+                        } else {
+                            ApiErrors.respond(ctx, new StoryTellerException("Failed to update pack on device"));
+                        }
+                    });
+        }, false);
     }
 
     /**

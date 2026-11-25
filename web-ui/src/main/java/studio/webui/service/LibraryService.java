@@ -1576,4 +1576,72 @@ public class LibraryService {
                 .orElse(json);
     }
 
+    // ------------------------------------------------------------ origin of an artefact (device updates)
+
+    /** Digests of library artefacts, bound to the observable state (sizes, times) they were taken over. */
+    private final Cache<Path, String[]> originDigests = Caffeine.newBuilder().maximumSize(2_000).build();
+
+    /**
+     * What content a library artefact stands for: the digest of the source it was converted from,
+     * when the provenance ledger records the conversion and the artefact is still exactly what was
+     * recorded; otherwise the digest of the artefact itself.
+     *
+     * <p>Used to tell whether a pack on a device is still the library's current content, which is a
+     * display decision, never a decision to send bytes. So unlike {@link #verifyConversion}, the
+     * digest of an artefact is reused while its files keep the same sizes and modification times
+     * (for a folder: every file of it), rather than re-read in full at each listing.
+     *
+     * @return empty if the name is not an entry of the library or could not be read
+     */
+    public Optional<String> originOf(String name) {
+        Optional<Path> entry = libraryEntry(name);
+        if (!entry.isPresent() || !Files.exists(entry.get(), LinkOption.NOFOLLOW_LINKS)) {
+            return Optional.empty();
+        }
+        Path path = entry.get();
+        Optional<String> signature = statSignature(path);
+        if (!signature.isPresent()) {
+            return Optional.empty();
+        }
+        String[] cached = originDigests.getIfPresent(path);
+        String identity;
+        if (cached != null && cached[0].equals(signature.get())) {
+            identity = cached[1];
+        } else {
+            Optional<String> computed = identityOf(path);
+            if (!computed.isPresent()) {
+                return Optional.empty();
+            }
+            identity = computed.get();
+            originDigests.put(path, new String[]{signature.get(), identity});
+        }
+        Optional<ConversionRecord> record = provenanceStore.find(path.getFileName().toString());
+        if (record.isPresent() && identity.equals(record.get().getArtifactSha256()) && record.get().getSourceSha256() != null) {
+            return Optional.of(record.get().getSourceSha256());
+        }
+        return Optional.of(identity);
+    }
+
+    /** Sizes and modification times of a file, or of every file under a folder. */
+    private static Optional<String> statSignature(Path path) {
+        try {
+            if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+                return Optional.of(Files.size(path) + "@" + Files.getLastModifiedTime(path).toMillis());
+            }
+            StringBuilder sb = new StringBuilder();
+            try (Stream<Path> files = Files.walk(path)) {
+                files.filter(f -> Files.isRegularFile(f, LinkOption.NOFOLLOW_LINKS)).sorted().forEach(f -> {
+                    try {
+                        sb.append(path.relativize(f)).append(':').append(Files.size(f)).append('@')
+                                .append(Files.getLastModifiedTime(f).toMillis()).append('\n');
+                    } catch (IOException e) {
+                        throw new UncheckedIOException(e);
+                    }
+                });
+            }
+            return Optional.of(sb.toString());
+        } catch (IOException | UncheckedIOException e) {
+            return Optional.empty();
+        }
+    }
 }
