@@ -49,7 +49,7 @@ export const isPackFile = (file) => {
 };
 
 
-class PackLibrary extends React.Component {
+export class PackLibrary extends React.Component {
 
     constructor(props) {
         super(props);
@@ -102,8 +102,11 @@ class PackLibrary extends React.Component {
             // Ignore missing node data
             return;
         }
-        var data = JSON.parse(packData);
+        this.sendToDevice(JSON.parse(packData));
+    };
 
+    /** Sends a library group ({uuid, packs}) to the plugged device, converting it first if needed. */
+    sendToDevice = (data) => {
         const driverFormat = this.state.device.metadata.driver;
         // Which artefact goes to the device is decided in utils/packs. It compares no timestamps and
         // selects on more than format: nothing records which source a conversion output came from,
@@ -381,6 +384,58 @@ class PackLibrary extends React.Component {
         this.props.loadSampleInEditor();
     };
 
+    /** The confirmation dialogs, shared with the simplified library (PackLibrarySimple). */
+    renderDialogs() {
+        const { t } = this.props;
+        return <>
+            {this.state.previewing && <PackPreview pack={this.state.previewing} onClose={() => this.setState({previewing: null})} />}
+
+            {this.state.showRemoveFromDeviceConfirmDialog &&
+            <Modal id="confirm-device-pack-remove"
+                   title={t('dialogs.library.removeFromDevice.title')}
+                   content={<p>{t('dialogs.library.removeFromDevice.content')}</p>}
+                   buttons={[
+                       { label: t('dialogs.shared.no'), onClick: this.dismissRemoveFromDeviceConfirmDialog},
+                       { label: t('dialogs.shared.yes'), onClick: this.doRemovePackFromDevice}
+                   ]}
+                   onClose={this.dismissRemoveFromDeviceConfirmDialog}
+            />}
+            {this.state.showRemoveFromLibraryConfirmDialog &&
+            <Modal id="confirm-library-pack-remove"
+                   title={t('dialogs.library.removeFromLibrary.title')}
+                   content={<p>{t('dialogs.library.removeFromLibrary.content')}</p>}
+                   buttons={[
+                       { label: t('dialogs.shared.no'), onClick: this.dismissRemoveFromLibraryConfirmDialog},
+                       { label: t('dialogs.shared.yes'), onClick: this.doRemovePackFromLibrary}
+                   ]}
+                   onClose={this.dismissRemoveFromLibraryConfirmDialog}
+            />}
+            {this.state.allowEnrichedDialog.show &&
+            <Modal id="ask-allow-enriched"
+                   title={t('dialogs.library.askAllowEnriched.title')}
+                   content={<div dangerouslySetInnerHTML={{__html: t('dialogs.library.askAllowEnriched.content')}} ></div>}
+                   buttons={[
+                       { label: t('dialogs.shared.no'), onClick: this.dismissEnrichedDialog(false)},
+                       { label: t('dialogs.shared.yes'), onClick: this.dismissEnrichedDialog(true)}
+                   ]}
+                   onClose={this.dismissEnrichedDialog(false)}
+            />}
+            {this.state.confirmConversionDialog.show &&
+            <Modal id="ask-confirm-conversion"
+                   title={t('dialogs.library.askConfirmConversion.title')}
+                   content={<div dangerouslySetInnerHTML={{__html: t(this.state.confirmConversionDialog.data.verdict === 'MISMATCH'
+                       ? 'dialogs.library.askConfirmConversion.contentMismatch'
+                       : 'dialogs.library.askConfirmConversion.content')}} ></div>}
+                   buttons={[
+                       { label: t('dialogs.library.askConfirmConversion.cancel'), onClick: this.dismissConfirmConversionDialog('cancel')},
+                       { label: t('dialogs.library.askConfirmConversion.transfer'), onClick: this.dismissConfirmConversionDialog('transfer')},
+                       { label: t('dialogs.library.askConfirmConversion.convert'), onClick: this.dismissConfirmConversionDialog('convert')}
+                   ]}
+                   onClose={this.dismissConfirmConversionDialog('cancel')}
+            />}
+        </>;
+    }
+
     render() {
         const { t } = this.props;
         let storagePercentage = null;
@@ -398,51 +453,7 @@ class PackLibrary extends React.Component {
         return (
             <div className="pack-library">
 
-                {this.state.previewing && <PackPreview pack={this.state.previewing} onClose={() => this.setState({previewing: null})} />}
-
-                {this.state.showRemoveFromDeviceConfirmDialog &&
-                <Modal id="confirm-device-pack-remove"
-                       title={t('dialogs.library.removeFromDevice.title')}
-                       content={<p>{t('dialogs.library.removeFromDevice.content')}</p>}
-                       buttons={[
-                           { label: t('dialogs.shared.no'), onClick: this.dismissRemoveFromDeviceConfirmDialog},
-                           { label: t('dialogs.shared.yes'), onClick: this.doRemovePackFromDevice}
-                       ]}
-                       onClose={this.dismissRemoveFromDeviceConfirmDialog}
-                />}
-                {this.state.showRemoveFromLibraryConfirmDialog &&
-                <Modal id="confirm-library-pack-remove"
-                       title={t('dialogs.library.removeFromLibrary.title')}
-                       content={<p>{t('dialogs.library.removeFromLibrary.content')}</p>}
-                       buttons={[
-                           { label: t('dialogs.shared.no'), onClick: this.dismissRemoveFromLibraryConfirmDialog},
-                           { label: t('dialogs.shared.yes'), onClick: this.doRemovePackFromLibrary}
-                       ]}
-                       onClose={this.dismissRemoveFromLibraryConfirmDialog}
-                />}
-                {this.state.allowEnrichedDialog.show &&
-                <Modal id="ask-allow-enriched"
-                       title={t('dialogs.library.askAllowEnriched.title')}
-                       content={<div dangerouslySetInnerHTML={{__html: t('dialogs.library.askAllowEnriched.content')}} ></div>}
-                       buttons={[
-                           { label: t('dialogs.shared.no'), onClick: this.dismissEnrichedDialog(false)},
-                           { label: t('dialogs.shared.yes'), onClick: this.dismissEnrichedDialog(true)}
-                       ]}
-                       onClose={this.dismissEnrichedDialog(false)}
-                />}
-                {this.state.confirmConversionDialog.show &&
-                <Modal id="ask-confirm-conversion"
-                       title={t('dialogs.library.askConfirmConversion.title')}
-                       content={<div dangerouslySetInnerHTML={{__html: t(this.state.confirmConversionDialog.data.verdict === 'MISMATCH'
-                           ? 'dialogs.library.askConfirmConversion.contentMismatch'
-                           : 'dialogs.library.askConfirmConversion.content')}} ></div>}
-                       buttons={[
-                           { label: t('dialogs.library.askConfirmConversion.cancel'), onClick: this.dismissConfirmConversionDialog('cancel')},
-                           { label: t('dialogs.library.askConfirmConversion.transfer'), onClick: this.dismissConfirmConversionDialog('transfer')},
-                           { label: t('dialogs.library.askConfirmConversion.convert'), onClick: this.dismissConfirmConversionDialog('convert')}
-                       ]}
-                       onClose={this.dismissConfirmConversionDialog('cancel')}
-                />}
+                {this.renderDialogs()}
 
                 {/* Device view, if plugged */}
                 {this.state.device.metadata && <div className="plugged-device">
@@ -644,13 +655,13 @@ class PackLibrary extends React.Component {
 
 PackLibrary.contextType = AppContext;
 
-const mapStateToProps = (state, ownProps) => ({
+export const mapStateToProps = (state, ownProps) => ({
     device: state.device,
     library: state.library,
     settings: state.settings
 });
 
-const mapDispatchToProps = (dispatch, ownProps) => ({
+export const mapDispatchToProps = (dispatch, ownProps) => ({
     addFromLibrary: (uuid, path, format, driver, context) => dispatch(actionAddFromLibrary(uuid, path, format, driver, context, ownProps.t)),
     removeFromDevice: (uuid) => dispatch(actionRemoveFromDevice(uuid, ownProps.t)),
     reorderOnDevice: (uuids) => dispatch(actionReorderOnDevice(uuids, ownProps.t)),
