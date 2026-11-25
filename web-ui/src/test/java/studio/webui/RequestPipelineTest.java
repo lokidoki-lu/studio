@@ -161,6 +161,36 @@ class RequestPipelineTest {
     }
 
     @Test
+    @DisplayName("a JSON POST to /library/upload/ (trailing slash) is refused, not read up to the upload limit")
+    void uploadWithTrailingSlashTakesNoJson() throws Exception {
+        assertEquals(415, post("/api/library/upload/", "application/json", "{\"path\":\"x\"}").statusCode());
+    }
+
+    @Test
+    @DisplayName("an upload request without a file is a 400, not a 500")
+    void uploadWithoutFileIsRefused() throws Exception {
+        String boundary = "----studio-test";
+        String body = "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"path\"\r\n\r\nuploaded.zip\r\n"
+                + "--" + boundary + "--\r\n";
+        assertEquals(400, post("/api/library/upload", "multipart/form-data; boundary=" + boundary, body).statusCode());
+    }
+
+    @Test
+    @DisplayName("an API request a page of another site made the browser send is refused; the app's own is not")
+    void crossSiteRequestsAreRefused() throws Exception {
+        HttpResponse<String> crossSite = http.send(HttpRequest.newBuilder(uri("/api/library/infos"))
+                .header("Sec-Fetch-Site", "cross-site").GET().build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(403, crossSite.statusCode());
+        HttpResponse<String> sameOrigin = http.send(HttpRequest.newBuilder(uri("/api/library/infos"))
+                .header("Sec-Fetch-Site", "same-origin").GET().build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, sameOrigin.statusCode());
+        HttpResponse<String> noHeader = http.send(HttpRequest.newBuilder(uri("/api/library/infos")).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, noHeader.statusCode());
+    }
+
+    @Test
     @DisplayName("a request addressed to another host name is refused (DNS rebinding)")
     void otherHostsAreRefused() throws Exception {
         try (Socket socket = new Socket()) {

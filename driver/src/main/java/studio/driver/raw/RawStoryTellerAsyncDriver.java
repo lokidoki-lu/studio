@@ -11,6 +11,7 @@ import org.usb4java.DeviceHandle;
 import studio.driver.DeviceVersion;
 import studio.driver.LibUsbDetectionHelper;
 import studio.driver.StoryTellerException;
+import studio.driver.TransferCallbacks;
 import studio.driver.event.DeviceHotplugEventListener;
 import studio.driver.event.TransferProgressListener;
 import studio.driver.model.raw.RawDeviceInfos;
@@ -33,6 +34,8 @@ public class RawStoryTellerAsyncDriver {
     private static final int DEVICE_INFOS_SD_SECTOR_0 = 0;
     private static final int DEVICE_INFOS_SD_SECTOR_2 = 2;
     private static final int PACK_INDEX_SD_SECTOR = 100000;
+    /** Packs a one-sector index can list: a 2-byte count, then 12 bytes per pack. */
+    static final int MAX_PACKS_IN_INDEX = (LibUsbMassStorageHelper.SECTOR_SIZE - 2) / 12;
     private static final int PACK_TRANSFER_CHUNK_SIZE_IN_SECTORS = 5000;    // 2.5 MB
 
     // Volatile: written on the hotplug event thread, read by the threads serving requests.
@@ -332,7 +335,7 @@ public class RawStoryTellerAsyncDriver {
                             // Keep track of transferred bytes and elapsed time
                             final long startTime = System.currentTimeMillis();
                             // Copy pack chunk by chunk into the output stream
-                            int totalSize = matched.get().getSizeInSectors() * LibUsbMassStorageHelper.SECTOR_SIZE;
+                            long totalSize = (long) matched.get().getSizeInSectors() * LibUsbMassStorageHelper.SECTOR_SIZE;
                             CompletableFuture<TransferStatus> promise = CompletableFuture.completedFuture(new TransferStatus(false, 0, totalSize, 0.0));
                             for(int offset = 0; offset < matched.get().getSizeInSectors(); offset += PACK_TRANSFER_CHUNK_SIZE_IN_SECTORS) {
                                 int sector = PACK_INDEX_SD_SECTOR + matched.get().getStartSector() + offset;
@@ -359,9 +362,9 @@ public class RawStoryTellerAsyncDriver {
                                                     }
                                                     // Call (optional) listener with transfer status
                                                     if (listener != null) {
-                                                        CompletableFuture.runAsync(() -> listener.onProgress(status));
+                                                        CompletableFuture.runAsync(() -> listener.onProgress(status), TransferCallbacks.EXECUTOR);
                                                         if (status.isDone()) {
-                                                            CompletableFuture.runAsync(() -> listener.onComplete(status));
+                                                            CompletableFuture.runAsync(() -> listener.onComplete(status), TransferCallbacks.EXECUTOR);
                                                         }
                                                     }
                                                     return status;
@@ -386,8 +389,18 @@ public class RawStoryTellerAsyncDriver {
         }
 
         return LibUsbMassStorageHelper.executeOnDeviceHandle(this.device, (handle) -> {
-            // Find first large-enough free space
-            return findFirstSuitableSector(handle, packSizeInSectors)
+            // The index is a single sector: refuse a pack it could not list before copying anything,
+            // rather than fail on the index write once every sector of the pack has been written.
+            return readPackIndex(handle)
+                    .thenCompose(indexed -> {
+                        if (indexed.size() >= MAX_PACKS_IN_INDEX) {
+                            throw new StoryTellerException(StoryTellerException.Reason.NOT_ENOUGH_SPACE,
+                                    "The device already holds " + indexed.size() + " packs, the most its pack index can list ("
+                                            + MAX_PACKS_IN_INDEX + "): remove a pack first");
+                        }
+                        // Find first large-enough free space
+                        return findFirstSuitableSector(handle, packSizeInSectors);
+                    })
                     .thenCompose(startSector -> {
                         if (startSector.isEmpty()) {
                             throw new StoryTellerException(StoryTellerException.Reason.NOT_ENOUGH_SPACE, "Not enough free space on the device");
@@ -397,7 +410,7 @@ public class RawStoryTellerAsyncDriver {
                         // Keep track of transferred bytes and elapsed time
                         final long startTime = System.currentTimeMillis();
                         // Copy pack chunk by chunk from the input stream
-                        int totalSize = packSizeInSectors * LibUsbMassStorageHelper.SECTOR_SIZE;
+                        long totalSize = (long) packSizeInSectors * LibUsbMassStorageHelper.SECTOR_SIZE;
                         CompletableFuture<TransferStatus> promise = CompletableFuture.completedFuture(new TransferStatus(false, 0, totalSize, 0.0));
                         for(int offset = 0; offset < packSizeInSectors; offset += PACK_TRANSFER_CHUNK_SIZE_IN_SECTORS) {
                             int sector = PACK_INDEX_SD_SECTOR + startSector.get() + offset;
@@ -438,7 +451,7 @@ public class RawStoryTellerAsyncDriver {
                                                 }
                                                 // Call (optional) listener with transfer status
                                                 if (listener != null) {
-                                                    CompletableFuture.runAsync(() -> listener.onProgress(status));
+                                                    CompletableFuture.runAsync(() -> listener.onProgress(status), TransferCallbacks.EXECUTOR);
                                                 }
                                                 return status;
                                             });
@@ -464,9 +477,9 @@ public class RawStoryTellerAsyncDriver {
                                             // Write pack index
                                             return writePackIndex(handle, packs)
                                                     .thenApply(done -> {
-                                                        if (status.isDone()) {
+                                                        if (status.isDone() && listener != null) {
                                                             // Call listener only after the index has been rewritten
-                                                            CompletableFuture.runAsync(() -> listener.onComplete(status));
+                                                            CompletableFuture.runAsync(() -> listener.onComplete(status), TransferCallbacks.EXECUTOR);
                                                         }
                                                         return status;
                                                     });

@@ -24,6 +24,7 @@ import studio.core.v1.utils.PackAssetsCompression;
 import studio.core.v1.writer.archive.ArchiveStoryPackWriter;
 import studio.core.v1.writer.binary.BinaryStoryPackWriter;
 import studio.core.v1.writer.fs.FsStoryPackWriter;
+import studio.driver.StoryTellerException;
 import studio.metadata.DatabaseMetadataService;
 import studio.metadata.DatabasePackMetadata;
 import studio.webui.model.LibraryPack;
@@ -37,11 +38,13 @@ import java.io.InputStream;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
+import java.nio.file.FileVisitResult;
 import java.nio.file.InvalidPathException;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
@@ -112,14 +115,60 @@ public class LibraryService {
         private final long size;
         private final FileTime lastModifiedTime;
 
-        private CachedPack(Optional<LibraryPack> pack, BasicFileAttributes attributes) {
+        private CachedPack(Optional<LibraryPack> pack, Fingerprint fingerprint) {
             this.pack = pack;
-            this.size = attributes.size();
-            this.lastModifiedTime = attributes.lastModifiedTime();
+            this.size = fingerprint.size;
+            this.lastModifiedTime = fingerprint.lastModifiedTime;
         }
 
-        private boolean matches(BasicFileAttributes attributes) {
-            return size == attributes.size() && lastModifiedTime.equals(attributes.lastModifiedTime());
+        private boolean matches(Fingerprint fingerprint) {
+            return size == fingerprint.size && lastModifiedTime.equals(fingerprint.lastModifiedTime);
+        }
+    }
+
+    /**
+     * Size and modification time of a library entry: those of the file for a file. For a folder (an
+     * FS pack), the size of a folder and its own modification time say nothing of the files under
+     * rf/ and sf/, which can be rewritten without the folder changing: the sum of the sizes and the
+     * latest modification time of every file and folder of the tree instead, so that the cached parse
+     * and the size reported for it follow what is on disk. One stat per file, no content read.
+     */
+    private static final class Fingerprint {
+        private final long size;
+        private final FileTime lastModifiedTime;
+
+        private Fingerprint(long size, FileTime lastModifiedTime) {
+            this.size = size;
+            this.lastModifiedTime = lastModifiedTime;
+        }
+
+        private static Fingerprint of(Path path, BasicFileAttributes attributes) throws IOException {
+            if (!attributes.isDirectory()) {
+                return new Fingerprint(attributes.size(), attributes.lastModifiedTime());
+            }
+            long[] size = {0};
+            FileTime[] latest = {attributes.lastModifiedTime()};
+            Files.walkFileTree(path, new SimpleFileVisitor<Path>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                    if (attrs.lastModifiedTime().compareTo(latest[0]) > 0) {
+                        latest[0] = attrs.lastModifiedTime();
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    if (attrs.isRegularFile()) {
+                        size[0] += attrs.size();
+                    }
+                    if (attrs.lastModifiedTime().compareTo(latest[0]) > 0) {
+                        latest[0] = attrs.lastModifiedTime();
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+            return new Fingerprint(size[0], latest[0]);
         }
     }
 
@@ -313,7 +362,9 @@ public class LibraryService {
         JsonObject details = new JsonObject()
                 .put("path", pack.getFileName().toString())
                 .put("format", format)
-                .put("size", PackDetails.sizeOnDisk(pack));
+                // -1 when it cannot be measured (an entry removed meanwhile, an unreadable subfolder):
+                // the rest of the details is still worth answering
+                .put("size", diskSize(pack));
         try {
             switch (format) {
                 case "archive":
@@ -361,10 +412,51 @@ public class LibraryService {
             throw new RuntimeException("Pack is already in raw format");
         }
         boolean fromArchive = packPath.endsWith(".zip");
+        if (fromArchive) {
+            requireMemoryForRawConversion(packPath);
+        }
         return convert(packPath, fromArchive ? "archive" : "FS", "raw", ".pack", "raw",
                 fromArchive ? archiveReader() : fsReader(),
                 this::uncompressAssetsIfNeeded,
                 rawWriter(allowEnriched));
+    }
+
+    /** Bytes per second of the audio a raw pack holds: 32 kHz, 16-bit, mono WAV. */
+    static final long RAW_AUDIO_BYTES_PER_SECOND = 64_000;
+
+    /**
+     * An archive converted to raw has all of its audio decoded to WAV in memory at once. A long pack
+     * used to run the heap out half way, with an OutOfMemoryError that also starved every other
+     * request: the duration is read from the audio headers first (as the preview does), and a
+     * conversion that cannot fit is refused with a message that says so. Assets whose duration
+     * cannot be read are not counted, so the estimate errs on the side of trying.
+     */
+    private void requireMemoryForRawConversion(String packPath) {
+        Optional<Path> pack = libraryEntry(packPath).filter(Files::isRegularFile);
+        if (pack.isEmpty()) {
+            return; // the conversion reports it
+        }
+        double seconds;
+        long packBytes;
+        try {
+            seconds = PackDetails.archiveAudio(pack.get()).getDouble("seconds", 0.0);
+            packBytes = Files.size(pack.get());
+        } catch (IOException | RuntimeException e) {
+            LOGGER.warn("Could not estimate the audio of " + packPath + " before converting it: " + e.getMessage());
+            return;
+        }
+        requireMemoryFor(seconds, packBytes, Runtime.getRuntime().maxMemory());
+    }
+
+    static void requireMemoryFor(double audioSeconds, long packBytes, long maxMemory) {
+        long needed = (long) (audioSeconds * RAW_AUDIO_BYTES_PER_SECOND) + packBytes;
+        // Head room for everything else the server holds, and for the copies made per asset
+        if (needed > maxMemory * 0.8) {
+            throw new StoryTellerException("This pack holds about " + Math.round(audioSeconds / 60) + " minutes of audio,"
+                    + " which needs about " + (needed >> 20) + " MiB of memory to convert to the raw format, more than"
+                    + " STUdio may use (" + (maxMemory >> 20) + " MiB). Start STUdio with more memory"
+                    + " (JAVA_OPTS=-Xmx...), or split the pack.");
+        }
     }
 
     public Optional<Path> addConvertedArchivePackFile(String packPath) {
@@ -1189,7 +1281,7 @@ public class LibraryService {
     }
 
     /** Bytes on disk: the file's size, or the sum of the regular files of a folder; -1 if unreadable. */
-    private static long diskSize(Path path) {
+    static long diskSize(Path path) {
         try {
             if (!Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
                 return Files.size(path);
@@ -1329,21 +1421,22 @@ public class LibraryService {
      * whatever {@code readPackFile} makes of the path as it is now becomes the answer.
      */
     private Optional<LibraryPack> readPackFileCached(Path path) {
-        BasicFileAttributes attributes;
+        Fingerprint fingerprint;
         try {
-            attributes = Files.readAttributes(path, BasicFileAttributes.class);
-        } catch (IOException e) {
+            BasicFileAttributes attributes = Files.readAttributes(path, BasicFileAttributes.class);
+            fingerprint = Fingerprint.of(path, attributes);
+        } catch (IOException | UncheckedIOException e) {
             LOGGER.debug("Cannot read attributes, parsing without the cache: " + path.toString());
             return readPackFileWithSize(path);
         }
 
         CachedPack cached = cachedPacks.getIfPresent(path);
-        if (cached != null && cached.matches(attributes)) {
+        if (cached != null && cached.matches(fingerprint)) {
             return cached.pack;
         }
 
         Optional<LibraryPack> pack = readPackFileWithSize(path);
-        cachedPacks.put(path, new CachedPack(pack, attributes));
+        cachedPacks.put(path, new CachedPack(pack, fingerprint));
         return pack;
     }
 
