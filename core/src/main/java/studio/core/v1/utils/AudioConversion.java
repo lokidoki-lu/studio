@@ -58,12 +58,13 @@ public class AudioConversion {
         );
         AudioInputStream pcm32000 = AudioSystem.getAudioInputStream(pcm32000Format, pcm);
 
-        // Read the whole stream in a byte array because length must be known
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        baos.writeBytes(pcm32000.readAllBytes());
-        AudioInputStream waveStream = new AudioInputStream(new ByteArrayInputStream(baos.toByteArray()), pcm32000Format, baos.toByteArray().length);
+        // Read the whole stream in a byte array because length must be known. Read once and used as
+        // is: it used to be copied three more times (into a stream, then out of it twice) on the way.
+        // The length argument is kept as it was, so the output does not change by a single byte.
+        byte[] pcmBytes = pcm32000.readAllBytes();
+        AudioInputStream waveStream = new AudioInputStream(new ByteArrayInputStream(pcmBytes), pcm32000Format, pcmBytes.length);
 
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ByteArrayOutputStream output = new ByteArrayOutputStream(pcmBytes.length + 64);
         AudioSystem.write(waveStream, AudioFileFormat.Type.WAVE, output);
         return output.toByteArray();
     }
