@@ -110,3 +110,7 @@
     background: var(--ui-surface);
     box-shadow: var(--ui-shadow);
 }
+
+.send-queue-idle {
+    background: transparent;
+}
