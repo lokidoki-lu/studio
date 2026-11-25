@@ -17,7 +17,7 @@ import Modal from './components/Modal';
 import PackEditor from './components/diagram/PackEditor';
 import LibraryView from './components/LibraryView';
 import EditorPackViewer from "./components/viewer/EditorPackViewer";
-import {simplifiedSample} from "./utils/sample";
+import PackDiagramModel from "./components/diagram/models/PackDiagramModel";
 import {
     actionCheckDevice,
     actionDevicePlugged,
@@ -31,7 +31,6 @@ import {
     setAnnounceOptOut,
     setAllowEnriched
 } from "./actions";
-import {generateFilename} from "./utils/packs";
 import {renderUntrustedMarkdown} from "./utils/markdown";
 import {applyTheme, loadTheme, nextTheme, saveTheme} from "./utils/theme";
 import {
@@ -117,9 +116,9 @@ class App extends React.Component {
             // Load evergeen infos on startup
             this.props.loadEvergreen(this.props.settings.announceOptOut);
 
-            // Load sample diagram in editor
-            let model = simplifiedSample();
-            this.props.setEditorDiagram(model, generateFilename(model));
+            // An empty diagram in the editor. The sample pack (~1 MB) is only fetched when it is
+            // asked for, from the library ("open the sample"): see actionLoadSampleInEditor.
+            this.props.setEditorDiagram(new PackDiagramModel());
 
             this.props.dispatchShowLibrary();
         });

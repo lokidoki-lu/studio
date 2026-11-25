@@ -172,8 +172,9 @@ export class PackLibrarySimple extends PackLibrary {
         const sendable = this.isPackDraggable(item.group.packs[0] || {});
         const meta = [item.size !== null ? this.formatSize(item.size) : null,
             item.files > 1 ? t('simpleLibrary.card.files', { count: item.files }) : null].filter(Boolean).join(' · ');
-        return <li key={item.uuid} className={`simple-card ${item.onDevice ? 'on-device' : ''}`} title={item.uuid}>
+        return <li key={item.uuid} className={`simple-card ${item.onDevice ? 'on-device' : ''} ${this.sendQueue.isSelected(item.uuid) ? 'send-selected' : ''}`} title={item.uuid}>
             <div className="simple-cover">
+                <span className="simple-select">{this.renderSelectBox(item.uuid, item.title)}</span>
                 {item.image ? <img src={item.image} alt="" loading="lazy" draggable={false}/> : <span aria-hidden="true">♪</span>}
             </div>
             <div className="simple-body">
@@ -265,6 +266,7 @@ export class PackLibrarySimple extends PackLibrary {
                             <YoutubePack />
                         </span>
                     </div>
+                    {this.renderSendQueue(items.map(item => item.uuid))}
                     <div className="simple-scroll">
                         {groups.length === 0 && <p className="simple-empty">{t('simpleLibrary.library.empty')}</p>}
                         {groups.length > 0 && items.length === 0 && <p className="simple-empty">{t('library.local.noMatch')}</p>}
