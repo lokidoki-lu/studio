@@ -1,10 +1,12 @@
 name: Release
 
-# Publishes a GitHub release for every pushed tag `v*` (e.g. `v0.4.3-lunii.1`).
+# Publishes a GitHub release for every pushed version tag, with or without a leading `v`
+# (e.g. `0.4.3-lunii.9` or `v0.4.3-lunii.9`).
 #
-# The Maven version is taken from the tag (without the leading `v`), so there is no pom to bump
-# before tagging: the distribution is named `studio-web-ui-<version>-dist.zip` after the tag.
-# A tag with a pre-release suffix (anything after a `-`) is published as a pre-release.
+# The Maven version is taken from the tag (without the leading `v`), so the zip is always named
+# `studio-web-ui-<version>-dist.zip` after the tag, even if the poms were not bumped.
+# If a release for the tag already exists (e.g. created by hand), the zip is only attached to it
+# when it has no `.zip` yet; an existing release is never otherwise modified.
 #
 # Lunii Pack's installers (phsoulaneix/studio: installer_studio.ps1, installer_mac_linux.sh) read
 # this repository's releases, pre-releases included, and take the FIRST `.zip` asset, then look for
@@ -14,7 +16,7 @@ name: Release
 
 on:
   push:
-    tags: [ 'v*' ]
+    tags: [ 'v[0-9]*', '[0-9]*' ]
 
 permissions:
   contents: write
@@ -46,13 +48,10 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           version="${tag#v}"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Tag '$tag' is not of the form vX.Y.Z or vX.Y.Z-suffix"
+            echo "::error::Tag '$tag' is not of the form X.Y.Z[-suffix] or vX.Y.Z[-suffix]"
             exit 1
           fi
-          prerelease=false
-          [[ "$version" == *-* ]] && prerelease=true
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
       # Only the CI checkout is changed; nothing is committed back.
       - name: Set the Maven version
@@ -86,9 +85,16 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          ZIP: ${{ steps.dist.outputs.zip }}
         shell: bash
         run: |
-          flags=()
-          [ "${{ steps.version.outputs.prerelease }}" = "true" ] && flags+=(--prerelease)
-          gh release create "$GITHUB_REF_NAME" "${{ steps.dist.outputs.zip }}" \
-            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag "${flags[@]}"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | grep -q '\.zip$'; then
+              echo "Release $GITHUB_REF_NAME already has a .zip: left untouched."
+            else
+              gh release upload "$GITHUB_REF_NAME" "$ZIP"
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" "$ZIP" \
+              --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+          fi
