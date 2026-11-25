@@ -272,11 +272,15 @@
     margin-top: auto;
     padding-top: 8px;
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
 }
 
+/* The main action on its own line, the secondary ones (icons) below it, on every card alike */
 .pack-library-simple .simple-actions .ui-btn:first-child {
-    flex: 1;
+    flex: 1 1 100%;
+    min-width: 0;
+    white-space: normal;
 }
 
 .pack-library-simple .simple-card.on-device {
