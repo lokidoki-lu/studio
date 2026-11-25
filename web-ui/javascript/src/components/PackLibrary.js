@@ -377,7 +377,7 @@ export class PackLibrary extends React.Component {
     };
 
     isPackDraggable = (pack) => {
-        return !pack.official;
+        return !pack.official || localStorage.getItem('OFFICIAL') === 'true';
     };
 
     onCreateNewPackInEditor = (e) => {
