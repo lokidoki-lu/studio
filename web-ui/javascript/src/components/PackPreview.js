@@ -259,9 +259,8 @@ export class PackPreview extends React.Component {
     };
 
     onKeyDown = (e) => {
+        // Escape closes the preview through its Modal
         if (e.key === 'Escape' || e.key === 'Esc') {
-            e.preventDefault();
-            this.props.onClose();
             return;
         }
         // Keys typed in a control are that control's: Enter on a focused button or link presses it;
