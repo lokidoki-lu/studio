@@ -114,12 +114,31 @@ public class CipherUtils {
      * {@code decipherFirstBlock...}, and chains of them) changes at most the first
      * {@link #TRANSFORMED_HEAD_SIZE} bytes, and copies every following byte verbatim: applying it to
      * that head alone and appending the rest of the file gives the same bytes. The head is read and
-     * transformed in memory; the rest is copied from channel to channel ({@code transferTo}), which
-     * the system may do without bringing it into the heap at all.
+     * transformed in memory; the rest is copied through a buffer of {@link #COPY_BUFFER_SIZE} bytes.
+     *
+     * <p>Not with {@code FileChannel.transferTo}: between two files, the JDK does it on Windows by
+     * mapping the source in memory, and a card pulled out during the copy then faults on the mapped
+     * pages, which surfaces as a {@code java.lang.InternalError} rather than an {@link IOException}:
+     * an {@code Error}, which the transfer's {@code catch (Exception)} let through, and the failure
+     * read as an unexpected one instead of an unplugged device. A plain read and write fails with an
+     * {@link IOException}; an {@code InternalError} that would still be raised from here is turned
+     * into one as well.
      *
      * @param options how {@code target} is opened (must allow writing)
      */
     static void transformFirstBlock(Path source, Path target, UnaryOperator<byte[]> transform, OpenOption... options) throws IOException {
+        try {
+            transformFirstBlockUnguarded(source, target, transform, options);
+        } catch (InternalError e) {
+            throw new IOException("Unexpected fault while copying " + source + " to " + target
+                    + " (device unplugged during the copy?)", e);
+        }
+    }
+
+    /** What the tail of a file is copied through, in {@link #transformFirstBlock}. */
+    static final int COPY_BUFFER_SIZE = 64 * 1024;
+
+    private static void transformFirstBlockUnguarded(Path source, Path target, UnaryOperator<byte[]> transform, OpenOption... options) throws IOException {
         OpenOption[] targetOptions = options.length == 0
                 ? new OpenOption[]{StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE}
                 : options;
@@ -139,12 +158,19 @@ public class CipherUtils {
                     out.write(transformed);
                 }
                 long position = head.capacity();
+                ByteBuffer buffer = ByteBuffer.allocate((int) Math.min(COPY_BUFFER_SIZE, Math.max(size - position, 1)));
                 while (position < size) {
-                    long copied = in.transferTo(position, size - position, out);
-                    if (copied <= 0) {
+                    buffer.clear();
+                    buffer.limit((int) Math.min(buffer.capacity(), size - position));
+                    int read = in.read(buffer, position);
+                    if (read <= 0) {
                         throw new IOException("Could not copy " + source + " past byte " + position);
                     }
-                    position += copied;
+                    buffer.flip();
+                    while (buffer.hasRemaining()) {
+                        out.write(buffer);
+                    }
+                    position += read;
                 }
             }
         }

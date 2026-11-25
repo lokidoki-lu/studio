@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import studio.driver.model.fs.FsDeviceKeyV3;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
@@ -23,6 +24,7 @@ import java.util.function.UnaryOperator;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link CipherUtils#transformFirstBlock} writes exactly what the whole-file transforms produce,
@@ -57,7 +59,8 @@ class CipherUtilsStreamingTest {
         return t;
     }
 
-    private static final int[] SIZES = {0, 1, 3, 4, 15, 16, 17, 100, 508, 511, 512, 513, 1000, 4096 + 7, 1024 * 1024 + 5};
+    private static final int[] SIZES = {0, 1, 3, 4, 15, 16, 17, 100, 508, 511, 512, 513, 1000, 4096 + 7,
+            512 + CipherUtils.COPY_BUFFER_SIZE - 1, 512 + CipherUtils.COPY_BUFFER_SIZE, 512 + CipherUtils.COPY_BUFFER_SIZE + 1, 1024 * 1024 + 5};
 
     @Test
     @DisplayName("same bytes as the whole-file transform, for every transform and size")
@@ -111,6 +114,19 @@ class CipherUtilsStreamingTest {
         Path target = tmp.resolve("never");
         assertThrows(whole, () -> CipherUtils.transformFirstBlock(source, target,
                 data -> CipherUtils.decipherFirstBlockSpecificKeyV3(data, key), EXCLUSIVE));
+        assertFalse(Files.exists(target));
+    }
+
+    @Test
+    @DisplayName("C1: an InternalError raised during the copy (a mapped page of an unplugged card) fails as an IOException")
+    void internalErrorIsAnIOException() throws Exception {
+        Path source = tmp.resolve("pulled");
+        Files.write(source, new byte[2000]);
+        Path target = tmp.resolve("pulled-target");
+        IOException e = assertThrows(IOException.class, () -> CipherUtils.transformFirstBlock(source, target, head -> {
+            throw new InternalError("a fault occurred in a recent unsafe memory access operation in compiled Java code");
+        }, EXCLUSIVE));
+        assertTrue(e.getCause() instanceof InternalError);
         assertFalse(Files.exists(target));
     }
 
