@@ -32,6 +32,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Tells, for each pack on a 2.x+ Lunii that the library also holds, whether the library has another
@@ -83,6 +86,16 @@ public class DeviceUpdateService implements IStoryTellerService.DevicePackListen
             return size() > 500;
         }
     });
+
+    /**
+     * How long a listing waits for one comparison of the card with a library folder. The comparison
+     * never waits behind a transfer (it is only made when the device queue is idle); this bounds a
+     * card that stops answering. Past it, the answer is unknown, and nothing is cached.
+     */
+    long comparisonTimeoutMillis = TimeUnit.SECONDS.toMillis(Long.getLong("studio.device.comparisonTimeoutSeconds", 60L));
+
+    /** What one comparison of the card with a library folder found. */
+    enum Comparison { SAME, DIFFERENT, UNKNOWN, BUSY }
 
     public DeviceUpdateService(IStoryTellerService storyTellerService, LibraryService libraryService) {
         this.storyTellerService = storyTellerService;
@@ -285,7 +298,9 @@ public class DeviceUpdateService implements IStoryTellerService.DevicePackListen
         Optional<String> latestOrigin = libraryService.originOf(latest.getString("path"));
         Optional<String> recorded = deviceKey == null ? Optional.empty() : recordedOrigin(deviceKey, uuid);
 
-        boolean currentFolderExists = false;
+        // Only a comparison that found a difference says the card is not the current folder: one that
+        // could not be made (device busy, error, timeout) says nothing.
+        boolean currentFolderDiffers = false;
         if (!recorded.isPresent()) {
             // No record: compare the card with each folder artefact, most recent first — not while
             // the device is busy (a pack may be being written), and not again for a folder that was
@@ -297,9 +312,7 @@ public class DeviceUpdateService implements IStoryTellerService.DevicePackListen
                     continue;
                 }
                 Optional<String> origin = libraryService.originOf(artefact.getString("path"));
-                if (origin.isPresent() && origin.equals(latestOrigin)) {
-                    currentFolderExists = true;
-                }
+                boolean current = origin.isPresent() && origin.equals(latestOrigin);
                 Optional<File> folder = libraryService.libraryEntry(artefact.getString("path")).map(Path::toFile);
                 if (!origin.isPresent() || !folder.isPresent() || busy) {
                     continue;
@@ -308,15 +321,24 @@ public class DeviceUpdateService implements IStoryTellerService.DevicePackListen
                         + devicePack.getValue("version") + "|" + artefact.getString("path") + "|" + origin.get();
                 synchronized (knownMismatches) {
                     if (knownMismatches.contains(mismatchKey)) {
+                        currentFolderDiffers |= current;
                         continue;
                     }
                 }
-                if (Boolean.TRUE.equals(storyTellerService.packContentMatches(uuid, folder.get()).join())) {
+                Comparison comparison = compare(uuid, folder.get());
+                if (comparison == Comparison.SAME) {
                     recorded = deviceKey != null ? Optional.of(recordIfAbsent(deviceKey, uuid, origin.get())) : origin;
                     break;
                 }
-                synchronized (knownMismatches) {
-                    knownMismatches.add(mismatchKey);
+                if (comparison == Comparison.DIFFERENT) {
+                    currentFolderDiffers |= current;
+                    // Only a difference is remembered: an error or a timeout is tried again next time.
+                    synchronized (knownMismatches) {
+                        knownMismatches.add(mismatchKey);
+                    }
+                } else if (comparison == Comparison.BUSY) {
+                    // A transfer came in since deviceBusy(): no more comparisons for this listing.
+                    busy = true;
                 }
             }
         }
@@ -324,7 +346,7 @@ public class DeviceUpdateService implements IStoryTellerService.DevicePackListen
             return new JsonObject().put("basis", "content")
                     .put("status", recorded.get().equals(latestOrigin.get()) ? "UP_TO_DATE" : "UPDATE_AVAILABLE");
         }
-        if (currentFolderExists) {
+        if (currentFolderDiffers) {
             // The library holds the current content ready for this Lunii, and the card is not it.
             return new JsonObject().put("basis", "content").put("status", "UPDATE_AVAILABLE");
         }
@@ -334,6 +356,42 @@ public class DeviceUpdateService implements IStoryTellerService.DevicePackListen
             return new JsonObject().put("basis", "version").put("status", "UPDATE_AVAILABLE");
         }
         return new JsonObject().put("basis", "none").put("status", "UNKNOWN");
+    }
+
+    /**
+     * Compares the card with a library folder, waiting at most {@link #comparisonTimeoutMillis}. The
+     * comparison is refused at once rather than queued behind another device operation (BUSY); one
+     * that is not answered in time is abandoned (it is not started if it has not begun) and UNKNOWN.
+     */
+    Comparison compare(String uuid, File folder) {
+        CompletableFuture<Boolean> comparison;
+        try {
+            comparison = storyTellerService.packContentMatches(uuid, folder);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Could not compare the pack " + uuid + " on the device with " + folder, e);
+            return Comparison.UNKNOWN;
+        }
+        try {
+            Boolean same = comparison.get(comparisonTimeoutMillis, TimeUnit.MILLISECONDS);
+            return same == null ? Comparison.UNKNOWN : same ? Comparison.SAME : Comparison.DIFFERENT;
+        } catch (TimeoutException e) {
+            comparison.cancel(false);
+            LOGGER.warn("The comparison of the pack " + uuid + " on the device with " + folder + " took too long: abandoned");
+            return Comparison.UNKNOWN;
+        } catch (InterruptedException e) {
+            comparison.cancel(false);
+            Thread.currentThread().interrupt();
+            return Comparison.UNKNOWN;
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause() == null ? e : e.getCause();
+            if (cause instanceof DeviceOperationQueue.QueueBusyException) {
+                return Comparison.BUSY;
+            }
+            LOGGER.warn("Could not compare the pack " + uuid + " on the device with " + folder + ": " + cause.getMessage());
+            return Comparison.UNKNOWN;
+        } catch (java.util.concurrent.CancellationException e) {
+            return Comparison.UNKNOWN;
+        }
     }
 
     private static Integer asInt(Object value) {
