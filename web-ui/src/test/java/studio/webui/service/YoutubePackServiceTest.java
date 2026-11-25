@@ -188,6 +188,10 @@ class YoutubePackServiceTest {
 
         JsonObject state = job.toJson();
         assertEquals("DONE", state.getString("state"), state.encodePrettily());
+        // Finished means the temporary files are already gone
+        try (java.util.stream.Stream<Path> left = Files.list(tmp.resolve("work"))) {
+            assertEquals(0, left.count());
+        }
         JsonObject result = state.getJsonObject("result");
         assertEquals("Les Dalton.zip", result.getString("path"));
         assertEquals("Les Dalton", result.getString("title"));
