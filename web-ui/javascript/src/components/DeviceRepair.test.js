@@ -9,6 +9,8 @@
  * services replaced by mocks: what is shown, what is asked first, and which request each button sends.
  */
 
+import fs from 'fs';
+import path from 'path';
 import React from 'react';
 import ReactDOM from 'react-dom';
 import {act} from 'react-dom/test-utils';
@@ -32,7 +34,7 @@ const device = require('../services/device');
 
 const t = (key, values) => values ? `${key} ${JSON.stringify(values)}` : key;
 
-const CLEAN = {supported: true, driver: 'fs', indexedPacks: 2, problems: 0, orphans: [], missingContent: [], interruptedUpdates: [], pendingIndex: null};
+const CLEAN = {supported: true, driver: 'fs', indexedPacks: 2, problems: 0, orphans: [], missingContent: [], interruptedUpdates: [], pendingIndex: null, deviceToken: 'tok'};
 
 let container;
 
@@ -92,7 +94,7 @@ describe('DeviceRepair', () => {
         repair.fetchDiagnosis.mockResolvedValue(CLEAN);
         act(() => { button('deviceRepair.confirm').click(); });
         await flush();
-        expect(repair.resolvePendingIndex).toHaveBeenCalledWith('discard', 'fp');
+        expect(repair.resolvePendingIndex).toHaveBeenCalledWith('discard', 'fp', 'tok');
         expect(repair.fetchDiagnosis).toHaveBeenCalledTimes(2);
         expect(document.body.textContent).toContain('deviceRepair.done');
     });
@@ -106,8 +108,24 @@ describe('DeviceRepair', () => {
         act(() => { button('deviceRepair.pendingIndex.adopt').click(); });
         act(() => { button('deviceRepair.confirm').click(); });
         await flush();
-        expect(repair.resolvePendingIndex).toHaveBeenCalledWith('adopt', 'fp2');
+        expect(repair.resolvePendingIndex).toHaveBeenCalledWith('adopt', 'fp2', 'tok');
         expect(onChanged).toHaveBeenCalled();
+    });
+
+    it('adopting an index that drops packs names them before anything is done', async () => {
+        await open({...CLEAN, problems: 1, pendingIndex: {kind: 'REMOVE', safeToDiscard: false, canAdopt: true, fingerprint: 'fp3', added: [], removed: ['U1', 'u2']}},
+            {titles: {u1: 'Bambi'}});
+        act(() => { button('deviceRepair.pendingIndex.adopt').click(); });
+        expect(repair.resolvePendingIndex).not.toHaveBeenCalled();
+        expect(document.body.textContent).toContain('deviceRepair.pendingIndex.confirmAdoptRemoving {"titles":"Bambi, u2"}');
+    });
+
+    it('an index that cannot be adopted offers only to keep the current one, and says why', async () => {
+        await open({...CLEAN, problems: 1, pendingIndex: {kind: 'OTHER', safeToDiscard: false, canAdopt: false, fingerprint: 'fp4',
+            added: ['z'], removed: ['a'], incomplete: ['z']}});
+        expect(button('deviceRepair.pendingIndex.adopt')).toBeUndefined();
+        expect(button('deviceRepair.pendingIndex.keep')).toBeDefined();
+        expect(document.body.textContent).toContain('deviceRepair.pendingIndex.cannotAdopt {"count":1}');
     });
 
     it('a cancelled confirmation sends nothing', async () => {
@@ -119,7 +137,20 @@ describe('DeviceRepair', () => {
         act(() => { button('deviceRepair.interrupted.actions.SWAP_INTERRUPTED').click(); });
         act(() => { button('deviceRepair.confirm').click(); });
         await flush();
-        expect(repair.resolveInterruptedUpdate).toHaveBeenCalledWith('AABBCCDD');
+        expect(repair.resolveInterruptedUpdate).toHaveBeenCalledWith('AABBCCDD', 'SWAP_INTERRUPTED', 'tok');
+    });
+
+    it('offers no repair for leftovers STUdio cannot sort out safely', async () => {
+        await open({...CLEAN, problems: 1, interruptedUpdates: [{folder: 'AABBCCDD', state: 'CONFLICT', leftovers: []}]});
+        expect(document.body.textContent).toContain('deviceRepair.interrupted.states.CONFLICT');
+        expect(document.querySelectorAll('.device-repair-section button')).toHaveLength(1); // the integrity check only
+    });
+
+    it('an orphan the pending index names cannot be selected', async () => {
+        await open({...CLEAN, problems: 2, orphans: [{folder: '0A0B0C0D', sizeInBytes: 10, complete: true, referencedByPendingIndex: true}]});
+        const box = document.querySelector('.device-repair-list input[type=checkbox]');
+        expect(box.disabled).toBe(true);
+        expect(document.body.textContent).toContain('deviceRepair.orphans.pending');
     });
 
     it('removes only the orphan folders selected, and removes an entry without content from the index', async () => {
@@ -134,13 +165,15 @@ describe('DeviceRepair', () => {
         act(() => { startsWith('deviceRepair.orphans.remove').click(); });
         act(() => { button('deviceRepair.confirm').click(); });
         await flush();
-        expect(repair.removeOrphanFolders).toHaveBeenCalledWith(['0A0B0C0D']);
+        expect(repair.removeOrphanFolders).toHaveBeenCalledWith(['0A0B0C0D'], 'tok');
 
-        device.removeFromDevice.mockResolvedValue({success: true});
+        repair.removeMissingContent.mockResolvedValue({success: true});
         act(() => { button('deviceRepair.missing.remove').click(); });
         act(() => { button('deviceRepair.confirm').click(); });
         await flush();
-        expect(device.removeFromDevice).toHaveBeenCalledWith('u-miss');
+        // Through the repair route, which checks the content is still missing; not a plain removal
+        expect(repair.removeMissingContent).toHaveBeenCalledWith('u-miss', 'tok');
+        expect(device.removeFromDevice).not.toHaveBeenCalled();
     });
 
     it('shows a refused repair', async () => {
@@ -154,20 +187,24 @@ describe('DeviceRepair', () => {
 
     it('runs the integrity check, and offers to send a damaged pack again only when the library holds it', async () => {
         const onResend = jest.fn();
-        await open(CLEAN, {libraryUuids: ['u-lib'], onResend});
+        await open(CLEAN, {libraryUuids: ['u-lib', 'u-lib2'], onResend,
+            updateStatusOf: (uuid) => uuid === 'u-lib' ? {deviceVersion: 1, libraryVersion: 3} : undefined});
         repair.startIntegrityCheck.mockResolvedValue({checkId: 'c1'});
         repair.fetchIntegrityCheck.mockResolvedValue({done: true, success: true, checked: 10, total: 10, packs: [
             {uuid: 'u-ok', ok: true, problems: []},
             {uuid: 'u-lib', ok: false, title: 'Bambi', problems: [{code: 'ASSET_MISSING', detail: 'sf/000/00000001'}]},
             {uuid: 'u-off', ok: false, official: true, problems: [{code: 'BOOT_FILE_INVALID', detail: 'bt'}]},
-            {uuid: 'u-gone', ok: false, problems: [{code: 'ASSET_EMPTY', detail: 'rf/000/1'}]}
+            {uuid: 'u-gone', ok: false, problems: [{code: 'ASSET_EMPTY', detail: 'rf/000/1'}]},
+            {uuid: 'u-lib2', ok: false, problems: [{code: 'FOLDER_MISSING', detail: 'AAAA0000'}]}
         ]});
         act(() => { button('deviceRepair.integrity.start').click(); });
         await flush();
         await flush();
         expect(repair.fetchIntegrityCheck).toHaveBeenCalledWith('c1');
         const text = document.body.textContent;
-        expect(text).toContain('deviceRepair.integrity.damaged {"count":3,"total":4}');
+        expect(text).toContain('deviceRepair.integrity.damaged {"count":4,"total":5}');
+        // A missing folder cannot be replaced in place: no resend, the way out instead
+        expect(text).toContain('deviceRepair.integrity.folderMissing');
         expect(text).toContain('deviceRepair.integrity.codes.ASSET_MISSING');
         expect(text).toContain('sf/000/00000001');
         expect(text).toContain('deviceRepair.integrity.official');
@@ -175,7 +212,15 @@ describe('DeviceRepair', () => {
         const resend = Array.from(document.querySelectorAll('button')).filter(b => b.textContent.trim() === 'deviceRepair.integrity.resend');
         expect(resend).toHaveLength(1);
         act(() => { resend[0].click(); });
+        // Asked first, with the version replaced and the one installed
+        expect(onResend).not.toHaveBeenCalled();
+        expect(document.body.textContent).toContain('deviceRepair.integrity.confirmResend {"title":"Bambi","device":1,"library":3}');
+        onResend.mockReturnValue(Promise.resolve());
+        repair.fetchDiagnosis.mockResolvedValue(CLEAN);
+        act(() => { button('deviceRepair.confirm').click(); });
+        await flush();
         expect(onResend).toHaveBeenCalledWith('u-lib');
+        expect(document.body.textContent).toContain('deviceRepair.integrity.resendStarted');
     });
 
     it('opens from a failure toast, through the shared event', async () => {
@@ -220,12 +265,26 @@ describe('DeviceUpdateButton', () => {
         expect(container.textContent).toBe('');
     });
 
-    it('shows the badge and the button, which starts the update', () => {
+    it('shows the badge and the button, which asks first, then starts the update', () => {
         const onUpdate = jest.fn();
-        renderButton({status: {status: 'UPDATE_AVAILABLE', basis: 'content'}, onUpdate});
+        renderButton({status: {status: 'UPDATE_AVAILABLE', basis: 'version', deviceVersion: 1, libraryVersion: 2}, onUpdate});
         expect(container.querySelector('.device-update-badge').textContent).toBe('deviceUpdate.available');
         act(() => { container.querySelector('button').click(); });
-        expect(onUpdate).toHaveBeenCalled();
+        expect(onUpdate).not.toHaveBeenCalled();
+        expect(document.body.textContent).toContain('deviceUpdate.confirm.text {"device":1,"library":2}');
+        act(() => { button('deviceUpdate.confirm.yes').click(); });
+        expect(onUpdate).toHaveBeenCalledTimes(1);
+        expect(document.getElementById('modal-device-update-confirm')).toBeNull();
+    });
+
+    it('a cancelled update confirmation starts nothing', () => {
+        const onUpdate = jest.fn();
+        renderButton({status: {status: 'UPDATE_AVAILABLE', basis: 'content'}, onUpdate});
+        act(() => { container.querySelector('button').click(); });
+        expect(document.body.textContent).toContain('deviceUpdate.confirm.textNoVersion');
+        act(() => { button('dialogs.shared.no').click(); });
+        expect(onUpdate).not.toHaveBeenCalled();
+        expect(document.getElementById('modal-device-update-confirm')).toBeNull();
     });
 
     it('badge only, or button only, and busy while updating', () => {
@@ -236,5 +295,46 @@ describe('DeviceUpdateButton', () => {
         expect(container.querySelector('.device-update-badge')).toBeNull();
         expect(container.querySelector('button').disabled).toBe(true);
         expect(container.querySelector('button').textContent).toBe('deviceUpdate.updating');
+    });
+});
+
+describe('texts of the device check', () => {
+
+    const locales = path.join(__dirname, '..', '..', '..', 'src', 'main', 'resources', 'webroot', 'locales');
+    const read = (lang) => JSON.parse(fs.readFileSync(path.join(locales, lang, 'translation.json'), 'utf8'));
+    const keys = (obj, prefix = '') => Object.keys(obj).reduce((all, k) => typeof obj[k] === 'object'
+        ? all.concat(keys(obj[k], prefix + k + '.')) : all.concat(prefix + k), []);
+    const STATES = ['COPY_INTERRUPTED', 'PROMOTE_NEW', 'SWAP_INTERRUPTED', 'CLEANUP_INTERRUPTED', 'RESTORE_PREVIOUS',
+        'PREVIOUS_ONLY', 'NEW_ONLY', 'ABANDONED_COPY', 'CONFLICT', 'UNREFERENCED'];
+
+    it('has the same keys in French and in English', () => {
+        const fr = read('fr');
+        const en = read('en');
+        expect(keys(fr.deviceRepair).sort()).toEqual(keys(en.deviceRepair).sort());
+        expect(keys(fr.deviceUpdate).sort()).toEqual(keys(en.deviceUpdate).sort());
+    });
+
+    it('describes every state of an interrupted update, and offers an action for every state but CONFLICT', () => {
+        ['fr', 'en'].forEach(lang => {
+            const interrupted = read(lang).deviceRepair.interrupted;
+            STATES.forEach(state => {
+                expect(interrupted.states[state]).toBeTruthy();
+                if (state === 'CONFLICT') {
+                    expect(interrupted.actions[state]).toBeUndefined();
+                } else {
+                    expect(interrupted.actions[state]).toBeTruthy();
+                    expect(interrupted.confirm[state]).toBeTruthy();
+                }
+            });
+        });
+    });
+
+    it('no longer claims the story is intact, nor advises removing the folders an index drops', () => {
+        const fr = read('fr').deviceRepair;
+        expect(fr.interrupted.states.COPY_INTERRUPTED).not.toMatch(/intacte/);
+        expect(fr.interrupted.actions.UNREFERENCED).not.toMatch(/Supprimer/);
+        expect(fr.pendingIndex.keepMeans.ADD).not.toMatch(/supprimer ensuite/);
+        expect(fr.pendingIndex.adoptMeans.REMOVE).not.toMatch(/supprimer ensuite/);
+        expect(fr.pendingIndex.adoptMeans.REMOVE).toMatch(/\.pi\.bak/);
     });
 });

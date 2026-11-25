@@ -116,6 +116,8 @@ describe('in-place update', () => {
         const update = buttons(card('Ma chaîne'), 'deviceUpdate.update');
         expect(update).toHaveLength(1);
         act(() => { update[0].click(); });
+        // Asked first (DeviceUpdateButton), then confirmed
+        act(() => { buttons(container, 'deviceUpdate.confirm.yes')[0].click(); });
         await flush();
         expect(props.updateOnDevice).toHaveBeenCalledWith('u-yt', 'yt.fs', 'fs', 'fs', expect.anything());
         expect(props.addFromLibrary).not.toHaveBeenCalled();
@@ -130,6 +132,8 @@ describe('in-place update', () => {
         expect(update).toHaveLength(1);
         expect(buttons(tiles[1], 'deviceUpdate.update')).toHaveLength(0);
         act(() => { update[0].click(); });
+        // Asked first (DeviceUpdateButton), then confirmed
+        act(() => { buttons(container, 'deviceUpdate.confirm.yes')[0].click(); });
         await flush();
         expect(props.updateOnDevice).toHaveBeenCalledWith('u-yt', 'yt.fs', 'fs', 'fs', expect.anything());
     });
@@ -147,6 +151,8 @@ describe('in-place update', () => {
         await render(PackLibrary, {device: DEVICE, library, ...props});
         const update = buttons(container.querySelector('.plugged-device .pack-tile'), 'deviceUpdate.update');
         act(() => { update[0].click(); });
+        // Asked first (DeviceUpdateButton), then confirmed
+        act(() => { buttons(container, 'deviceUpdate.confirm.yes')[0].click(); });
         await flush();
         expect(props.verifyConversion).toHaveBeenCalledWith('yt.zip', 'yt.fs');
         // A single pack: the "applies to the whole selection" note is not shown
@@ -165,6 +171,8 @@ describe('in-place update', () => {
         await render(PackLibrary, {device: DEVICE, library: LIBRARY, ...props});
         const update = buttons(container.querySelector('.plugged-device .pack-tile'), 'deviceUpdate.update');
         act(() => { update[0].click(); });
+        // Asked first (DeviceUpdateButton), then confirmed
+        act(() => { buttons(container, 'deviceUpdate.confirm.yes')[0].click(); });
         await flush();
         expect(props.estimateOnDevice).toHaveBeenCalledWith(['yt.fs'], 'fs');
         expect(props.updateOnDevice).not.toHaveBeenCalled();
