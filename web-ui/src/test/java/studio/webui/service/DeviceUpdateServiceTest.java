@@ -46,6 +46,11 @@ class DeviceUpdateServiceTest {
     private DeviceUpdateService updates;
     /** Library folders the fake device "holds" exactly. */
     private final Set<String> matching = new HashSet<>();
+    /** How many times the card was compared with a library folder. */
+    private int comparisons;
+    private boolean busy;
+    /** Run in the middle of a comparison, as a transfer finishing meanwhile would. */
+    private Runnable duringComparison = () -> { };
 
     private void setProperty(String key, String value) {
         previous.putIfAbsent(key, System.getProperty(key));
@@ -115,7 +120,15 @@ class DeviceUpdateServiceTest {
 
             @Override
             public CompletableFuture<Boolean> packContentMatches(String uuid, File packFolder) {
-                return CompletableFuture.completedFuture(matching.contains(packFolder.getName()));
+                comparisons++;
+                boolean same = matching.contains(packFolder.getName());
+                duringComparison.run();
+                return CompletableFuture.completedFuture(same);
+            }
+
+            @Override
+            public boolean deviceBusy() {
+                return busy;
             }
         };
         updates = new DeviceUpdateService(device, library);
@@ -228,6 +241,53 @@ class DeviceUpdateServiceTest {
         updates.onWritten(DEVICE, U, root.resolve("library").resolve("a.fs").toFile());
         assertTrue(updates.recordedOrigin(DEVICE, U).isPresent());
         updates.onRemoved(DEVICE, U);
+        assertFalse(updates.recordedOrigin(DEVICE, U).isPresent());
+    }
+
+    @Test
+    @DisplayName("a comparison that ends after a pack was written does not overwrite what was written")
+    void compareThenWriteKeepsTheNewerRecord() throws IOException {
+        folder("a.fs", "old");
+        folder("b.fs", "new");
+        matching.add("a.fs");
+        // While the card is compared with a.fs, b.fs is written to it and recorded
+        duringComparison = () -> updates.onWritten(DEVICE, U, root.resolve("library").resolve("b.fs").toFile());
+        status(device(1), groups(artefact("b.fs", "fs", 1), artefact("a.fs", "fs", 1)));
+        assertEquals(library.originOf("b.fs"), updates.recordedOrigin(DEVICE, U));
+        duringComparison = () -> { };
+        assertEquals("UP_TO_DATE", status(device(1), groups(artefact("b.fs", "fs", 1))).getString("status"));
+    }
+
+    @Test
+    @DisplayName("no comparison while the device is busy, and a folder found different is not read again")
+    void comparisonsAreSparing() throws IOException {
+        folder("a.fs", "current");
+        busy = true;
+        status(device(1), groups(artefact("a.fs", "fs", 1)));
+        assertEquals(0, comparisons);
+        busy = false;
+        status(device(1), groups(artefact("a.fs", "fs", 1)));
+        status(device(1), groups(artefact("a.fs", "fs", 1)));
+        assertEquals(1, comparisons);
+        // Another state of the card (another version on it): compared again
+        status(device(2), groups(artefact("a.fs", "fs", 1)));
+        assertEquals(2, comparisons);
+    }
+
+    @Test
+    @DisplayName("an unreadable record file is set aside, not overwritten; records of packs gone from the Lunii are dropped")
+    void unreadableStoreAndCleanup() throws IOException {
+        Path store = root.resolve("device-packs.json");
+        Files.write(store, "{ not json".getBytes(StandardCharsets.UTF_8));
+        folder("a.fs", "x");
+        updates.onWritten(DEVICE, U, root.resolve("library").resolve("a.fs").toFile());
+        try (java.util.stream.Stream<Path> files = Files.list(root)) {
+            assertTrue(files.anyMatch(f -> f.getFileName().toString().startsWith("device-packs.json.corrupt-")));
+        }
+        assertTrue(updates.recordedOrigin(DEVICE, U).isPresent());
+
+        // The pack is no longer on the Lunii: its record goes with the next listing
+        updates.compute(DEVICE, new JsonArray(), groups(artefact("a.fs", "fs", 1)));
         assertFalse(updates.recordedOrigin(DEVICE, U).isPresent());
     }
 

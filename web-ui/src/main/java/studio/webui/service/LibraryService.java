@@ -891,6 +891,23 @@ public class LibraryService {
      * <p>An entry that does not exist yet is allowed: an upload and a conversion both have to name a
      * destination before creating it. The lexical rule still applies to it.
      */
+    /**
+     * The pack UUID a library entry declares (its metadata, read as the listing reads it), or empty
+     * if the name is not a readable pack of the library.
+     */
+    public Optional<String> declaredUuid(String name) {
+        return libraryEntry(name)
+                .filter(path -> Files.exists(path, LinkOption.NOFOLLOW_LINKS))
+                .flatMap(this::readPackFileCached)
+                .map(pack -> pack.getMetadata().getUuid());
+    }
+
+    /** Whether {@code uuid} is an official pack (Luniistore), by the metadata databases. */
+    public boolean isOfficialPack(String uuid) {
+        return uuid != null && (databaseMetadataService.isOfficialPack(uuid)
+                || databaseMetadataService.getPackMetadata(uuid).map(DatabasePackMetadata::isOfficial).orElse(false));
+    }
+
     public Optional<Path> libraryEntry(String name) {
         if (name == null || name.trim().isEmpty()) {
             return Optional.empty();

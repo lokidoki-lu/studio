@@ -64,6 +64,7 @@ public class FsPackIntegrity {
     private int images;
     private int sounds;
     private int filesChecked;
+    private boolean structureOnly;
 
     public FsPackIntegrity(UUID uuid, String folder) {
         this.uuid = uuid;
@@ -120,6 +121,18 @@ public class FsPackIntegrity {
 
     public int getFilesChecked() {
         return filesChecked;
+    }
+
+    /**
+     * Whether only the structure was checked (files present, node index, sizes): the ciphered parts
+     * and the boot file of an official pack are not checked, their key may be the pack's own.
+     */
+    public boolean isStructureOnly() {
+        return structureOnly;
+    }
+
+    public void setStructureOnly(boolean structureOnly) {
+        this.structureOnly = structureOnly;
     }
 
     public void setFilesChecked(int filesChecked) {

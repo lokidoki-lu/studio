@@ -461,6 +461,12 @@ public class StoryTellerService implements IStoryTellerService {
      * folder that is referenced by the index, or that is not there, is left alone and reported.
      */
     public CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames) {
+        return removeOrphanFolders(folderNames, null);
+    }
+
+    /** As {@link #removeOrphanFolders(List)}; with a device token, refused if the Lunii changed since the check. */
+    @Override
+    public CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames, String deviceToken) {
         return queue.submit(() -> {
             if (fsDevice == null) {
                 return CompletableFuture.failedFuture(device != null
@@ -468,7 +474,9 @@ public class StoryTellerService implements IStoryTellerService {
                         : noDevice());
             }
             JsonArray results = new JsonArray();
-            CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
+            CompletableFuture<Void> chain = deviceToken == null
+                    ? CompletableFuture.completedFuture(null)
+                    : fsDriver.requireDeviceToken(deviceToken);
             for (String name : folderNames) {
                 chain = chain.thenCompose(ignored -> fsDriver.removeUnreferencedPackContentFolder(name)
                         .handle((removed, t) -> {
@@ -636,22 +644,37 @@ public class StoryTellerService implements IStoryTellerService {
     }
 
     @Override
-    public CompletableFuture<Boolean> resolvePendingIndex(boolean adopt, String fingerprint) {
+    public CompletableFuture<Boolean> resolvePendingIndex(boolean adopt, String fingerprint, String deviceToken) {
         return queue.submit(() -> {
             if (fsDevice == null) {
                 return CompletableFuture.failedFuture(device != null ? notOnRawDevice("Resolving a pending index") : noDevice());
             }
-            return fsDriver.resolvePendingIndex(adopt, fingerprint);
+            return fsDriver.resolvePendingIndex(adopt, fingerprint, deviceToken);
         });
     }
 
     @Override
-    public CompletableFuture<Boolean> resolveInterruptedUpdate(String folder) {
+    public CompletableFuture<Boolean> resolveInterruptedUpdate(String folder, String state, String deviceToken) {
         return queue.submit(() -> {
             if (fsDevice == null) {
                 return CompletableFuture.failedFuture(device != null ? notOnRawDevice("Resolving an interrupted update") : noDevice());
             }
-            return fsDriver.resolveInterruptedUpdate(folder);
+            return fsDriver.resolveInterruptedUpdate(folder, state, deviceToken);
+        });
+    }
+
+    @Override
+    public CompletableFuture<Boolean> removeMissingContentEntry(String uuid, String deviceToken) {
+        return queue.submit(() -> {
+            if (fsDevice == null) {
+                return CompletableFuture.failedFuture(device != null ? notOnRawDevice("Removing an entry without content") : noDevice());
+            }
+            return fsDeviceKey().thenCompose(key -> fsDriver.removeMissingContentEntry(uuid, deviceToken).thenApply(removed -> {
+                if (Boolean.TRUE.equals(removed)) {
+                    key.ifPresent(k -> notifyRemoved(k, uuid));
+                }
+                return removed;
+            }));
         });
     }
 
@@ -677,11 +700,12 @@ public class StoryTellerService implements IStoryTellerService {
             if (fsDevice == null) {
                 return CompletableFuture.<List<studio.driver.model.fs.FsPackIntegrity>>failedFuture(noDevice());
             }
+            // Official packs: structure only, their ciphered parts may use a key of their own.
             return fsDriver.checkIntegrity((checked, total) -> {
                 synchronized (state) {
                     state.put("checked", checked).put("total", total);
                 }
-            });
+            }, uuid -> databaseMetadataService.getPackMetadata(uuid.toString()).map(m -> m.isOfficial()).orElse(false));
         }).whenComplete((results, e) -> {
             synchronized (state) {
                 state.put("done", true);
@@ -713,7 +737,17 @@ public class StoryTellerService implements IStoryTellerService {
         if (fsDevice == null || packFolder == null || !packFolder.isDirectory()) {
             return CompletableFuture.completedFuture(false);
         }
-        return fsDriver.packContentMatches(uuid, packFolder.getAbsolutePath()).exceptionally(e -> false);
+        // In the device queue: the pack is read in full, and must not be read while it is being
+        // replaced (nor hold handles that would make the rename of an update fail on Windows).
+        return queue.submit(() -> fsDevice == null
+                        ? CompletableFuture.completedFuture(false)
+                        : fsDriver.packContentMatches(uuid, packFolder.getAbsolutePath()))
+                .exceptionally(e -> false);
+    }
+
+    @Override
+    public boolean deviceBusy() {
+        return queue.pending() > 0;
     }
 
     /**

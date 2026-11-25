@@ -57,13 +57,29 @@ public interface IStoryTellerService {
         return CompletableFuture.failedFuture(unsupported());
     }
 
-    /** Discards ({@code adopt == false}) or adopts a pending {@code .pi.new}, if still as checked. */
-    default CompletableFuture<Boolean> resolvePendingIndex(boolean adopt, String fingerprint) {
+    /**
+     * Discards ({@code adopt == false}) or adopts a pending {@code .pi.new}, if still as checked.
+     * {@code deviceToken} is the one the check answered with: refused if the Lunii changed since.
+     */
+    default CompletableFuture<Boolean> resolvePendingIndex(boolean adopt, String fingerprint, String deviceToken) {
         return CompletableFuture.failedFuture(unsupported());
     }
 
-    /** Finishes or cleans up an interrupted in-place update of the pack folder {@code folder}. */
-    default CompletableFuture<Boolean> resolveInterruptedUpdate(String folder) {
+    /**
+     * Finishes or cleans up an interrupted in-place update of the pack folder {@code folder}, if its
+     * leftovers are still in {@code state}, on the Lunii {@code deviceToken} names.
+     */
+    default CompletableFuture<Boolean> resolveInterruptedUpdate(String folder, String state, String deviceToken) {
+        return CompletableFuture.failedFuture(unsupported());
+    }
+
+    /** As {@code removeOrphanFolders(folderNames)}, refused if {@code deviceToken} no longer names the Lunii. */
+    default CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames, String deviceToken) {
+        return removeOrphanFolders(folderNames);
+    }
+
+    /** Removes from the index a pack whose content is missing, only if it still is. */
+    default CompletableFuture<Boolean> removeMissingContentEntry(String uuid, String deviceToken) {
         return CompletableFuture.failedFuture(unsupported());
     }
 
@@ -85,6 +101,14 @@ public interface IStoryTellerService {
     /** Whether the pack on the device holds exactly what sending {@code packFolder} would write. */
     default CompletableFuture<Boolean> packContentMatches(String uuid, File packFolder) {
         return CompletableFuture.completedFuture(false);
+    }
+
+    /**
+     * Whether device operations are queued or running: a comparison of the card with the library
+     * ({@link #packContentMatches}) is then not made, rather than read a pack being written.
+     */
+    default boolean deviceBusy() {
+        return false;
     }
 
     /** Identifies the plugged device across sessions (its serial number), if a 2.x+ device is plugged. */
