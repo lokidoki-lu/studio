@@ -105,6 +105,12 @@ describe('simpleItems', () => {
         expect(simpleItems(undefined, undefined)).toEqual([]);
         expect(simpleItem({uuid: 'x'}, []).size).toBeNull();
     });
+
+    it('shows the thumbnail of any file of the pack that has one', () => {
+        const group = {uuid: 'x', packs: [{format: 'fs', image: null}, {format: 'archive', image: 'data:image/png;base64,AAA'}]};
+        expect(simpleItem(group, []).image).toBe('data:image/png;base64,AAA');
+        expect(simpleItem({uuid: 'y', packs: [{format: 'raw'}]}, []).image).toBeNull();
+    });
 });
 
 describe('movedOrder', () => {
