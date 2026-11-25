@@ -653,10 +653,10 @@
     "pendingIndex": {
       "title": "Interrupted index write (.pi.new)",
       "kinds": {
-        "TORN": "A new index started being written and was interrupted: it is incomplete.",
+        "TORN": "A new index started being written and was interrupted: it is incomplete or empty.",
         "IDENTICAL": "The pending index is identical to the installed one.",
         "ADD_INCOMPLETE": "The pending index added a story whose copy did not finish.",
-        "ADD": "The pending index adds {{added}} story(ies) whose copy is complete on the Lunii.",
+        "ADD": "The pending index adds {{added}} story(ies).",
         "REMOVE": "The pending index removes {{removed}} story(ies): a removal was interrupted.",
         "REORDER": "The pending index lists the same stories in another order: a reordering was interrupted.",
         "OTHER": "The pending index differs from the installed one ({{current}} installed, {{pending}} pending; {{added}} added, {{removed}} removed)."
@@ -670,56 +670,72 @@
       "confirmKeep": "Keep the current index and remove the pending file?",
       "confirmAdopt": "Replace the current index by the new one?",
       "keepMeans": {
-        "ADD": "The added stories will not show on the Lunii; their folders become orphan folders, which you can remove afterwards.",
+        "ADD": "The added stories will not show on the Lunii; their folders stay on the card (orphan folders). Do not remove them if you may want them back.",
         "REMOVE": "The removed stories stay on the Lunii, as before the removal.",
         "REORDER": "The Lunii keeps the previous order.",
         "OTHER": "The Lunii keeps the list of stories it uses today."
       },
       "adoptMeans": {
         "ADD": "The added stories show on the Lunii, at the end of the list.",
-        "REMOVE": "The removed stories disappear from the Lunii; their folders become orphans, to remove afterwards.",
+        "REMOVE": "The removed stories disappear from the Lunii's list; their folders stay on the card, and the current index is kept as .pi.bak.",
         "REORDER": "The Lunii adopts the new order.",
-        "OTHER": "The Lunii uses the new list; a story listed without a folder will be reported by the check."
-      }
+        "OTHER": "The Lunii uses the new list; the current index is kept as .pi.bak."
+      },
+      "cannotAdopt": "The pending index cannot be adopted: it names {{count}} story(ies) whose folder is not a complete copy on the Lunii. Only the current index can be kept.",
+      "confirmAdoptRemoving": "Replace the current index by the new one? These stories will no longer be listed on the Lunii: {{titles}}. Their folders stay on the card, and the current index is kept as .pi.bak."
     },
     "interrupted": {
       "title": "Interrupted story update",
       "states": {
-        "COPY_INTERRUPTED": "{{folder}}: copying the new version was interrupted; the story on the Lunii is intact.",
-        "SWAP_INTERRUPTED": "{{folder}}: interrupted while switching; the new version is complete but not in place yet.",
+        "COPY_INTERRUPTED": "{{folder}}: an unfinished update copy was left next to the story, whose folder is complete.",
+        "PROMOTE_NEW": "{{folder}}: the story's folder is incomplete, but a complete copy of the new version is there.",
+        "SWAP_INTERRUPTED": "{{folder}}: interrupted while switching; the story's folder is missing, the new version is complete.",
         "CLEANUP_INTERRUPTED": "{{folder}}: the new version is in place; the previous one was not completely removed.",
-        "PREVIOUS_ONLY": "{{folder}}: only the previous version is left, under a temporary name.",
+        "RESTORE_PREVIOUS": "{{folder}}: the story's folder is incomplete, but the previous version, complete, is there.",
+        "PREVIOUS_ONLY": "{{folder}}: the story's folder is missing; the previous version is left, under a temporary name.",
+        "NEW_ONLY": "{{folder}}: the story's folder is missing; only a complete copy of the new version is left.",
+        "ABANDONED_COPY": "{{folder}}: the story's folder is missing and the only copy left is unfinished: it cannot be used.",
+        "CONFLICT": "{{folder}}: several copies of this story are there, or none is complete, and STUdio cannot tell safely which one to keep. Nothing is changed: leave the folders as they are and check the card (disk check tool).",
         "UNREFERENCED": "{{folder}}: leftovers of an update of a story no longer on the Lunii."
       },
       "actions": {
         "COPY_INTERRUPTED": "Remove the unfinished copy",
+        "PROMOTE_NEW": "Put the complete copy in place",
         "SWAP_INTERRUPTED": "Finish the update",
         "CLEANUP_INTERRUPTED": "Remove the previous version",
+        "RESTORE_PREVIOUS": "Put the previous version back",
         "PREVIOUS_ONLY": "Put the story back",
-        "UNREFERENCED": "Remove the leftovers"
+        "NEW_ONLY": "Put the copy in place",
+        "ABANDONED_COPY": "Remove the unfinished copy",
+        "UNREFERENCED": "Tidy up the leftovers"
       },
       "confirm": {
-        "COPY_INTERRUPTED": "Remove the unfinished copy of {{folder}}? The story in place is not touched.",
-        "SWAP_INTERRUPTED": "Put the new version of {{folder}} in place (one rename) and remove the previous one?",
-        "CLEANUP_INTERRUPTED": "Remove the previous version of {{folder}}? The new one is already in place.",
-        "PREVIOUS_ONLY": "Put the previous version of {{folder}} back in place?",
-        "UNREFERENCED": "Remove the leftovers of {{folder}}?"
+        "COPY_INTERRUPTED": "Remove the unfinished copy of {{folder}}? STUdio first checks the integrity of the story in place, and removes nothing if it is not intact.",
+        "PROMOTE_NEW": "Put the complete copy of {{folder}} in place of the incomplete folder? Only the incomplete folder is removed.",
+        "SWAP_INTERRUPTED": "Put the new version of {{folder}} in place (one rename), then remove the previous one? If the new one fails the integrity check, the previous one is put back and nothing is removed.",
+        "CLEANUP_INTERRUPTED": "Remove the previous version of {{folder}}? STUdio first checks the integrity of the new one, and removes nothing if it is not intact.",
+        "RESTORE_PREVIOUS": "Put the previous version of {{folder}} back in place of the incomplete folder? Only the incomplete folder is removed.",
+        "PREVIOUS_ONLY": "Put the previous version of {{folder}} back in place (one rename)?",
+        "NEW_ONLY": "Put the copy of {{folder}} in place (one rename)?",
+        "ABANDONED_COPY": "Remove the unfinished copy of {{folder}}? The story will have no content: send it again afterwards.",
+        "UNREFERENCED": "Tidy up the leftovers of {{folder}}? Unfinished copies are removed; a complete copy is put back under the name {{folder}} (it then shows as an orphan folder) and is not removed."
       }
     },
     "orphans": {
       "title": "Orphan folders",
-      "intro": "Story folders the Lunii's index does not reference (interrupted copy or removal): they take up space and can block sending the same story again.",
+      "intro": "Story folders the Lunii's index does not reference (interrupted copy or removal): they take up space and can block sending the same story again. A complete copy may be the only copy of a story: remove it only if you no longer need it.",
       "complete": "complete copy",
       "partial": "partial copy",
       "remove": "Remove the selected folder",
       "remove_plural": "Remove the {{count}} selected folders",
       "confirm": "Permanently remove this folder from the Lunii?",
-      "confirm_plural": "Permanently remove these {{count}} folders from the Lunii?"
+      "confirm_plural": "Permanently remove these {{count}} folders from the Lunii?",
+      "pending": "named by the pending index: resolve it first"
     },
     "missing": {
       "title": "Stories listed without content",
       "remove": "Remove from the index",
-      "confirm": "Remove this story from the Lunii's index? Its content is missing or incomplete; you can send it again afterwards."
+      "confirm": "Remove this story from the Lunii's index? STUdio first checks that its content is still missing; you can send it again afterwards."
     },
     "integrity": {
       "title": "Story integrity",
@@ -748,7 +764,12 @@
       },
       "official": "Official story: reinstall it from the Luniistore.",
       "resend": "Send again from the library",
-      "notInLibrary": "This story is not in the library: it cannot be sent again from here."
+      "notInLibrary": "This story is not in the library: it cannot be sent again from here.",
+      "folderMissing": "This story's folder is missing: remove it from the index (\"Stories listed without content\"), then send it again.",
+      "structureOnly": "Official story: only the files and the structure are checked, as its ciphered parts may use a key of their own.",
+      "confirmResend": "Send \"{{title}}\" again from the library? The Lunii's version (v{{device}}) is replaced by the library's (v{{library}}), in the same place.",
+      "confirmResendNoVersion": "Send \"{{title}}\" again from the library? The Lunii's version is replaced by the library's, in the same place.",
+      "resendStarted": "Sending started: follow it in the notifications."
     }
   },
   "deviceUpdate": {
@@ -763,6 +784,12 @@
       "updating": "Updating the story on the Lunii…",
       "updated": "Story updated on the Lunii, in the same place.",
       "failed": "Failed to update the story on the Lunii"
+    },
+    "confirm": {
+      "title": "Update on the Lunii",
+      "text": "Replace the Lunii's version (v{{device}}) by the library's (v{{library}})? The story keeps its place; the previous version is only removed once the new one is copied.",
+      "textNoVersion": "Replace the story on the Lunii by the library's version? It keeps its place; the previous version is only removed once the new one is copied.",
+      "yes": "Update"
     }
   },
   "sendQueue": {

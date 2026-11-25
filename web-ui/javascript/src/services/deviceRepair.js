@@ -16,11 +16,17 @@ const postJson = (url, body) => apiFetch(url, {
 
 export const fetchDiagnosis = () => apiFetch('/api/device/diagnosis').then(handleJsonOrError);
 
-export const resolvePendingIndex = (action, fingerprint) => postJson('/api/device/repair/pendingIndex', {action, fingerprint});
+/*
+ * Every repair carries the deviceToken the check answered with: the backend refuses it if the Lunii
+ * plugged now is not the one checked, or was plugged again since.
+ */
+export const resolvePendingIndex = (action, fingerprint, deviceToken) => postJson('/api/device/repair/pendingIndex', {action, fingerprint, deviceToken});
 
-export const resolveInterruptedUpdate = (folder) => postJson('/api/device/repair/interruptedUpdate', {folder});
+export const resolveInterruptedUpdate = (folder, state, deviceToken) => postJson('/api/device/repair/interruptedUpdate', {folder, state, deviceToken});
 
-export const removeOrphanFolders = (folders) => postJson('/api/device/orphans/remove', {folders});
+export const removeOrphanFolders = (folders, deviceToken) => postJson('/api/device/orphans/remove', {folders, deviceToken});
+
+export const removeMissingContent = (uuid, deviceToken) => postJson('/api/device/repair/missingContent', {uuid, deviceToken});
 
 export const startIntegrityCheck = () => postJson('/api/device/integrity');
 

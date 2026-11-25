@@ -158,6 +158,7 @@ export class PackLibrary extends React.Component {
         return <DeviceRepair driver={this.state.device.metadata && this.state.device.metadata.driver}
                              libraryUuids={index.uuids} titles={index.titles}
                              onResend={this.updatePackOnDevice}
+                             updateStatusOf={this.deviceUpdateOf}
                              onChanged={this.props.refreshDevice}
                              className={className} />;
     }

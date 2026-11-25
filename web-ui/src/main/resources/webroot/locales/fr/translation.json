@@ -653,10 +653,10 @@
     "pendingIndex": {
       "title": "Écriture de l'index interrompue (.pi.new)",
       "kinds": {
-        "TORN": "Un nouvel index a commencé à être écrit puis a été interrompu : il est incomplet.",
+        "TORN": "Un nouvel index a commencé à être écrit puis a été interrompu : il est incomplet ou vide.",
         "IDENTICAL": "Le nouvel index en attente est identique à l'index installé.",
         "ADD_INCOMPLETE": "Le nouvel index ajoutait une histoire dont la copie ne s'est pas terminée.",
-        "ADD": "Le nouvel index ajoute {{added}} histoire(s) dont la copie est complète sur la Lunii.",
+        "ADD": "Le nouvel index ajoute {{added}} histoire(s).",
         "REMOVE": "Le nouvel index retire {{removed}} histoire(s) : une suppression a été interrompue.",
         "REORDER": "Le nouvel index contient les mêmes histoires dans un autre ordre : un réordonnancement a été interrompu.",
         "OTHER": "Le nouvel index diffère de l'index installé ({{current}} histoires installées, {{pending}} en attente ; {{added}} ajoutée(s), {{removed}} retirée(s))."
@@ -670,56 +670,72 @@
       "confirmKeep": "Garder l'index actuel et supprimer le fichier en attente ?",
       "confirmAdopt": "Remplacer l'index actuel par le nouvel index ?",
       "keepMeans": {
-        "ADD": "Les histoires ajoutées n'apparaîtront pas sur la Lunii ; leurs dossiers deviendront des dossiers orphelins, que vous pourrez supprimer ensuite.",
+        "ADD": "Les histoires ajoutées n'apparaîtront pas sur la Lunii ; leurs dossiers restent sur la carte (dossiers orphelins). Ne les supprimez pas si vous voulez pouvoir les récupérer.",
         "REMOVE": "Les histoires retirées restent sur la Lunii, comme avant la suppression.",
         "REORDER": "La Lunii garde l'ordre d'avant.",
         "OTHER": "La Lunii garde la liste d'histoires qu'elle utilise aujourd'hui."
       },
       "adoptMeans": {
         "ADD": "Les histoires ajoutées apparaissent sur la Lunii, à la fin de la liste.",
-        "REMOVE": "Les histoires retirées disparaissent de la Lunii ; leurs dossiers deviendront orphelins, à supprimer ensuite.",
+        "REMOVE": "Les histoires retirées disparaissent de la liste de la Lunii ; leurs dossiers restent sur la carte, et l'index actuel est conservé dans .pi.bak.",
         "REORDER": "La Lunii adopte le nouvel ordre.",
-        "OTHER": "La Lunii utilise la nouvelle liste ; une histoire listée sans dossier sera signalée par la vérification."
-      }
+        "OTHER": "La Lunii utilise la nouvelle liste ; l'index actuel est conservé dans .pi.bak."
+      },
+      "cannotAdopt": "Le nouvel index ne peut pas être adopté : il désigne {{count}} histoire(s) dont le dossier n'est pas une copie complète sur la Lunii. Seul l'index actuel peut être gardé.",
+      "confirmAdoptRemoving": "Remplacer l'index actuel par le nouvel index ? Ces histoires ne seront plus listées sur la Lunii : {{titles}}. Leurs dossiers restent sur la carte, et l'index actuel est conservé dans .pi.bak."
     },
     "interrupted": {
       "title": "Mise à jour d'histoire interrompue",
       "states": {
-        "COPY_INTERRUPTED": "{{folder}} : la copie de la nouvelle version a été interrompue ; l'histoire sur la Lunii est intacte.",
-        "SWAP_INTERRUPTED": "{{folder}} : interrompue pendant la bascule ; la nouvelle version est complète mais pas encore en place.",
+        "COPY_INTERRUPTED": "{{folder}} : une copie de mise à jour inachevée est restée à côté de l'histoire, dont le dossier est complet.",
+        "PROMOTE_NEW": "{{folder}} : le dossier de l'histoire est incomplet, mais une copie complète de la nouvelle version est là.",
+        "SWAP_INTERRUPTED": "{{folder}} : interrompue pendant la bascule ; le dossier de l'histoire est absent, la nouvelle version est complète.",
         "CLEANUP_INTERRUPTED": "{{folder}} : la nouvelle version est en place ; l'ancienne n'a pas fini d'être supprimée.",
-        "PREVIOUS_ONLY": "{{folder}} : seule l'ancienne version reste, sous un nom temporaire.",
+        "RESTORE_PREVIOUS": "{{folder}} : le dossier de l'histoire est incomplet, mais l'ancienne version, complète, est là.",
+        "PREVIOUS_ONLY": "{{folder}} : le dossier de l'histoire est absent ; l'ancienne version reste, sous un nom temporaire.",
+        "NEW_ONLY": "{{folder}} : le dossier de l'histoire est absent ; seule une copie complète de la nouvelle version reste.",
+        "ABANDONED_COPY": "{{folder}} : le dossier de l'histoire est absent et la seule copie restante est inachevée : elle ne peut pas servir.",
+        "CONFLICT": "{{folder}} : plusieurs copies de cette histoire coexistent, ou aucune n'est complète, et STUdio ne peut pas savoir sans risque laquelle garder. Rien n'est modifié : gardez les dossiers tels quels et vérifiez la carte (outil de vérification du disque).",
         "UNREFERENCED": "{{folder}} : restes d'une mise à jour d'une histoire qui n'est plus sur la Lunii."
       },
       "actions": {
         "COPY_INTERRUPTED": "Supprimer la copie inachevée",
+        "PROMOTE_NEW": "Mettre la copie complète en place",
         "SWAP_INTERRUPTED": "Terminer la mise à jour",
         "CLEANUP_INTERRUPTED": "Supprimer l'ancienne version",
+        "RESTORE_PREVIOUS": "Remettre l'ancienne version en place",
         "PREVIOUS_ONLY": "Remettre l'histoire en place",
-        "UNREFERENCED": "Supprimer les restes"
+        "NEW_ONLY": "Mettre la copie en place",
+        "ABANDONED_COPY": "Supprimer la copie inachevée",
+        "UNREFERENCED": "Ranger les restes"
       },
       "confirm": {
-        "COPY_INTERRUPTED": "Supprimer la copie inachevée de {{folder}} ? L'histoire en place n'est pas touchée.",
-        "SWAP_INTERRUPTED": "Mettre la nouvelle version de {{folder}} en place (un renommage) et supprimer l'ancienne ?",
-        "CLEANUP_INTERRUPTED": "Supprimer l'ancienne version de {{folder}} ? La nouvelle est déjà en place.",
-        "PREVIOUS_ONLY": "Remettre l'ancienne version de {{folder}} en place ?",
-        "UNREFERENCED": "Supprimer les restes de {{folder}} ?"
+        "COPY_INTERRUPTED": "Supprimer la copie inachevée de {{folder}} ? STUdio vérifie d'abord l'intégrité de l'histoire en place, et ne supprime rien si elle n'est pas intacte.",
+        "PROMOTE_NEW": "Mettre la copie complète de {{folder}} à la place du dossier incomplet ? Seul le dossier incomplet est supprimé.",
+        "SWAP_INTERRUPTED": "Mettre la nouvelle version de {{folder}} en place (un renommage), puis supprimer l'ancienne ? Si la nouvelle ne passe pas la vérification d'intégrité, l'ancienne est remise en place et rien n'est supprimé.",
+        "CLEANUP_INTERRUPTED": "Supprimer l'ancienne version de {{folder}} ? STUdio vérifie d'abord l'intégrité de la nouvelle, et ne supprime rien si elle n'est pas intacte.",
+        "RESTORE_PREVIOUS": "Remettre l'ancienne version de {{folder}} à la place du dossier incomplet ? Seul le dossier incomplet est supprimé.",
+        "PREVIOUS_ONLY": "Remettre l'ancienne version de {{folder}} en place (un renommage) ?",
+        "NEW_ONLY": "Mettre la copie de {{folder}} en place (un renommage) ?",
+        "ABANDONED_COPY": "Supprimer la copie inachevée de {{folder}} ? L'histoire restera sans contenu : renvoyez-la ensuite.",
+        "UNREFERENCED": "Ranger les restes de {{folder}} ? Les copies inachevées sont supprimées ; une copie complète est remise sous le nom {{folder}} (elle apparaîtra alors comme dossier orphelin) et n'est pas supprimée."
       }
     },
     "orphans": {
       "title": "Dossiers orphelins",
-      "intro": "Dossiers d'histoires que l'index de la Lunii ne référence pas (copie ou suppression interrompue) : ils occupent de la place et peuvent bloquer un nouvel envoi de la même histoire.",
+      "intro": "Dossiers d'histoires que l'index de la Lunii ne référence pas (copie ou suppression interrompue) : ils occupent de la place et peuvent bloquer un nouvel envoi de la même histoire. Une copie complète peut être la seule copie d'une histoire : ne la supprimez que si vous n'en avez plus besoin.",
       "complete": "copie complète",
       "partial": "copie partielle",
       "remove": "Supprimer le dossier sélectionné",
       "remove_plural": "Supprimer les {{count}} dossiers sélectionnés",
       "confirm": "Supprimer définitivement ce dossier de la Lunii ?",
-      "confirm_plural": "Supprimer définitivement ces {{count}} dossiers de la Lunii ?"
+      "confirm_plural": "Supprimer définitivement ces {{count}} dossiers de la Lunii ?",
+      "pending": "désigné par l'index en attente : réglez d'abord celui-ci"
     },
     "missing": {
       "title": "Histoires listées sans contenu",
       "remove": "Retirer de l'index",
-      "confirm": "Retirer cette histoire de l'index de la Lunii ? Son contenu est absent ou incomplet ; vous pourrez la renvoyer ensuite."
+      "confirm": "Retirer cette histoire de l'index de la Lunii ? STUdio vérifie d'abord que son contenu est toujours absent ; vous pourrez la renvoyer ensuite."
     },
     "integrity": {
       "title": "Intégrité des histoires",
@@ -748,7 +764,12 @@
       },
       "official": "Histoire officielle : réinstallez-la depuis le Luniistore.",
       "resend": "Renvoyer depuis la bibliothèque",
-      "notInLibrary": "Cette histoire n'est pas dans la bibliothèque : elle ne peut pas être renvoyée d'ici."
+      "notInLibrary": "Cette histoire n'est pas dans la bibliothèque : elle ne peut pas être renvoyée d'ici.",
+      "folderMissing": "Le dossier de cette histoire est absent : retirez-la de l'index (« Histoires listées sans contenu »), puis renvoyez-la.",
+      "structureOnly": "Histoire officielle : seules la présence des fichiers et la structure sont vérifiées, ses parties chiffrées pouvant utiliser une clé qui lui est propre.",
+      "confirmResend": "Renvoyer « {{title}} » depuis la bibliothèque ? La version de la Lunii (v{{device}}) est remplacée par celle de la bibliothèque (v{{library}}), à la même place.",
+      "confirmResendNoVersion": "Renvoyer « {{title}} » depuis la bibliothèque ? La version de la Lunii est remplacée par celle de la bibliothèque, à la même place.",
+      "resendStarted": "Envoi lancé : suivez-le dans les notifications."
     }
   },
   "deviceUpdate": {
@@ -763,6 +784,12 @@
       "updating": "Mise à jour de l'histoire sur la Lunii…",
       "updated": "Histoire mise à jour sur la Lunii, à la même place.",
       "failed": "Échec de la mise à jour de l'histoire sur la Lunii"
+    },
+    "confirm": {
+      "title": "Mettre à jour sur la Lunii",
+      "text": "Remplacer la version de la Lunii (v{{device}}) par celle de la bibliothèque (v{{library}}) ? L'histoire garde sa place ; l'ancienne version n'est supprimée qu'une fois la nouvelle copiée.",
+      "textNoVersion": "Remplacer l'histoire de la Lunii par la version de la bibliothèque ? Elle garde sa place ; l'ancienne version n'est supprimée qu'une fois la nouvelle copiée.",
+      "yes": "Mettre à jour"
     }
   },
   "sendQueue": {
