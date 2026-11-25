@@ -371,7 +371,7 @@ export class PackPreview extends React.Component {
                     <dt>{t('preview.info.version')}</dt>
                     <dd>{`v${pack.version}`}</dd>
                     <dt>{t('preview.info.size')}</dt>
-                    <dd>{details ? this.formatSize(details.size) : <span className="pack-preview-muted">{t(detailsError ? 'preview.info.unknown' : 'preview.info.loading')}</span>}</dd>
+                    <dd>{details && details.size >= 0 ? this.formatSize(details.size) : details ? <span className="pack-preview-muted">{t('preview.info.unknown')}</span> : <span className="pack-preview-muted">{t(detailsError ? 'preview.info.unknown' : 'preview.info.loading')}</span>}</dd>
                     {this.renderCounts()}
                     <dt>{t('preview.info.duration')}</dt>
                     <dd>{this.renderAudioDuration()}</dd>

@@ -203,7 +203,7 @@ describe('generateMissingTitleAudio', () => {
         const speak = jest.fn().mockRejectedValueOnce(refused).mockRejectedValueOnce(down);
         const entries = ['a', 'b', 'c'].map(text => ({text, apply: () => {}}));
         jest.spyOn(console, 'warn').mockImplementation(() => {});
-        await expect(generateMissingTitleAudio(entries, {speak})).rejects.toMatchObject({code: 'TTS_UNAVAILABLE', generated: 1, skipped: 1});
+        await expect(generateMissingTitleAudio(entries, {speak})).rejects.toMatchObject({code: 'TTS_UNAVAILABLE', generated: 0, skipped: 1});
         console.warn.mockRestore();
         expect(speak).toHaveBeenCalledTimes(2);
     });

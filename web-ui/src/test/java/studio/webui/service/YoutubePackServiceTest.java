@@ -600,6 +600,10 @@ class YoutubePackServiceTest {
         Path work = tmp.resolve("work");
         Path old = Files.createDirectories(work.resolve("0c6f6a2e-old"));
         Files.writeString(old.resolve("media.webm"), "reste");
+        Files.setLastModifiedTime(old, java.nio.file.attribute.FileTime.fromMillis(
+                System.currentTimeMillis() - YoutubePackService.LEFTOVER_AGE_MILLIS - 60_000));
+        // A recent folder may be the creation under way of another STUdio: kept
+        Path recent = Files.createDirectories(work.resolve("5d1e2f3a-recent"));
         Path programs = Files.createDirectories(work.resolve(YoutubePackService.PROGRAMS_DIR));
         service();
         long end = System.currentTimeMillis() + 10_000;
@@ -607,6 +611,7 @@ class YoutubePackServiceTest {
             Thread.sleep(20);
         }
         assertFalse(Files.exists(old));
+        assertTrue(Files.isDirectory(recent));
         assertTrue(Files.isDirectory(programs));
     }
 

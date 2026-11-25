@@ -327,9 +327,14 @@ public class DatabaseMetadataService {
                 invalidateUnofficialCache();
                 return new JsonObject();
             }
-            quarantineCorruptDatabase(path, e);
             root = new JsonObject();
-            saveUnofficialDatabase(root);
+            if (quarantineCorruptDatabase(path, e)) {
+                saveUnofficialDatabase(root);
+            } else {
+                // Not moved aside: the file is left as it is (never overwritten without a copy), and
+                // this run works from an empty database in memory
+                invalidateUnofficialCache();
+            }
             return root;
         }
         unofficialCache = root;
@@ -338,16 +343,19 @@ public class DatabaseMetadataService {
         return root;
     }
 
-    private void quarantineCorruptDatabase(Path path, Exception cause) {
+    /** Moves an invalid database aside. Whether it was: if not, it must not be overwritten. */
+    private boolean quarantineCorruptDatabase(Path path, Exception cause) {
         String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date());
         Path backup = path.resolveSibling(path.getFileName() + ".corrupt-" + stamp);
         try {
             Files.move(path, backup, StandardCopyOption.REPLACE_EXISTING);
             LOGGER.log(Level.SEVERE, "Unofficial metadata database file is invalid: moved to " + backup
                     + ", starting from an empty database", cause);
+            return true;
         } catch (IOException e) {
             LOGGER.log(Level.SEVERE, "Unofficial metadata database file is invalid and could not be moved to "
-                    + backup + ", it is replaced by an empty database", cause);
+                    + backup + " (" + e.getMessage() + "): it is left untouched, and this run uses an empty database", cause);
+            return false;
         }
     }
 
