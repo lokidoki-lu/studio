@@ -15,6 +15,7 @@ public class LibraryPack {
     private Path path;
     private long timestamp;
     private StoryPackMetadata metadata;
+    private volatile long size = -1;
 
     public LibraryPack(Path path, long timestamp, StoryPackMetadata metadata) {
         this.path = path;
@@ -32,5 +33,14 @@ public class LibraryPack {
 
     public StoryPackMetadata getMetadata() {
         return metadata;
+    }
+
+    /** Bytes on disk (the file, or the regular files of a folder), or -1 when unknown. */
+    public long getSize() {
+        return size;
+    }
+
+    public void setSize(long size) {
+        this.size = size;
     }
 }

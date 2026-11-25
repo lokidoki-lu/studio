@@ -32,6 +32,7 @@ import {
 import {chooseDropAction, applyProvenanceVerdict} from "../utils/packs";
 import {verifyConversion} from "../services/library";
 import {matchingGroups} from "../utils/librarySearch";
+import {sizeUnit} from "../utils/purge";
 
 import './PackLibrary.css';
 
@@ -600,6 +601,7 @@ class PackLibrary extends React.Component {
                                                 </div>
                                                 <div className="pack-format-badge">{t(`library.format.${p.format}`)}</div>
                                                 <div className="pack-version"><span>{`v${p.version}`}</span></div>
+                                                {p.size >= 0 && <div className="pack-size" title={t('library.local.size')}>{t(`libraryPurge.units.${sizeUnit(p.size).key}`, { value: sizeUnit(p.size).value })}</div>}
                                                 <div className="pack-actions">
                                                     {p.format !== 'archive' && <button className="pack-action" onClick={this.onConvertLibraryPack(p, 'archive')}>
                                                         <span role="img" aria-label="to archive" title={t('library.local.convertPackToArchive')}>&#10132;&#x1f5dc;</span>

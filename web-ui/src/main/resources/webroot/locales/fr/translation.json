@@ -43,7 +43,8 @@
       "addPack": "Ajouter un pack d'histoires à la bibliothèque",
       "import": "Importer des packs",
       "search": "Rechercher un pack (titre, fichier, UUID)",
-      "noMatch": "Aucun pack ne correspond à cette recherche."
+      "noMatch": "Aucun pack ne correspond à cette recherche.",
+      "size": "Place occupée sur le disque"
     },
     "official": "Officiel",
     "format": {
