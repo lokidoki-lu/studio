@@ -38,6 +38,7 @@
       "convertPackToArchive": "Convertir ce pack d'histoires au format archive (éditable)",
       "convertPackToRaw": "Convertir ce pack d'histoires au format brut (v1.x)",
       "convertPackToFs": "Convertir ce pack d'histoires au format FS (v2.x)",
+      "previewPack": "Aperçu de ce pack d'histoires",
       "editPack": "Ouvrir ce pack d'histoires dans l'éditeur",
       "removePack": "Supprimer ce pack d'histoires de la bibliothèque",
       "addPack": "Ajouter un pack d'histoires à la bibliothèque",
@@ -273,6 +274,52 @@
         "optionsOut": "Il manque le lien sortant pour l'option #{{index}}.",
         "optionAssets": "Image ou son manquant pour l'option #{{index}}."
       }
+    }
+  },
+
+  "preview": {
+    "title": "Aperçu : {{title}}",
+    "close": "Fermer",
+    "info": {
+      "format": "Format",
+      "version": "Version",
+      "size": "Taille",
+      "nodes": "Nœuds",
+      "nodesValue": "{{stages}} nœuds de scène, {{actions}} nœuds d'action",
+      "stagesValue": "{{stages}} nœuds de scène",
+      "stories": "Histoires",
+      "duration": "Durée audio",
+      "durationUnavailable": "Non calculée pour ce format",
+      "approximately": "environ {{value}}",
+      "unmeasured": "(fichiers audio non mesurés : {{count}})",
+      "file": "Fichier",
+      "nightMode": "Mode nuit",
+      "noDescription": "Pas de description.",
+      "loading": "Lecture…",
+      "unknown": "Inconnu"
+    },
+    "duration": {
+      "hours": "{{hours}} h {{minutes}} min",
+      "minutes": "{{minutes}} min {{seconds}} s",
+      "seconds": "{{seconds}} s"
+    },
+    "simulation": {
+      "loading": "Lecture du pack…",
+      "start": "Appuyez sur un bouton pour démarrer la simulation.",
+      "left": "Molette à gauche",
+      "right": "Molette à droite",
+      "ok": "OK",
+      "home": "Accueil",
+      "restart": "Recommencer",
+      "keys": "Clavier : ← et → pour la molette, Entrée pour OK, Retour arrière ou Début pour l'accueil, Échap pour fermer.",
+      "end": "Fin de l'histoire : retour au début du pack.",
+      "exit": "Accueil : sur la Lunii, retour au choix des packs. Ici, retour au début du pack.",
+      "broken": "Ce bouton mène à un nœud absent du pack.",
+      "assetError": "Une image ou un son de ce nœud n'a pas pu être lu.",
+      "unavailableTitle": "Simulation indisponible pour ce format",
+      "unavailable": "Les packs aux formats brut et FS rangent leurs images et leurs sons dans le format de l'appareil (adressage par secteurs, chiffrement pour FS) : il faudrait décoder tout le pack pour les lire. Convertissez-le au format archive pour le simuler.",
+      "errorTitle": "Simulation indisponible",
+      "error": "Le pack n'a pas pu être lu ({{error}})."
     }
   },
 

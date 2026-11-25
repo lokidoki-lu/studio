@@ -286,6 +286,53 @@ public class LibraryService {
     }
 
     /**
+     * What the library preview shows of a pack beyond its listed metadata, read from headers only (see
+     * {@link PackDetails}): {path, format, size} for every format, {stageNodes, stories} for the raw and
+     * FS formats, {audio: {seconds, measured, estimated, unmeasured}} for an archive. A part that cannot
+     * be read is left out rather than failing the whole answer.
+     *
+     * @return empty if the name is not a pack of the library
+     */
+    public Optional<JsonObject> packDetails(String packPath) throws IOException {
+        Optional<Path> entry = libraryEntry(packPath).filter(Files::exists);
+        if (entry.isEmpty() || isStagingEntry(entry.get())) {
+            return Optional.empty();
+        }
+        Path pack = entry.get();
+        String name = pack.getFileName().toString().toLowerCase(Locale.ROOT);
+        String format;
+        if (Files.isDirectory(pack)) {
+            format = "fs";
+        } else if (name.endsWith(".zip")) {
+            format = "archive";
+        } else if (name.endsWith(".pack")) {
+            format = "raw";
+        } else {
+            return Optional.empty();
+        }
+        JsonObject details = new JsonObject()
+                .put("path", pack.getFileName().toString())
+                .put("format", format)
+                .put("size", PackDetails.sizeOnDisk(pack));
+        try {
+            switch (format) {
+                case "archive":
+                    details.put("audio", PackDetails.archiveAudio(pack));
+                    break;
+                case "raw":
+                    details.mergeIn(PackDetails.rawStats(pack));
+                    break;
+                default:
+                    details.mergeIn(PackDetails.fsStats(pack));
+                    break;
+            }
+        } catch (IOException | RuntimeException e) {
+            LOGGER.warn("Failed to read the details of library pack " + packPath + ": " + e.getMessage());
+        }
+        return Optional.of(details);
+    }
+
+    /**
      * The entry by that name, matched as the pack readers match it: separators normalized ({@code \}
      * as {@code /}), story.json and thumbnail.png ignoring case, the last of duplicate names winning.
      * A lookup by exact name would 404 on a pack the library lists and converts without trouble.

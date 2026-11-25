@@ -38,6 +38,7 @@
       "convertPackToArchive": "Convert this story pack to (editable) archive format",
       "convertPackToRaw": "Convert this story pack to raw format (v1.x)",
       "convertPackToFs": "Convert this story pack to FS format (v2.x)",
+      "previewPack": "Preview this story pack",
       "editPack": "Open this story pack in editor",
       "removePack": "Remove this story pack from library",
       "addPack": "Add a story pack to the library",
@@ -273,6 +274,52 @@
         "optionsOut": "Outgoing link is missing for option #{{index}}.",
         "optionAssets": "Missing asset for option #{{index}}."
       }
+    }
+  },
+
+  "preview": {
+    "title": "Preview: {{title}}",
+    "close": "Close",
+    "info": {
+      "format": "Format",
+      "version": "Version",
+      "size": "Size",
+      "nodes": "Nodes",
+      "nodesValue": "{{stages}} stage nodes, {{actions}} action nodes",
+      "stagesValue": "{{stages}} stage nodes",
+      "stories": "Stories",
+      "duration": "Audio duration",
+      "durationUnavailable": "Not computed for this format",
+      "approximately": "about {{value}}",
+      "unmeasured": "(audio files not measured: {{count}})",
+      "file": "File",
+      "nightMode": "Night mode",
+      "noDescription": "No description.",
+      "loading": "Reading…",
+      "unknown": "Unknown"
+    },
+    "duration": {
+      "hours": "{{hours}} h {{minutes}} min",
+      "minutes": "{{minutes}} min {{seconds}} s",
+      "seconds": "{{seconds}} s"
+    },
+    "simulation": {
+      "loading": "Reading the pack…",
+      "start": "Press any button to start the simulation.",
+      "left": "Wheel left",
+      "right": "Wheel right",
+      "ok": "OK",
+      "home": "Home",
+      "restart": "Restart",
+      "keys": "Keyboard: ← and → for the wheel, Enter for OK, Backspace or Home for home, Esc to close.",
+      "end": "End of the story: back to the start of the pack.",
+      "exit": "Home: on the device, back to the pack selection. Here, back to the start of the pack.",
+      "broken": "This button leads to a node the pack does not have.",
+      "assetError": "An image or a sound of this node could not be read.",
+      "unavailableTitle": "Simulation unavailable for this format",
+      "unavailable": "Raw and FS packs store their images and sounds in the device's format (sector addressing, enciphered for FS): the whole pack would have to be decoded to read them. Convert it to the archive format to simulate it.",
+      "errorTitle": "Simulation unavailable",
+      "error": "The pack could not be read ({{error}})."
     }
   },
 
