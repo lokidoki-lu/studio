@@ -1,0 +1,29 @@
+.device-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 24px 16px;
+    opacity: 0.85;
+}
+
+.device-loading-spinner {
+    width: 22px;
+    height: 22px;
+    border: 3px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: device-loading-spin 0.8s linear infinite;
+    flex: 0 0 auto;
+}
+
+@keyframes device-loading-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .device-loading-spinner {
+        animation-duration: 2.4s;
+    }
+}

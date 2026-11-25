@@ -120,6 +120,33 @@ describe('DeviceRepair', () => {
         expect(document.body.textContent).toContain('deviceRepair.pendingIndex.confirmAdoptRemoving {"titles":"Bambi, u2"}');
     });
 
+    it('without any installed index, only adopting the pending one is offered', async () => {
+        await open({...CLEAN, problems: 1, indexMissing: true, pendingIndex: {kind: 'ADD', safeToDiscard: false, canAdopt: true, fingerprint: 'fpm',
+            currentCount: -1, pendingCount: 2, added: ['a', 'b'], removed: []}});
+        expect(document.body.textContent).toContain('deviceRepair.pendingIndex.indexMissing');
+        expect(button('deviceRepair.pendingIndex.keep')).toBeUndefined();
+        expect(button('deviceRepair.pendingIndex.discard')).toBeUndefined();
+        expect(button('deviceRepair.pendingIndex.adopt')).toBeDefined();
+        act(() => { button('deviceRepair.pendingIndex.adopt').click(); });
+        expect(document.body.textContent).toContain('deviceRepair.pendingIndex.confirmAdoptIndexMissing');
+    });
+
+    it('without any installed index and an unusable pending one, nothing is offered', async () => {
+        await open({...CLEAN, problems: 1, indexMissing: true,
+            orphans: [{folder: 'B1B2B3B4', sizeInBytes: 10, complete: true}], missingContent: [{uuid: 'm1'}],
+            interruptedUpdates: [{folder: 'C1C2C3C4', state: 'ROLL_BACK'}], pendingIndex: {kind: 'TORN', safeToDiscard: false, canAdopt: false, fingerprint: 'fpt', unlistedCompleteFolders: ['B1B2B3B4', 'C1C2C3C4'],
+            currentCount: -1, pendingCount: 0, added: [], removed: []}});
+        expect(button('deviceRepair.pendingIndex.adopt')).toBeUndefined();
+        expect(button('deviceRepair.pendingIndex.keep')).toBeUndefined();
+        expect(button('deviceRepair.pendingIndex.discard')).toBeUndefined();
+        expect(document.body.textContent).toContain('deviceRepair.pendingIndex.indexMissingCannotAdopt');
+        expect(document.body.textContent).toContain('deviceRepair.pendingIndex.indexMissingUnlisted {"folders":"B1B2B3B4, C1C2C3C4"}');
+        expect(document.querySelector('input[type=checkbox]')).toBeNull();
+        expect(button('deviceRepair.orphans.remove {"count":0}')).toBeUndefined();
+        expect(document.body.textContent).not.toContain('deviceRepair.missing.title');
+        expect(document.body.textContent).not.toContain('deviceRepair.interrupted.title');
+    });
+
     it('an index that cannot be adopted offers only to keep the current one, and says why', async () => {
         await open({...CLEAN, problems: 1, pendingIndex: {kind: 'OTHER', safeToDiscard: false, canAdopt: false, fingerprint: 'fp4',
             added: ['z'], removed: ['a'], incomplete: ['z']}});
@@ -221,6 +248,46 @@ describe('DeviceRepair', () => {
         await flush();
         expect(onResend).toHaveBeenCalledWith('u-lib');
         expect(document.body.textContent).toContain('deviceRepair.integrity.resendStarted');
+    });
+
+    it('a progress read answering after the window is closed does not leave the check "running" on reopening', async () => {
+        await open(CLEAN);
+        repair.startIntegrityCheck.mockResolvedValue({checkId: 'c1'});
+        let answer;
+        repair.fetchIntegrityCheck.mockImplementation(() => new Promise(resolve => { answer = resolve; }));
+        act(() => { button('deviceRepair.integrity.start').click(); });
+        await flush();
+        expect(repair.fetchIntegrityCheck).toHaveBeenCalledTimes(1);
+        expect(button('deviceRepair.integrity.running')).toBeDefined();
+        // Closed while the read is in flight, then the read answers
+        act(() => { button('dialogs.shared.close').click(); });
+        await act(async () => { answer({done: false, checked: 3, total: 10}); });
+        await flush();
+        expect(document.getElementById('modal-device-repair')).toBeNull();
+        // Reopened: a check can be started again
+        act(() => { startsWith('deviceRepair.button').click(); });
+        await flush();
+        const start = button('deviceRepair.integrity.start');
+        expect(start).toBeDefined();
+        expect(start.disabled).toBe(false);
+        expect(button('deviceRepair.integrity.running')).toBeUndefined();
+    });
+
+    it('a check whose start answers after the window is closed does not begin polling', async () => {
+        await open(CLEAN);
+        jest.useFakeTimers();
+        try {
+            let started;
+            repair.startIntegrityCheck.mockImplementation(() => new Promise(resolve => { started = resolve; }));
+            repair.fetchIntegrityCheck.mockResolvedValue({done: false, checked: 1, total: 10});
+            act(() => { button('deviceRepair.integrity.start').click(); });
+            act(() => { button('dialogs.shared.close').click(); });
+            await act(async () => { started({checkId: 'c1'}); });
+            act(() => { jest.advanceTimersByTime(5000); });
+            expect(repair.fetchIntegrityCheck).not.toHaveBeenCalled();
+        } finally {
+            jest.useRealTimers();
+        }
     });
 
     it('opens from a failure toast, through the shared event', async () => {

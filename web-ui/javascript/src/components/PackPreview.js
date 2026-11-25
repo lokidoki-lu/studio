@@ -94,7 +94,7 @@ export class PackPreview extends React.Component {
 
     loadEntry = (entry) => {
         const fetchEntry = this.props.fetchEntry || fetchLibraryPackEntry;
-        return fetchEntry(this.props.pack.path, entry);
+        return fetchEntry(this.props.pack.path, entry, 'preview');
     };
 
     loadStory = () => {

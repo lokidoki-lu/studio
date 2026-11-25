@@ -186,6 +186,11 @@ public class BinaryStoryPackWriter {
 
             // Node to write
             ActionNode actionNode = actionNodeEntry.getValue();
+            int optionsBytes = 2 * actionNode.getOptions().size();
+            if (optionsBytes > Constants.SECTOR_SIZE) {
+                throw new IllegalArgumentException("Cannot write binary pack file: an action node has "
+                        + actionNode.getOptions().size() + " options, at most " + (Constants.SECTOR_SIZE / 2) + " fit in a sector.");
+            }
             for (StageNode stageNode : actionNode.getOptions()) {
                 int stageNodeOffset = pack.getStageNodes().indexOf(stageNode);
                 if (stageNodeOffset == -1) {
@@ -197,14 +202,18 @@ public class BinaryStoryPackWriter {
             // Write (optional) enriched node metadata
             int enrichedNodeMetadataSize = 0;
             if (enrichedBinaryFormat && actionNode.getEnriched() != null) {
-                int alignmentOverflow = 2*(actionNode.getOptions().size()) % Constants.BINARY_ENRICHED_METADATA_ACTION_NODE_ALIGNMENT;
+                int alignmentOverflow = optionsBytes % Constants.BINARY_ENRICHED_METADATA_ACTION_NODE_ALIGNMENT;
                 int alignmentPadding = Constants.BINARY_ENRICHED_METADATA_ACTION_NODE_ALIGNMENT_PADDING + (alignmentOverflow > 0 ? Constants.BINARY_ENRICHED_METADATA_ACTION_NODE_ALIGNMENT - alignmentOverflow : 0);
-                writePadding(dos, alignmentPadding);
-                enrichedNodeMetadataSize = alignmentPadding + writeEnrichedNodeMetadata(dos, actionNode);
+                // Same rule as BinaryStoryPackReader: the metadata is only there when it fits in the
+                // sector. A larger menu is written without it, which the reader (and the device) accept.
+                if (optionsBytes + alignmentPadding + ENRICHED_ACTION_NODE_METADATA_SIZE <= Constants.SECTOR_SIZE) {
+                    writePadding(dos, alignmentPadding);
+                    enrichedNodeMetadataSize = alignmentPadding + writeEnrichedNodeMetadata(dos, actionNode);
+                }
             }
 
             // Skip to end of sector
-            writePadding(dos, Constants.SECTOR_SIZE - 2*(actionNode.getOptions().size()) - enrichedNodeMetadataSize);
+            writePadding(dos, Constants.SECTOR_SIZE - optionsBytes - enrichedNodeMetadataSize);
             currentOffset++;
         }
 
@@ -238,6 +247,9 @@ public class BinaryStoryPackWriter {
         // Write check bytes
         dos.write(Constants.CHECK_BYTES, 0, Constants.CHECK_BYTES.length);
     }
+
+    /** Size of the enriched metadata of a node, as written by {@link #writeEnrichedNodeMetadata}. */
+    private static final int ENRICHED_ACTION_NODE_METADATA_SIZE = Constants.BINARY_ENRICHED_METADATA_NODE_NAME_TRUNCATE*2 + 16 + 1 + 4;
 
     private static void requireActionNode(Transition transition) {
         if (transition != null && (transition.getActionNode() == null || transition.getActionNode().getOptions() == null)) {

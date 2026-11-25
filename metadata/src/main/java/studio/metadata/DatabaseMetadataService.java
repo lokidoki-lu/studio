@@ -23,8 +23,14 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
+import studio.metadata.utils.DatabaseUpdateStatusHolder;
 
 public class DatabaseMetadataService {
 
@@ -37,8 +43,24 @@ public class DatabaseMetadataService {
     public static final String LUNII_PACKS_DATABASE_URL = "https://server-data-prod.lunii.com/v2/packs";
     public static final String UNOFFICIAL_DB_PROP = "studio.db.unofficial";
     public static final String UNOFFICIAL_DB_JSON_PATH = "/.studio/db/unofficial.json";
+    /** Set to {@code false} to never download the official database (tests, offline setups). */
+    public static final String OFFICIAL_DB_REFRESH_PROP = "studio.db.official.refresh";
 
-    private final Map<String, JsonObject> cachedOfficialDatabase;
+    /** Age after which the official database is downloaded again. */
+    static final long OFFICIAL_DB_MAX_AGE_MS = TimeUnit.HOURS.toMillis(24);
+    /** Delay before trying again after a failed download, or while the database is empty. */
+    static final long OFFICIAL_DB_RETRY_MS = TimeUnit.MINUTES.toMillis(15);
+
+    /**
+     * Official packs, by lower-case UUID. Only ever grows during a run: a pack withdrawn from the
+     * Luniistore is still an official pack, and forgetting it would open the transfer guard.
+     */
+    private final Map<String, JsonObject> cachedOfficialDatabase = new ConcurrentHashMap<>();
+    /** When the official database was last known to be up to date (file time or download), 0 if never. */
+    private volatile long officialDatabaseUpdatedAt;
+    /** When a download was last attempted, 0 if never. */
+    private volatile long lastOfficialFetchAttempt;
+    private ScheduledExecutorService officialRefresher;
 
     private final boolean isAgent;
     /** Unofficial database as last read or written, and the file attributes it matches (guarded by this). */
@@ -48,40 +70,19 @@ public class DatabaseMetadataService {
 
     public DatabaseMetadataService(boolean isAgent) {
         this.isAgent = isAgent;
-        // Read and cache official database
-        cachedOfficialDatabase = new HashMap<>();
+        // Read and cache official database. Never downloaded here: the constructor runs at startup,
+        // which must not wait on the network (offline, Lunii servers down). A missing, invalid or old
+        // file is downloaded in the background, see startOfficialDatabaseRefresh().
         if (!isAgent) {
-            try {
-                LOGGER.fine("Reading and caching official metadata database");
-                // Read official metadata database file (path may be overridden by system property `studio.db.official`)
-                String databasePath = System.getProperty(OFFICIAL_DB_PROP, System.getProperty("user.home") + OFFICIAL_DB_JSON_PATH);
-                JsonObject officialRoot;
-                try (FileReader databaseReader = new FileReader(databasePath)) {
-                    officialRoot = JsonParser.parseReader(databaseReader).getAsJsonObject();   // throws IllegalStateException
+            LOGGER.fine("Reading and caching official metadata database");
+            Optional<JsonObject> packsRoot = readOfficialDatabaseFile();
+            if (packsRoot.isPresent()) {
+                cacheOfficialEntries(packsRoot.get());
+                try {
+                    officialDatabaseUpdatedAt = Files.getLastModifiedTime(Paths.get(officialDatabasePath())).toMillis();
+                } catch (IOException e) {
+                    officialDatabaseUpdatedAt = 0;
                 }
-                // Support newer file format which has an additional wrapper: { "code": "0.0", "response": { ...
-                final JsonObject packsRoot = (officialRoot.keySet().contains("response")) ? officialRoot.getAsJsonObject("response") : officialRoot;
-                if (packsRoot == null) {
-                    throw new IllegalStateException("Failed to get json root node");
-                }
-                // Go through all packs
-                packsRoot.keySet().forEach(key -> {
-                    JsonObject packMetadata = packsRoot.getAsJsonObject(key);
-                    String uuid = packMetadata.get("uuid").getAsString();
-                    cachedOfficialDatabase.put(uuid, packMetadata);
-                });
-            } catch (FileNotFoundException e) {
-                LOGGER.log(Level.WARNING, "Missing official metadata database file", e);
-                this.fetchOfficialDatabase();
-            } catch (IOException e) {
-                // Only reachable since the reader is closed: the read did not complete, so the
-                // cache was not populated, and the same fallback applies as for a missing file.
-                LOGGER.log(Level.WARNING, "Failed to read official metadata database file", e);
-                this.fetchOfficialDatabase();
-            } catch (JsonParseException|IllegalStateException e) {
-                // Graceful failure on invalid file content
-                LOGGER.log(Level.WARNING, "Official metadata database file is invalid", e);
-                this.fetchOfficialDatabase();
             }
         }
         // Initialize empty unofficial database if needed
@@ -111,26 +112,190 @@ public class DatabaseMetadataService {
         return metadata;
     }
 
+    /**
+     * Metadata of an official pack. An entry of the official database that lacks some fields (no
+     * locale, no localized infos, a null title...) still answers, as an official pack with whatever
+     * could be read: it comes from the Lunii servers and is not validated, and one bad entry used
+     * to throw out of every listing that met its pack.
+     */
     public Optional<DatabasePackMetadata> getOfficialMetadata(String uuid) {
         LOGGER.fine("Fetching metadata from official database for pack: " + uuid);
-        return Optional.ofNullable(cachedOfficialDatabase.get(uuid)).map(packMetadata -> {
-            // FIXME Handle multiple locales
-            JsonObject localesAvailable = packMetadata.getAsJsonObject("locales_available");
-            String locale = localesAvailable.keySet().contains("fr_FR") ? "fr_FR" : localesAvailable.keySet().stream().findFirst().get();
-            JsonObject localizedInfos = packMetadata.getAsJsonObject("localized_infos").getAsJsonObject(locale);
-            return new DatabasePackMetadata(
-                    uuid,
-                    localizedInfos.get("title").getAsString(),
-                    localizedInfos.get("description").getAsString(),
-                    THUMBNAILS_STORAGE_ROOT + localizedInfos.getAsJsonObject("image").get("image_url").getAsString(),
-                    true
-            );
-        });
+        if (uuid == null) {
+            return Optional.empty();
+        }
+        JsonObject packMetadata = cachedOfficialDatabase.get(uuid.toLowerCase(Locale.ROOT));
+        if (packMetadata == null) {
+            return Optional.empty();
+        }
+        String title = null;
+        String description = null;
+        String thumbnail = null;
+        try {
+            JsonObject localizedInfos = localizedInfos(packMetadata);
+            if (localizedInfos != null) {
+                title = string(localizedInfos, "title");
+                description = string(localizedInfos, "description");
+                JsonObject image = object(localizedInfos, "image");
+                String imageUrl = image == null ? null : string(image, "image_url");
+                thumbnail = imageUrl == null ? null : THUMBNAILS_STORAGE_ROOT + imageUrl;
+            }
+        } catch (RuntimeException e) {
+            LOGGER.log(Level.WARNING, "Incomplete entry in the official metadata database for pack " + uuid, e);
+        }
+        if (title == null) {
+            LOGGER.warning("Incomplete entry in the official metadata database for pack " + uuid + ": no title");
+        }
+        return Optional.of(new DatabasePackMetadata(uuid, title, description, thumbnail, true));
     }
 
+    /** The localized infos of an official entry, French first (FIXME handle multiple locales), or null. */
+    private static JsonObject localizedInfos(JsonObject packMetadata) {
+        JsonObject byLocale = object(packMetadata, "localized_infos");
+        if (byLocale == null) {
+            return null;
+        }
+        List<String> candidates = new ArrayList<>();
+        candidates.add("fr_FR");
+        JsonObject localesAvailable = object(packMetadata, "locales_available");
+        if (localesAvailable != null) {
+            candidates.addAll(localesAvailable.keySet());
+        }
+        candidates.addAll(byLocale.keySet());
+        for (String locale : candidates) {
+            JsonObject infos = object(byLocale, locale);
+            if (infos != null) {
+                return infos;
+            }
+        }
+        return null;
+    }
+
+    private static JsonObject object(JsonObject parent, String member) {
+        JsonElement element = parent.get(member);
+        return element != null && element.isJsonObject() ? element.getAsJsonObject() : null;
+    }
+
+    private static String string(JsonObject parent, String member) {
+        JsonElement element = parent.get(member);
+        return element != null && element.isJsonPrimitive() ? element.getAsString() : null;
+    }
+
+    /** Whether the official database lists {@code uuid}, ignoring case. */
     public boolean isOfficialPack(String uuid) {
         LOGGER.fine("Looking in official database for pack: " + uuid);
-        return cachedOfficialDatabase.containsKey(uuid);
+        return uuid != null && cachedOfficialDatabase.containsKey(uuid.toLowerCase(Locale.ROOT));
+    }
+
+    /** Whether the official database holds anything at all (it is empty until a first download succeeds). */
+    public boolean isOfficialDatabaseAvailable() {
+        return !cachedOfficialDatabase.isEmpty();
+    }
+
+    // ------------------------------------------------- official database, kept up to date
+
+    private static String officialDatabasePath() {
+        // Path may be overridden by system property `studio.db.official`
+        return System.getProperty(OFFICIAL_DB_PROP, System.getProperty("user.home") + OFFICIAL_DB_JSON_PATH);
+    }
+
+    /** The packs of the official database file, or empty if it is missing or invalid (logged). */
+    private static Optional<JsonObject> readOfficialDatabaseFile() {
+        String databasePath = officialDatabasePath();
+        try (Reader databaseReader = new InputStreamReader(new FileInputStream(databasePath), Charset.defaultCharset())) {
+            JsonElement parsed = JsonParser.parseReader(databaseReader);
+            if (!parsed.isJsonObject()) {
+                throw new JsonParseException("Root of the official metadata database is not an object");
+            }
+            JsonObject officialRoot = parsed.getAsJsonObject();
+            // Support newer file format which has an additional wrapper: { "code": "0.0", "response": { ...
+            JsonElement response = officialRoot.get("response");
+            if (response != null) {
+                if (!response.isJsonObject()) {
+                    throw new JsonParseException("Failed to get json root node");
+                }
+                return Optional.of(response.getAsJsonObject());
+            }
+            return Optional.of(officialRoot);
+        } catch (FileNotFoundException e) {
+            LOGGER.log(Level.WARNING, "Missing official metadata database file: it will be downloaded in the background");
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "Failed to read official metadata database file", e);
+        } catch (JsonParseException | IllegalStateException e) {
+            // Graceful failure on invalid file content
+            LOGGER.log(Level.WARNING, "Official metadata database file is invalid", e);
+        }
+        return Optional.empty();
+    }
+
+    /** Adds the packs of an official database to the cache. An entry that is not an object is skipped. */
+    private void cacheOfficialEntries(JsonObject packsRoot) {
+        for (Map.Entry<String, JsonElement> entry : packsRoot.entrySet()) {
+            if (!entry.getValue().isJsonObject()) {
+                LOGGER.warning("Skipped an official metadata database entry that is not an object: " + entry.getKey());
+                continue;
+            }
+            JsonObject packMetadata = entry.getValue().getAsJsonObject();
+            String uuid = string(packMetadata, "uuid");
+            // Without its uuid field, the key of the entry is the best guess: an entry kept too
+            // many is a pack refused, one left out is a pack let through
+            cachedOfficialDatabase.put((uuid != null ? uuid : entry.getKey()).toLowerCase(Locale.ROOT), packMetadata);
+        }
+    }
+
+    /**
+     * Downloads the official database in the background now if it is missing, empty or older than a
+     * day, then checks again periodically (every {@link #OFFICIAL_DB_RETRY_MS}): never blocks the
+     * caller, and a failed download (offline) is only logged and tried again later. Does nothing for
+     * the agent, or when the system property {@link #OFFICIAL_DB_REFRESH_PROP} is {@code false}.
+     */
+    public synchronized void startOfficialDatabaseRefresh() {
+        if (isAgent || officialRefresher != null || "false".equalsIgnoreCase(System.getProperty(OFFICIAL_DB_REFRESH_PROP))) {
+            return;
+        }
+        officialRefresher = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "official-metadata-refresh");
+            thread.setDaemon(true);
+            return thread;
+        });
+        officialRefresher.scheduleWithFixedDelay(() -> {
+            try {
+                refreshOfficialDatabaseIfStale(System.currentTimeMillis());
+            } catch (RuntimeException e) {
+                LOGGER.log(Level.SEVERE, "Failed to refresh the official metadata database", e);
+            }
+        }, 0, OFFICIAL_DB_RETRY_MS, TimeUnit.MILLISECONDS);
+    }
+
+    /** Stops the background refresh started by {@link #startOfficialDatabaseRefresh()}. */
+    public synchronized void stopOfficialDatabaseRefresh() {
+        if (officialRefresher != null) {
+            officialRefresher.shutdownNow();
+            officialRefresher = null;
+        }
+    }
+
+    /**
+     * Downloads the official database if it is empty or older than {@link #OFFICIAL_DB_MAX_AGE_MS},
+     * at most once every {@link #OFFICIAL_DB_RETRY_MS}.
+     *
+     * @return whether a download was attempted
+     */
+    boolean refreshOfficialDatabaseIfStale(long now) {
+        boolean stale = cachedOfficialDatabase.isEmpty() || now - officialDatabaseUpdatedAt >= OFFICIAL_DB_MAX_AGE_MS;
+        if (!stale || (lastOfficialFetchAttempt != 0 && now - lastOfficialFetchAttempt < OFFICIAL_DB_RETRY_MS)) {
+            return false;
+        }
+        lastOfficialFetchAttempt = now;
+        Optional<JsonObject> downloaded = downloadOfficialDatabase();
+        if (downloaded.isPresent()) {
+            LOGGER.info("Fetched metadata, updating local database");
+            replaceOfficialDatabase(downloaded.get());
+            officialDatabaseUpdatedAt = now;
+            DatabaseUpdateStatusHolder.lastOfficialDatabaseUpdate = now;
+            // Packs that have become official no longer belong to the unofficial database
+            cleanUnofficialDatabase();
+        }
+        return true;
     }
 
     public synchronized Optional<DatabasePackMetadata> getUnofficialMetadata(String uuid) {
@@ -153,24 +318,28 @@ public class DatabaseMetadataService {
         return Optional.empty();
     }
 
+    /**
+     * Adds a downloaded official database to the cache and to the file. Entries of the file that the
+     * download no longer lists are kept: a pack withdrawn from the Luniistore is still official.
+     */
     private void replaceOfficialDatabase(JsonObject json) {
-        // Update official database
+        // The cache first: even if the file cannot be written, this run knows the packs
+        cacheOfficialEntries(json);
         try {
-            String databasePath = System.getProperty(OFFICIAL_DB_PROP, System.getProperty("user.home") + OFFICIAL_DB_JSON_PATH);
-            writeDatabaseFile(Paths.get(databasePath), json);
-
-            // Go through all packs to update cache
-            json.keySet().forEach(key -> {
-                JsonObject packMetadata = json.getAsJsonObject(key);
-                String uuid = packMetadata.get("uuid").getAsString();
-                cachedOfficialDatabase.put(uuid, packMetadata);
-            });
+            JsonObject merged = new JsonObject();
+            readOfficialDatabaseFile().ifPresent(previous -> previous.entrySet().forEach(e -> merged.add(e.getKey(), e.getValue())));
+            json.entrySet().forEach(e -> merged.add(e.getKey(), e.getValue()));
+            writeDatabaseFile(Paths.get(officialDatabasePath()), merged);
         } catch (IOException e) {
             LOGGER.log(Level.SEVERE, "Failed to update official metadata database file", e);
         }
     }
 
-    private void fetchOfficialDatabase() {
+    /**
+     * The official database from the Lunii servers (the "response" object), or empty if it could not
+     * be downloaded (logged). Overridden by tests, which never reach the network.
+     */
+    protected Optional<JsonObject> downloadOfficialDatabase() {
         try {
             LOGGER.fine("Fetching official metadata database");
             // Get a guest token
@@ -209,19 +378,23 @@ public class DatabaseMetadataService {
                         JsonObject json = JsonParser.parseReader(new JsonReader(bufferedReader)).getAsJsonObject();
                         response = json.get("response").getAsJsonObject();
                     }
-
-                    // Try and update official database
-                    LOGGER.info("Fetched metadata, updating local database");
-                    this.replaceOfficialDatabase(response);
+                    if (response.size() == 0) {
+                        LOGGER.log(Level.SEVERE, "Fetched an empty official metadata database, ignored");
+                        return Optional.empty();
+                    }
+                    return Optional.of(response);
                 } else {
                     LOGGER.log(Level.SEVERE, "Failed to fetch official metadata database. Status code: " + statusCode);
                 }
             } else {
                 LOGGER.log(Level.SEVERE, "Failed to fetch guest token. Status code: " + tokenStatusCode);
             }
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
+            // RuntimeException: a body that is not the JSON expected (JsonParseException,
+            // IllegalStateException, NullPointerException on a missing member)
             LOGGER.log(Level.SEVERE, "Failed to fetch official metadata database.", e);
         }
+        return Optional.empty();
     }
 
     public synchronized void refreshUnofficialMetadata(DatabasePackMetadata meta) {

@@ -46,7 +46,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 class RequestPipelineTest {
 
     private static final List<String> TOUCHED_PROPERTIES = List.of(
-            "studio.db.official", "studio.db.unofficial", "studio.library", "studio.tmpdir", "env", "studio.open");
+            "studio.db.official", "studio.db.official.refresh", "studio.db.unofficial", "studio.library", "studio.tmpdir", "env", "studio.open");
 
     private final Map<String, String> savedProperties = new HashMap<>();
     private final HttpClient http = HttpClient.newHttpClient();
@@ -65,6 +65,8 @@ class RequestPipelineTest {
         Path officialDb = studioHome.resolve("official.json");
         Files.write(officialDb, "{}".getBytes(StandardCharsets.UTF_8));
         System.setProperty("studio.db.official", officialDb.toString());
+        // Never download the official database from the Lunii servers in a test
+        System.setProperty("studio.db.official.refresh", "false");
         System.setProperty("studio.db.unofficial", studioHome.resolve("unofficial.json").toString());
         System.setProperty("studio.library", Files.createDirectories(studioHome.resolve("library")) + "/");
         System.setProperty("studio.tmpdir", Files.createDirectories(studioHome.resolve("tmp")) + "/");

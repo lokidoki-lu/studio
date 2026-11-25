@@ -23,7 +23,8 @@ describe('freeBytes', () => {
 describe('estimatePaths', () => {
     it('asks about the file that would be sent or converted, and both when the user may be asked', () => {
         expect(estimatePaths(ARCHIVE_ONLY, 'fs')).toEqual(['a.zip']);
-        expect(estimatePaths(CONVERTED, 'fs')).toEqual(['b.converted_1']);
+        // A converted folder whose source archive is gone is refused by the server: not sent, not counted
+        expect(estimatePaths(CONVERTED, 'fs')).toEqual([]);
         expect(estimatePaths(BOTH, 'fs')).toEqual(['c.converted_2', 'c.zip']);
         expect(estimatePaths({uuid: 'x', packs: []}, 'fs')).toEqual([]);
     });
@@ -38,8 +39,10 @@ describe('selectionRequirement', () => {
         const estimate = {method: 'estimated', packs: [
             {path: 'a.zip', bytes: 1000}, {path: 'c.converted_2', bytes: 300}, {path: 'c.zip', bytes: 500}
         ]};
-        const requirement = selectionRequirement([ARCHIVE_ONLY, BOTH, CONVERTED], 'fs', estimate);
-        expect(requirement).toEqual({required: 1500, perGroup: {a: 1000, c: 500}, unknown: ['b'], method: 'estimated'});
+        const UNMEASURED = {uuid: 'd', packs: [{uuid: 'd', path: 'd.zip', format: 'archive'}]};
+        const requirement = selectionRequirement([ARCHIVE_ONLY, BOTH, CONVERTED, UNMEASURED], 'fs', estimate);
+        // CONVERTED is not sent at all (source archive gone): neither counted nor unknown
+        expect(requirement).toEqual({required: 1500, perGroup: {a: 1000, c: 500}, unknown: ['d'], method: 'estimated'});
     });
 });
 
