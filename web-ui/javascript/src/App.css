@@ -73,6 +73,20 @@
     opacity: 1;
 }
 
+.App-header .btn.theme-toggle {
+    margin-left: 4px;
+    padding: 4px 10px;
+    font-size: 13px;
+    font-weight: 600;
+    border: 1px solid rgba(255, 255, 255, .2);
+    border-radius: 999px;
+    background: transparent;
+}
+
+.App-header .btn.theme-toggle span {
+    font-size: 14px;
+}
+
 .App-header .welcome {
     flex-grow: 1;
     font-weight: 600;

@@ -7,3 +7,4 @@
 export const LOCAL_STORAGE_ANNOUNCE_OPTOUT = 'announceOptOut';
 export const LOCAL_STORAGE_ANNOUNCE_LAST_SHOWN = 'lastAnnounceShown';
 export const LOCAL_STORAGE_ALLOW_ENRICHED_BINARY_FORMAT = 'allowEnrichedBinaryFormat';
+export const LOCAL_STORAGE_THEME = 'theme';
