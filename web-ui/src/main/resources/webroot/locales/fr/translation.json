@@ -260,7 +260,8 @@
       "available": "disponible",
       "notInstalled": "non installée",
       "generatedOnline": "Voix en ligne : {{voice}}",
-      "generatedOffline": "Voix de l'ordinateur"
+      "generatedOffline": "Voix de l'ordinateur",
+      "unknown": "état inconnu (STUdio ne répond pas)"
     },
     "titleGenerator": {
       "audio": "Générer la voix à partir du titre",
@@ -522,7 +523,9 @@
       "verifyDiagramErrors": "Le diagramme contient {{count}} nœud en erreur.",
       "verifyDiagramErrors_plural": "Le diagramme contient {{count}} nœuds en erreur.",
       "verifyDiagramOK": "Le diagramme est valide.",
-      "verifyDiagramNightModeNoActionNodes": "Le mode nuit est activé mais le diagramme ne contient aucun nœud d'action."
+      "verifyDiagramNightModeNoActionNodes": "Le mode nuit est activé mais le diagramme ne contient aucun nœud d'action.",
+      "titleVoiceSkipped": "{{count}} titre refusé par la voix (trop long ou vide), laissé sans audio.",
+      "titleVoiceSkipped_plural": "{{count}} titres refusés par la voix (trop longs ou vides), laissés sans audio."
     },
     "viewer": {
       "missingPrev": "Impossible de trouver l'option précédente.",
@@ -553,7 +556,8 @@
       "cancel": "Annuler",
       "yes": "Oui",
       "no": "Non",
-      "ok": "OK"
+      "ok": "OK",
+      "close": "Fermer"
     },
     "announce": {
       "optout": "Ne plus afficher ces annonces à l'avenir"

@@ -38,25 +38,34 @@ const TitleVoiceControls = ({getModel, onChanged}) => {
             return;
         }
         const model = getModel();
-        const missing = collectMissingTitleAudio(model.getNodes());
+        // A node deleted while the batch runs is left out
+        const missing = collectMissingTitleAudio(model.getNodes(), {isInModel: node => model.getNodes().indexOf(node) !== -1});
         if (missing.length === 0) {
             toast.info(t('toasts.editor.titleVoiceNothingMissing'));
             return;
         }
         setBusy(true);
         const toastId = toast(t('toasts.editor.titleVoiceGenerating', {done: 0, total: missing.length}), {autoClose: false});
+        // Said after the count: titles the server refused, and the voice used instead of the one chosen
+        const notes = (skipped, fallbackReason) => [
+            skipped > 0 ? t('toasts.editor.titleVoiceSkipped', {count: skipped}) : null,
+            fallbackReason ? t('toasts.editor.titleVoiceFallback', {reason: fallbackReason}) : null
+        ].filter(Boolean).map(note => ' ' + note).join('');
         try {
-            await generateMissingTitleAudio(missing, {
+            const result = await generateMissingTitleAudio(missing, {
                 isCurrent: () => getModel() === model,
                 onProgress: (done, total) => {
                     toast.update(toastId, {render: t('toasts.editor.titleVoiceGenerating', {done, total})});
                     onChanged();
                 }
             });
-            toast.update(toastId, {type: toast.TYPE.SUCCESS, render: t('toasts.editor.titleVoiceGenerated', {count: missing.length}), autoClose: 5000});
+            const generated = result.done - result.skipped;
+            const extra = notes(result.skipped, result.fallbackReason);
+            toast.update(toastId, {type: extra ? toast.TYPE.WARNING : toast.TYPE.SUCCESS,
+                render: t('toasts.editor.titleVoiceGenerated', {count: generated}) + extra, autoClose: extra ? false : 5000});
         } catch (e) {
             console.error('failed to generate the missing title voices', e);
-            toast.update(toastId, {type: toast.TYPE.ERROR, render: t('toasts.editor.titleVoiceStopped', {done: e.generated || 0, total: missing.length, message: e.message}), autoClose: false});
+            toast.update(toastId, {type: toast.TYPE.ERROR, render: t('toasts.editor.titleVoiceStopped', {done: e.generated || 0, total: missing.length, message: e.message}) + notes(e.skipped || 0, null), autoClose: false});
         } finally {
             onChanged();
             setBusy(false);
@@ -68,14 +77,16 @@ const TitleVoiceControls = ({getModel, onChanged}) => {
         : voice === 'auto' ? t('editor.titleVoice.auto')
         : known ? t('editor.titleVoice.voices.' + known.key).replace(/ \(.*\)$/, '') : voice;
     return <>
-        <span title={t('editor.titleVoice.settingsTitle')}
-              className="btn btn-default title-voice-button"
-              onClick={() => setSettingsOpen(true)}>
-            <span className="glyphicon glyphicon-volume-up"/> {voiceLabel}
-        </span>
-        <span title={t('editor.actions.generateTitleVoices')}
-              className={`btn btn-default glyphicon ${busy ? 'glyphicon-refresh title-spin' : 'glyphicon-bullhorn'}`}
-              onClick={generateAll}/>
+        <button type="button" title={t('editor.titleVoice.settingsTitle')}
+                aria-label={`${t('editor.titleVoice.settingsTitle')} (${voiceLabel})`}
+                className="btn btn-default title-voice-button"
+                onClick={() => setSettingsOpen(true)}>
+            <span className="glyphicon glyphicon-volume-up" aria-hidden="true"/> {voiceLabel}
+        </button>
+        <button type="button" title={t('editor.actions.generateTitleVoices')}
+                aria-label={t('editor.actions.generateTitleVoices')} aria-busy={busy}
+                className={`btn btn-default glyphicon ${busy ? 'glyphicon-refresh title-spin' : 'glyphicon-bullhorn'}`}
+                onClick={generateAll}/>
         {settingsOpen && <TitleVoiceSettingsDialog model={getModel()} onClose={closeSettings}/>}
     </>;
 };

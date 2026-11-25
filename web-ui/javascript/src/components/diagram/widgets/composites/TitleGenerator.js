@@ -33,13 +33,14 @@ const TitleGenerator = ({kind, text, onGenerated, engine}) => {
     const close = React.useCallback(() => setOpen(false), []);
 
     return <>
-        <span className="title-generator"
-              title={t(audio ? 'editor.titleGenerator.audio' : 'editor.titleGenerator.image')}
-              onMouseDown={stop}
-              onDoubleClick={stop}
-              onClick={onClick}>
-            <span className={`glyphicon ${audio ? 'glyphicon-bullhorn' : 'glyphicon-text-background'}`}/>
-        </span>
+        <button type="button" className="title-generator"
+                title={t(audio ? 'editor.titleGenerator.audio' : 'editor.titleGenerator.image')}
+                aria-label={t(audio ? 'editor.titleGenerator.audio' : 'editor.titleGenerator.image')}
+                onMouseDown={stop}
+                onDoubleClick={stop}
+                onClick={onClick}>
+            <span className={`glyphicon ${audio ? 'glyphicon-bullhorn' : 'glyphicon-text-background'}`} aria-hidden="true"/>
+        </button>
         {open && <TitleAssetDialog kind={kind} title={text} onGenerated={onGenerated} onClose={close}
                                    model={engine ? engine.getModel() : null}/>}
     </>;

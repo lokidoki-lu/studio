@@ -242,6 +242,24 @@ class MenuNodeWidget extends React.Component {
         reader.readAsDataURL(file);
     };
 
+    // A generated title goes to the option it was made for, wherever that option is by then
+    onOptionTitleGenerated = (idx, kind) => {
+        const option = this.props.node.optionsStages[idx];
+        return (dataUrl) => {
+            const index = this.props.node.optionsStages.indexOf(option);
+            if (index === -1) {
+                return;
+            }
+            if (kind === 'image') {
+                this.props.node.setOptionImage(index, dataUrl);
+            } else {
+                this.props.node.setOptionAudio(index, dataUrl);
+            }
+            this.props.updateCanvas();
+            this.forceUpdate();
+        };
+    };
+
     resetOptionAudio = (idx) => {
         return (event) => {
             event.preventDefault();
@@ -347,7 +365,7 @@ class MenuNodeWidget extends React.Component {
                                                         <img src={this.props.node.getOptionImage(idx)} alt="" className="dropzone"/>
                                                     </>}
                                                 </div>
-                                                <TitleGenerator kind="image" engine={this.props.diagramEngine} text={this.props.node.getOptionName(idx)} onGenerated={dataUrl => { this.props.node.setOptionImage(idx, dataUrl); this.props.updateCanvas(); this.forceUpdate(); }}/>
+                                                <TitleGenerator kind="image" engine={this.props.diagramEngine} text={this.props.node.getOptionName(idx)} onGenerated={this.onOptionTitleGenerated(idx, 'image')}/>
                                             </div>
                                             <div className="asset right">
                                                 <input type="file" id={`audio-upload-${this.props.node.getUuid()}-${idx}`} onChange={this.optionAudioFileSelected(idx)} />
@@ -362,7 +380,7 @@ class MenuNodeWidget extends React.Component {
                                                         <span className="dropzone glyphicon glyphicon-play"/>
                                                     </>}
                                                 </div>
-                                                <TitleGenerator kind="audio" engine={this.props.diagramEngine} text={this.props.node.getOptionName(idx)} onGenerated={dataUrl => { this.props.node.setOptionAudio(idx, dataUrl); this.props.updateCanvas(); this.forceUpdate(); }}/>
+                                                <TitleGenerator kind="audio" engine={this.props.diagramEngine} text={this.props.node.getOptionName(idx)} onGenerated={this.onOptionTitleGenerated(idx, 'audio')}/>
                                             </div>
                                         </div>
                                     </div>
