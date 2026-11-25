@@ -10,6 +10,7 @@ import com.google.gson.stream.JsonWriter;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.IOUtils;
 import studio.core.v1.model.ActionNode;
+import studio.core.v1.model.Asset;
 import studio.core.v1.model.Node;
 import studio.core.v1.model.StageNode;
 import studio.core.v1.model.StoryPack;
@@ -26,13 +27,54 @@ import java.util.zip.ZipOutputStream;
 
 public class ArchiveStoryPackWriter {
 
+    /**
+     * Where the writer gets each asset's digest (its name in the archive) and bytes.
+     *
+     * <p>The digests are all needed first, for story.json; the bytes are then copied into the
+     * archive one asset at a time. A source that streams them from files keeps the memory used by
+     * the conversion independent of the size of the pack.
+     */
+    public interface AssetSource {
+        /** SHA-1 (hexadecimal) of the bytes {@link #copy} writes for this asset. */
+        String sha1(Asset asset) throws IOException;
+
+        /** Writes the bytes of the asset to {@code out}, without closing it. */
+        void copy(Asset asset, OutputStream out) throws IOException;
+    }
+
+    /** The bytes the assets of the pack carry. */
+    public static final AssetSource IN_MEMORY = new AssetSource() {
+        @Override
+        public String sha1(Asset asset) {
+            return DigestUtils.sha1Hex(asset.getRawData());
+        }
+
+        @Override
+        public void copy(Asset asset, OutputStream out) throws IOException {
+            IOUtils.write(asset.getRawData(), out);
+        }
+    };
+
     public void write(StoryPack pack, OutputStream outputStream) throws IOException {
+        write(pack, outputStream, IN_MEMORY);
+    }
 
-        // Zip archive contains a json file and separate assets
-        ZipOutputStream zos = new ZipOutputStream(outputStream);
+    /**
+     * Writes the pack, taking its assets from {@code source}. The archive holds the same entries,
+     * with the same names and contents, whatever the source.
+     */
+    public void write(StoryPack pack, OutputStream outputStream, AssetSource source) throws IOException {
+        // Zip archive contains a json file and separate assets. Closed (with its deflater) whatever
+        // happens, a failing asset included.
+        try (ZipOutputStream zos = new ZipOutputStream(outputStream)) {
+            writeEntries(pack, zos, source);
+        }
+    }
 
-        // Store assets bytes
-        TreeMap<String, byte[]> assets = new TreeMap<>();
+    private void writeEntries(StoryPack pack, ZipOutputStream zos, AssetSource source) throws IOException {
+
+        // Assets to add, by entry name (first one met wins, as with putIfAbsent on the bytes)
+        TreeMap<String, Asset> assets = new TreeMap<>();
 
 
         // Add story descriptor file: story.json
@@ -89,21 +131,19 @@ public class ArchiveStoryPackWriter {
             if (node.getImage() == null) {
                 writer.nullValue();
             } else {
-                byte[] imageData = node.getImage().getRawData();
                 String extension = extensionFromMimeType(node.getImage().getMimeType());
-                String assetFileName = DigestUtils.sha1Hex(imageData) + extension;
+                String assetFileName = source.sha1(node.getImage()) + extension;
                 writer.value(assetFileName);
-                assets.putIfAbsent(assetFileName, imageData);
+                assets.putIfAbsent(assetFileName, node.getImage());
             }
             writer.name("audio");
             if (node.getAudio() == null) {
                 writer.nullValue();
             } else {
-                byte[] audioData = node.getAudio().getRawData();
                 String extension = extensionFromMimeType(node.getAudio().getMimeType());
-                String assetFileName = DigestUtils.sha1Hex(audioData) + extension;
+                String assetFileName = source.sha1(node.getAudio()) + extension;
                 writer.value(assetFileName);
-                assets.putIfAbsent(assetFileName, audioData);
+                assets.putIfAbsent(assetFileName, node.getAudio());
             }
             writer.name("okTransition");
             if (node.getOkTransition() == null) {
@@ -170,15 +210,14 @@ public class ArchiveStoryPackWriter {
         // Add assets in separate directory
         zipEntry = new ZipEntry("assets/");
         zos.putNextEntry(zipEntry);
-        for (Map.Entry<String, byte[]> assetEntry : assets.entrySet()) {
+        for (Map.Entry<String, Asset> assetEntry : assets.entrySet()) {
             String assetPath = "assets/" + assetEntry.getKey();
             zipEntry = new ZipEntry(assetPath);
             zos.putNextEntry(zipEntry);
-            IOUtils.write(assetEntry.getValue(), zos);
+            source.copy(assetEntry.getValue(), zos);
         }
 
         zos.flush();
-        zos.close();
     }
 
     private void writeEnrichedNodeMetadata(JsonWriter writer, Node node) throws IOException {

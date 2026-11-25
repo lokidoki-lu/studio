@@ -1,0 +1,112 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+/* The selection bar, the progress of a send queue and the selection boxes, in both library views. */
+
+.send-queue-bar,
+.send-queue-progress {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    margin: 8px 0;
+    padding: 8px 12px;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius);
+    background: var(--ui-accent-soft);
+    color: var(--ui-text);
+    font-size: 13px;
+}
+
+.send-queue-space {
+    color: var(--ui-text-muted);
+}
+
+.send-queue-warning {
+    flex-basis: 100%;
+    margin: 0;
+    color: var(--ui-danger);
+    font-weight: 600;
+}
+
+.send-queue-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-left: auto;
+}
+
+.send-queue-progress-text {
+    flex: 1 1 240px;
+}
+
+.send-queue-meter {
+    flex: 1 1 160px;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--ui-surface-muted);
+    overflow: hidden;
+}
+
+.send-queue-meter > div {
+    height: 100%;
+    background: var(--ui-accent);
+    transition: width 0.3s ease;
+}
+
+.send-queue-summary h5 {
+    margin: 12px 0 4px;
+    font-weight: 700;
+}
+
+.send-queue-summary ul {
+    margin: 0;
+    padding-left: 18px;
+}
+
+.send-queue-note {
+    margin-top: 8px;
+    font-style: italic;
+    color: var(--ui-text-muted);
+}
+
+/* The selection box of a pack */
+.send-select {
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+}
+
+.send-select input {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--ui-accent);
+    cursor: pointer;
+}
+
+.pack-tile.send-selected,
+.simple-card.send-selected {
+    outline: 2px solid var(--ui-accent);
+    outline-offset: -2px;
+}
+
+/* Simplified view: the box sits on the cover's corner */
+.pack-library-simple .simple-cover {
+    position: relative;
+}
+
+.pack-library-simple .simple-select {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    z-index: 1;
+    display: flex;
+    padding: 4px;
+    border-radius: var(--ui-radius-sm);
+    background: var(--ui-surface);
+    box-shadow: var(--ui-shadow);
+}

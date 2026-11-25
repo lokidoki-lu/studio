@@ -21,10 +21,12 @@ import studio.core.v1.reader.archive.ArchiveStoryPackReader;
 import studio.core.v1.reader.binary.BinaryStoryPackReader;
 import studio.core.v1.reader.fs.FsStoryPackReader;
 import studio.core.v1.utils.PackAssetsCompression;
+import studio.core.v1.utils.StreamingPackConversion;
 import studio.core.v1.writer.archive.ArchiveStoryPackWriter;
 import studio.core.v1.writer.binary.BinaryStoryPackWriter;
 import studio.core.v1.writer.fs.FsStoryPackWriter;
 import studio.driver.StoryTellerException;
+import studio.driver.fs.PackTransferSizeEstimator;
 import studio.metadata.DatabaseMetadataService;
 import studio.metadata.DatabasePackMetadata;
 import studio.webui.model.LibraryPack;
@@ -58,6 +60,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.Enumeration;
@@ -386,6 +389,49 @@ public class LibraryService {
     }
 
     /**
+     * The space the named packs will take on the device once in {@code format} ({@code fs} or
+     * {@code raw}), estimated from their sizes and asset headers without converting anything (see
+     * {@link DeviceSpaceEstimate}). The FS estimate rounds every file up to the cluster derived from
+     * {@code deviceBlockSize} ({@link PackTransferSizeEstimator#clusterBytes}, 32 KiB when unknown).
+     *
+     * @return {format, clusterSize, clusterSizeSource (device|default), total, method, packs: [{path,
+     * bytes, method}], errors: [{path, message}]}; a name that is not a pack of the library, or that
+     * cannot be read, is listed in errors and left out of the total
+     */
+    public JsonObject estimateOnDevice(List<String> packPaths, String format, OptionalLong deviceBlockSize) {
+        long cluster = PackTransferSizeEstimator.clusterBytes(deviceBlockSize);
+        boolean fromDevice = deviceBlockSize != null && deviceBlockSize.isPresent() && deviceBlockSize.getAsLong() == cluster;
+        JsonArray packs = new JsonArray();
+        JsonArray errors = new JsonArray();
+        long total = 0;
+        String method = DeviceSpaceEstimate.MEASURED;
+        for (String packPath : packPaths) {
+            Optional<Path> entry = packPath == null ? Optional.empty() : libraryEntry(packPath).filter(Files::exists);
+            if (entry.isEmpty() || isStagingEntry(entry.get())) {
+                errors.add(new JsonObject().put("path", packPath).put("message", "Not a pack of the library"));
+                continue;
+            }
+            try {
+                DeviceSpaceEstimate.Result result = DeviceSpaceEstimate.estimate(entry.get(), format, cluster);
+                packs.add(new JsonObject().put("path", packPath).put("bytes", result.bytes).put("method", result.method));
+                total = Math.addExact(total, result.bytes);
+                method = DeviceSpaceEstimate.leastPrecise(method, result.method);
+            } catch (IOException | RuntimeException e) {
+                LOGGER.warn("Failed to estimate the size of library pack " + packPath + " on the device: " + e.getMessage());
+                errors.add(new JsonObject().put("path", packPath).put("message", String.valueOf(e.getMessage())));
+            }
+        }
+        return new JsonObject()
+                .put("format", format)
+                .put("clusterSize", "fs".equals(format) ? cluster : DeviceSpaceEstimate.SECTOR)
+                .put("clusterSizeSource", "fs".equals(format) && !fromDevice ? "default" : "device")
+                .put("total", total)
+                .put("method", method)
+                .put("packs", packs)
+                .put("errors", errors);
+    }
+
+    /**
      * The entry by that name, matched as the pack readers match it: separators normalized ({@code \}
      * as {@code /}), story.json and thumbnail.png ignoring case, the last of duplicate names winning.
      * A lookup by exact name would 404 on a pack the library lists and converts without trouble.
@@ -467,9 +513,19 @@ public class LibraryService {
             throw new RuntimeException("Pack is already in archive format");
         }
         boolean fromRaw = packPath.endsWith(".pack");
-        return convert(packPath, fromRaw ? "raw" : "FS", "archive", ".zip", "archive",
-                fromRaw ? binaryReader() : fsReader(),
-                fromRaw ? this::compressAssets : this::leaveAssetsAlone,
+        if (!fromRaw) {
+            // An FS source already carries the assets an archive wants: they are streamed from
+            // their files into the archive, one at a time, never all held in memory.
+            return convert(packPath, "FS", "archive", ".zip", "archive", (source, target) -> {
+                try (FileOutputStream fos = new FileOutputStream(target.toFile())) {
+                    String uuid = StreamingPackConversion.fsToArchive(source, fos);
+                    return new Converted(uuid, target);
+                }
+            });
+        }
+        return convert(packPath, "raw", "archive", ".zip", "archive",
+                binaryReader(),
+                this::compressAssets,
                 archiveWriter());
     }
 
@@ -480,8 +536,18 @@ public class LibraryService {
             LOGGER.error("Pack is already in FS format");
             throw new RuntimeException("Pack is already in FS format");
         }
-        return convert(packPath, fromArchive ? "archive" : "raw", "FS", null, "fs",
-                fromArchive ? archiveReader() : binaryReader(),
+        if (fromArchive) {
+            // Each asset is read from the archive, prepared (ID3 tags removed, re-encoded if need
+            // be) and written to its file before the next one is read: the memory used no longer
+            // grows with the pack. Same files, byte for byte, as the in-memory conversion.
+            return convert(packPath, "archive", "FS", null, "fs", (source, target) -> {
+                LOGGER.info("Converting assets if necessary, one at a time");
+                StreamingPackConversion.Result result = StreamingPackConversion.archiveToFs(source, target);
+                return new Converted(result.getUuid(), result.getProduced());
+            });
+        }
+        return convert(packPath, "raw", "FS", null, "fs",
+                binaryReader(),
                 this::prepareAssetsForFirmware2dot4,
                 fsWriter());
     }
@@ -508,6 +574,24 @@ public class LibraryService {
     private Optional<Path> convert(String packPath, String sourceLabel, String targetLabel,
                                    String extension, String provenanceKind,
                                    PackReader reader, AssetTransform transform, PackWriter writer) {
+        return convert(packPath, sourceLabel, targetLabel, extension, provenanceKind, (source, target) -> {
+            LOGGER.info("Reading " + sourceLabel + " format pack");
+            StoryPack storyPack = reader.read(source);
+
+            StoryPack converted = transform.apply(storyPack);
+
+            LOGGER.info("Writing " + targetLabel + " format pack");
+            Path produced = writer.write(converted, target);
+            return new Converted(converted.getUuid(), produced);
+        });
+    }
+
+    /**
+     * Same, with a conversion that reads the source and writes the target in one step (the
+     * streaming conversions, which never hold the whole pack).
+     */
+    private Optional<Path> convert(String packPath, String sourceLabel, String targetLabel,
+                                   String extension, String provenanceKind, PackConversion conversion) {
         Path tmp = null;
         try {
             // Observed before the conversion reads it; observed again afterwards, and
@@ -520,15 +604,10 @@ public class LibraryService {
                     + " format and storing in temporary " + (producesFolder ? "folder: " : "file: ")
                     + tmp.toAbsolutePath());
 
-            LOGGER.info("Reading " + sourceLabel + " format pack");
-            StoryPack storyPack = reader.read(requireLibraryEntry(packPath));
+            Converted converted = conversion.convert(requireLibraryEntry(packPath), tmp);
+            Path produced = converted.produced;
 
-            StoryPack converted = transform.apply(storyPack);
-
-            LOGGER.info("Writing " + targetLabel + " format pack");
-            Path produced = writer.write(converted, tmp);
-
-            String destinationName = requirePackUuid(converted.getUuid()) + ".converted_"
+            String destinationName = requirePackUuid(converted.uuid) + ".converted_"
                     + System.currentTimeMillis() + (producesFolder ? "" : extension);
             Path destinationPath = requireLibraryEntry(destinationName);
             LOGGER.info("Moving " + targetLabel + " format pack into local library: " + destinationPath);
@@ -625,6 +704,23 @@ public class LibraryService {
                 || path.getFileName().toString().startsWith(".part-"));
     }
 
+    /** What a conversion produced: the uuid of the pack and what must be moved into the library. */
+    private static final class Converted {
+        private final String uuid;
+        private final Path produced;
+
+        private Converted(String uuid, Path produced) {
+            this.uuid = uuid;
+            this.produced = produced;
+        }
+    }
+
+    @FunctionalInterface
+    private interface PackConversion {
+        /** Converts {@code source}, writing under {@code target} (the temporary file or folder). */
+        Converted convert(Path source, Path target) throws Exception;
+    }
+
     @FunctionalInterface
     private interface PackReader {
         StoryPack read(Path source) throws Exception;
@@ -672,11 +768,6 @@ public class LibraryService {
     private StoryPack compressAssets(StoryPack pack) throws Exception {
         LOGGER.info("Compressing pack assets");
         return PackAssetsCompression.withCompressedAssets(pack);
-    }
-
-    /** An FS source already carries the assets an archive wants, so nothing is done to them. */
-    private StoryPack leaveAssetsAlone(StoryPack pack) {
-        return pack;
     }
 
     private StoryPack prepareAssetsForFirmware2dot4(StoryPack pack) throws Exception {
@@ -800,6 +891,23 @@ public class LibraryService {
      * <p>An entry that does not exist yet is allowed: an upload and a conversion both have to name a
      * destination before creating it. The lexical rule still applies to it.
      */
+    /**
+     * The pack UUID a library entry declares (its metadata, read as the listing reads it), or empty
+     * if the name is not a readable pack of the library.
+     */
+    public Optional<String> declaredUuid(String name) {
+        return libraryEntry(name)
+                .filter(path -> Files.exists(path, LinkOption.NOFOLLOW_LINKS))
+                .flatMap(this::readPackFileCached)
+                .map(pack -> pack.getMetadata().getUuid());
+    }
+
+    /** Whether {@code uuid} is an official pack (Luniistore), by the metadata databases. */
+    public boolean isOfficialPack(String uuid) {
+        return uuid != null && (databaseMetadataService.isOfficialPack(uuid)
+                || databaseMetadataService.getPackMetadata(uuid).map(DatabasePackMetadata::isOfficial).orElse(false));
+    }
+
     public Optional<Path> libraryEntry(String name) {
         if (name == null || name.trim().isEmpty()) {
             return Optional.empty();
@@ -1530,4 +1638,72 @@ public class LibraryService {
                 .orElse(json);
     }
 
+    // ------------------------------------------------------------ origin of an artefact (device updates)
+
+    /** Digests of library artefacts, bound to the observable state (sizes, times) they were taken over. */
+    private final Cache<Path, String[]> originDigests = Caffeine.newBuilder().maximumSize(2_000).build();
+
+    /**
+     * What content a library artefact stands for: the digest of the source it was converted from,
+     * when the provenance ledger records the conversion and the artefact is still exactly what was
+     * recorded; otherwise the digest of the artefact itself.
+     *
+     * <p>Used to tell whether a pack on a device is still the library's current content, which is a
+     * display decision, never a decision to send bytes. So unlike {@link #verifyConversion}, the
+     * digest of an artefact is reused while its files keep the same sizes and modification times
+     * (for a folder: every file of it), rather than re-read in full at each listing.
+     *
+     * @return empty if the name is not an entry of the library or could not be read
+     */
+    public Optional<String> originOf(String name) {
+        Optional<Path> entry = libraryEntry(name);
+        if (!entry.isPresent() || !Files.exists(entry.get(), LinkOption.NOFOLLOW_LINKS)) {
+            return Optional.empty();
+        }
+        Path path = entry.get();
+        Optional<String> signature = statSignature(path);
+        if (!signature.isPresent()) {
+            return Optional.empty();
+        }
+        String[] cached = originDigests.getIfPresent(path);
+        String identity;
+        if (cached != null && cached[0].equals(signature.get())) {
+            identity = cached[1];
+        } else {
+            Optional<String> computed = identityOf(path);
+            if (!computed.isPresent()) {
+                return Optional.empty();
+            }
+            identity = computed.get();
+            originDigests.put(path, new String[]{signature.get(), identity});
+        }
+        Optional<ConversionRecord> record = provenanceStore.find(path.getFileName().toString());
+        if (record.isPresent() && identity.equals(record.get().getArtifactSha256()) && record.get().getSourceSha256() != null) {
+            return Optional.of(record.get().getSourceSha256());
+        }
+        return Optional.of(identity);
+    }
+
+    /** Sizes and modification times of a file, or of every file under a folder. */
+    private static Optional<String> statSignature(Path path) {
+        try {
+            if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+                return Optional.of(Files.size(path) + "@" + Files.getLastModifiedTime(path).toMillis());
+            }
+            StringBuilder sb = new StringBuilder();
+            try (Stream<Path> files = Files.walk(path)) {
+                files.filter(f -> Files.isRegularFile(f, LinkOption.NOFOLLOW_LINKS)).sorted().forEach(f -> {
+                    try {
+                        sb.append(path.relativize(f)).append(':').append(Files.size(f)).append('@')
+                                .append(Files.getLastModifiedTime(f).toMillis()).append('\n');
+                    } catch (IOException e) {
+                        throw new UncheckedIOException(e);
+                    }
+                });
+            }
+            return Optional.of(sb.toString());
+        } catch (IOException | UncheckedIOException e) {
+            return Optional.empty();
+        }
+    }
 }

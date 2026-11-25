@@ -26,12 +26,22 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.function.Supplier;
 
 public class LibraryController {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(LibraryController.class);
     
     public static Router apiRouter(Vertx vertx, LibraryService libraryService) {
+        return apiRouter(vertx, libraryService, OptionalLong::empty);
+    }
+
+    /**
+     * @param deviceBlockSize the block size of the plugged device's partition, if any: the cluster
+     *                        the space estimate rounds to (see /estimate)
+     */
+    public static Router apiRouter(Vertx vertx, LibraryService libraryService, Supplier<OptionalLong> deviceBlockSize) {
         Router router = Router.router(vertx);
 
         /*
@@ -149,6 +159,46 @@ public class LibraryController {
                             .end(Json.encode(json)),
                     () -> ctx.response().setStatusCode(404).end()
             );
+        }, false);
+
+        // The space packs will take on the device, once in its format (fs or raw), estimated from
+        // headers without converting anything. Unordered, like /details: it only reads.
+        router.post("/estimate").blockingHandler(ctx -> {
+            JsonObject body = DeviceController.jsonBody(ctx);
+            if (body == null) {
+                return;
+            }
+            List<String> paths = new ArrayList<>();
+            Object many = body.getValue("paths");
+            if (many instanceof JsonArray) {
+                for (Object path : (JsonArray) many) {
+                    if (!(path instanceof String)) {
+                        paths = null;
+                        break;
+                    }
+                    paths.add((String) path);
+                }
+            } else if (DeviceController.stringField(body, "path") != null) {
+                paths.add(DeviceController.stringField(body, "path"));
+            }
+            String format = DeviceController.stringField(body, "format");
+            if (paths == null || paths.isEmpty() || paths.size() > 500
+                    || !(Constants.PACK_FORMAT_FS.equalsIgnoreCase(format) || Constants.PACK_FORMAT_RAW.equalsIgnoreCase(format))) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                        "`paths` (1 to 500 strings, or `path`) and `format` (fs or raw) are required"));
+                return;
+            }
+            OptionalLong blockSize;
+            try {
+                blockSize = deviceBlockSize.get();
+            } catch (RuntimeException e) {
+                blockSize = OptionalLong.empty();
+            }
+            JsonObject estimate = libraryService.estimateOnDevice(paths, format.toLowerCase(java.util.Locale.ROOT), blockSize);
+            ctx.response()
+                    .putHeader("content-type", "application/json")
+                    .putHeader("Cache-Control", "no-store")
+                    .end(Json.encode(estimate));
         }, false);
 
         // Local library pack upload
