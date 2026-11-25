@@ -24,6 +24,7 @@ import studio.core.v1.utils.PackAssetsCompression;
 import studio.core.v1.writer.archive.ArchiveStoryPackWriter;
 import studio.core.v1.writer.binary.BinaryStoryPackWriter;
 import studio.core.v1.writer.fs.FsStoryPackWriter;
+import studio.driver.StoryTellerException;
 import studio.metadata.DatabaseMetadataService;
 import studio.metadata.DatabasePackMetadata;
 import studio.webui.model.LibraryPack;
@@ -411,10 +412,51 @@ public class LibraryService {
             throw new RuntimeException("Pack is already in raw format");
         }
         boolean fromArchive = packPath.endsWith(".zip");
+        if (fromArchive) {
+            requireMemoryForRawConversion(packPath);
+        }
         return convert(packPath, fromArchive ? "archive" : "FS", "raw", ".pack", "raw",
                 fromArchive ? archiveReader() : fsReader(),
                 this::uncompressAssetsIfNeeded,
                 rawWriter(allowEnriched));
+    }
+
+    /** Bytes per second of the audio a raw pack holds: 32 kHz, 16-bit, mono WAV. */
+    static final long RAW_AUDIO_BYTES_PER_SECOND = 64_000;
+
+    /**
+     * An archive converted to raw has all of its audio decoded to WAV in memory at once. A long pack
+     * used to run the heap out half way, with an OutOfMemoryError that also starved every other
+     * request: the duration is read from the audio headers first (as the preview does), and a
+     * conversion that cannot fit is refused with a message that says so. Assets whose duration
+     * cannot be read are not counted, so the estimate errs on the side of trying.
+     */
+    private void requireMemoryForRawConversion(String packPath) {
+        Optional<Path> pack = libraryEntry(packPath).filter(Files::isRegularFile);
+        if (pack.isEmpty()) {
+            return; // the conversion reports it
+        }
+        double seconds;
+        long packBytes;
+        try {
+            seconds = PackDetails.archiveAudio(pack.get()).getDouble("seconds", 0.0);
+            packBytes = Files.size(pack.get());
+        } catch (IOException | RuntimeException e) {
+            LOGGER.warn("Could not estimate the audio of " + packPath + " before converting it: " + e.getMessage());
+            return;
+        }
+        requireMemoryFor(seconds, packBytes, Runtime.getRuntime().maxMemory());
+    }
+
+    static void requireMemoryFor(double audioSeconds, long packBytes, long maxMemory) {
+        long needed = (long) (audioSeconds * RAW_AUDIO_BYTES_PER_SECOND) + packBytes;
+        // Head room for everything else the server holds, and for the copies made per asset
+        if (needed > maxMemory * 0.8) {
+            throw new StoryTellerException("This pack holds about " + Math.round(audioSeconds / 60) + " minutes of audio,"
+                    + " which needs about " + (needed >> 20) + " MiB of memory to convert to the raw format, more than"
+                    + " STUdio may use (" + (maxMemory >> 20) + " MiB). Start STUdio with more memory"
+                    + " (JAVA_OPTS=-Xmx...), or split the pack.");
+        }
     }
 
     public Optional<Path> addConvertedArchivePackFile(String packPath) {
