@@ -6,6 +6,12 @@
       "library": "Pack library",
       "editor": "Pack editor",
       "settings": "Settings"
+    },
+    "theme": {
+      "title": "Theme: click to switch from Auto (follows the system) to Light, then Dark",
+      "auto": "Auto",
+      "light": "Light",
+      "dark": "Dark"
     }
   },
 

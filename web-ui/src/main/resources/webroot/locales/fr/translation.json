@@ -6,6 +6,12 @@
       "library": "Bibliothèque",
       "editor": "Éditeur",
       "settings": "Paramètres"
+    },
+    "theme": {
+      "title": "Thème : cliquer pour passer de Auto (suit le système) à Clair, puis Sombre",
+      "auto": "Auto",
+      "light": "Clair",
+      "dark": "Sombre"
     }
   },
 

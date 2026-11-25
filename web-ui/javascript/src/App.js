@@ -33,6 +33,7 @@ import {
 } from "./actions";
 import {generateFilename} from "./utils/packs";
 import {renderUntrustedMarkdown} from "./utils/markdown";
+import {applyTheme, loadTheme, nextTheme, saveTheme} from "./utils/theme";
 import {
     LOCAL_STORAGE_ANNOUNCE_LAST_SHOWN
 } from "./utils/storage";
@@ -54,9 +55,18 @@ class App extends React.Component {
             shown: null,
             viewer: null,
             announce: null,
-            showSettings: false
+            showSettings: false,
+            theme: loadTheme()
         };
+        applyTheme(this.state.theme);
     }
+
+    cycleTheme = () => {
+        const theme = nextTheme(this.state.theme);
+        applyTheme(theme);
+        saveTheme(theme);
+        this.setState({theme});
+    };
 
     componentDidMount() {
         const { t } = this.props;
@@ -229,6 +239,9 @@ class App extends React.Component {
                             <span title="Français" role="img" aria-label="FR" onClick={() => i18n.changeLanguage('fr')}>🇫🇷&nbsp;</span>
                             <span title="English" role="img" aria-label="GB" onClick={() => i18n.changeLanguage('en')}>🇬🇧&nbsp;</span>
                             <span title={t('header.buttons.settings')} className="btn glyphicon glyphicon-wrench" onClick={this.showSettings}/>
+                            <button type="button" className="btn theme-toggle" title={t('header.theme.title')} aria-label={t('header.theme.title')} onClick={this.cycleTheme}>
+                                <span aria-hidden="true">{{auto: '◐', light: '☀', dark: '☾'}[this.state.theme]}</span> {t(`header.theme.${this.state.theme}`)}
+                            </button>
                         </div>
                         <div  className="welcome">
                             {t('header.welcome')}
