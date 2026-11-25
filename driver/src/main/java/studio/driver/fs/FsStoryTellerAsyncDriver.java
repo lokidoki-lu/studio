@@ -15,6 +15,7 @@ import studio.driver.model.fs.FsDeviceInfos;
 import studio.driver.model.fs.FsDeviceKeyV3;
 import studio.driver.model.fs.FsStoryPackInfos;
 import studio.driver.StoryTellerException;
+import studio.driver.TransferCallbacks;
 import studio.driver.event.DeviceHotplugEventListener;
 import studio.driver.event.TransferProgressListener;
 import studio.driver.model.TransferStatus;
@@ -36,7 +37,7 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
@@ -482,7 +483,7 @@ public class FsStoryTellerAsyncDriver {
                             packInfos.setNightModeAvailable(new File(packFolder, NIGHT_MODE_FILENAME).exists());
 
                             // Compute folder size
-                            packInfos.setSizeInBytes((int) FileUtils.getFolderSize(packFolderPath));
+                            packInfos.setSizeInBytes(FileUtils.getFolderSize(packFolderPath));
 
                             packs.add(packInfos);
                         }
@@ -1144,6 +1145,20 @@ public class FsStoryTellerAsyncDriver {
         }
     }
 
+    /** Same rule as FsStoryPackReader's own detection: the ri file starts with a cleartext path. */
+    static boolean riLooksCleartext(Path packFolder) throws IOException {
+        Path ri = packFolder.resolve(FsStoryPackReader.IMAGE_INDEX_FILENAME);
+        if (!Files.isRegularFile(ri)) {
+            return false;
+        }
+        byte[] marker = FsStoryPackReader.CLEARTEXT_RI_BEGINNING;
+        byte[] head;
+        try (InputStream in = Files.newInputStream(ri)) {
+            head = in.readNBytes(marker.length);
+        }
+        return java.util.Arrays.equals(head, marker);
+    }
+
     /**
      * Copies a pack folder, transcoding its assets for the direction of the transfer.
      *
@@ -1156,16 +1171,19 @@ public class FsStoryTellerAsyncDriver {
     private TransferStatus copyPackFolder(PartitionSession session, String sourceFolder, File destFolder, FsDeviceInfos deviceInfos, boolean isUpload, TransferProgressListener listener) throws IOException {
         // Keep track of transferred bytes and elapsed time
         final long startTime = System.currentTimeMillis();
-        AtomicInteger transferred = new AtomicInteger(0);
-        int folderSize = (int) FileUtils.getFolderSize(sourceFolder);
+        AtomicLong transferred = new AtomicLong(0);
+        long folderSize = FileUtils.getFolderSize(sourceFolder);
         LOGGER.finest("Pack folder size: " + folderSize);
 
         // Fail for unsupported firmware versions
         requireSupportedFirmware(deviceInfos);
         String partitionChanged = isUpload ? "the pack was not copied to the device" : "the pack was not extracted";
 
-        // Assets are cleartext if file '.cleartext' exists
-        boolean isCleartext = (new FsStoryPackReader()).isCleartext(Paths.get(sourceFolder), isUpload);
+        // Assets are cleartext if file '.cleartext' exists, or (a pack missing it) if its ri looks so.
+        // Read only: isCleartext(.., true) used to create '.cleartext' in the source, a pack of the
+        // library, whose content digest then no longer matched its conversion record.
+        boolean isCleartext = (new FsStoryPackReader()).isCleartext(Paths.get(sourceFolder), false)
+                || (isUpload && riLooksCleartext(Paths.get(sourceFolder)));
         
         // Files written to the card by this upload, forced in one pass once the copy is over.
         List<Path> writtenFiles = new ArrayList<>();
@@ -1199,7 +1217,7 @@ public class FsStoryTellerAsyncDriver {
                             return;
                         }
 
-                        int fileSize = (int) FileUtils.getFileSize(s.toAbsolutePath().toString());
+                        long fileSize = FileUtils.getFileSize(s.toAbsolutePath().toString());
                         // The boot file is device specific and regenerated below once the copy is over;
                         // the one a pack extracted from a device carries is not copied, only accounted
                         // for, so that the generated one can be written exclusively like every other file.
@@ -1245,7 +1263,7 @@ public class FsStoryTellerAsyncDriver {
                         }
 
                         // Compute progress and speed
-                        int xferred = transferred.addAndGet(fileSize);
+                        long xferred = transferred.addAndGet(fileSize);
                         long elapsed = System.currentTimeMillis() - startTime;
                         double speed = ((double) xferred) / ((double) elapsed / 1000.0);
                         LOGGER.finer("Transferred " + xferred + " bytes in " + elapsed + " ms");
@@ -1254,9 +1272,11 @@ public class FsStoryTellerAsyncDriver {
 
                         // Call (optional) listener with transfer status
                         if (listener != null) {
-                            CompletableFuture.runAsync(() -> listener.onProgress(status));
+                            // One thread for every callback, in the order they are issued: on the common
+                            // pool a progress could arrive after the completion, or go backwards.
+                            CompletableFuture.runAsync(() -> listener.onProgress(status), TransferCallbacks.EXECUTOR);
                             if (status.isDone()) {
-                                CompletableFuture.runAsync(() -> listener.onComplete(status));
+                                CompletableFuture.runAsync(() -> listener.onComplete(status), TransferCallbacks.EXECUTOR);
                             }
                         }
                     }

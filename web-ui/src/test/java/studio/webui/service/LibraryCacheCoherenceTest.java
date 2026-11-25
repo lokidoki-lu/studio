@@ -224,6 +224,26 @@ class LibraryCacheCoherenceTest {
         assertEquals(Files.size(pack), exposedPack().getLong("size"));
     }
 
+    @Test
+    @DisplayName("S1: the size of an FS pack follows a file rewritten under sf/, folder unchanged")
+    void fsPackSizeFollowsARewriteDeepInTheFolder() throws IOException {
+        Path fs = library.resolve(UUID_UNDER_TEST + ".converted_1");
+        Files.createDirectories(fs.resolve("sf").resolve("000"));
+        byte[] ni = new byte[512];
+        ni[2] = 1; // version
+        Files.write(fs.resolve("ni"), ni);
+        Path sound = fs.resolve("sf").resolve("000").resolve("AAAAAAAA");
+        Files.write(sound, new byte[100]);
+        FileTime folderTime = Files.getLastModifiedTime(fs);
+        assertEquals(612, exposedPack().getLong("size"));
+
+        // Rewritten in place: neither the pack folder nor sf/000 changes, only the file does
+        Files.write(sound, new byte[1000]);
+        Files.setLastModifiedTime(fs, folderTime);
+
+        assertEquals(1512, exposedPack().getLong("size"));
+    }
+
     // ---------------------------------------------------------------- STUdio overwriting its own library
 
     @Test

@@ -96,4 +96,10 @@ class RawPackPlacementTest {
         assertEquals(Optional.empty(), RawStoryTellerAsyncDriver.findSuitableSectorBetweenPacks(index, 1));
         assertEquals(20, RawStoryTellerAsyncDriver.lastUsedSector(index));
     }
+
+    @Test
+    @DisplayName("the one-sector pack index lists at most 42 packs, checked before an upload copies anything")
+    void packIndexCapacity() {
+        assertEquals(42, RawStoryTellerAsyncDriver.MAX_PACKS_IN_INDEX);
+    }
 }

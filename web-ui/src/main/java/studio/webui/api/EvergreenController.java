@@ -20,6 +20,9 @@ public class EvergreenController {
     public static Router apiRouter(Vertx vertx, EvergreenService evergreenService) {
         Router router = Router.router(vertx);
 
+        // Unordered: the update check must not wait behind a library conversion or a device transfer
+        // in the queue shared by the ordered blocking handlers of the verticle.
+
         // Current version
         router.get("/infos").blockingHandler(ctx -> {
             evergreenService.infos().onComplete(maybeJson -> {
@@ -32,7 +35,7 @@ public class EvergreenController {
                     ctx.fail(500, maybeJson.cause());
                 }
             });
-        });
+        }, false);
 
         // Latest release
         router.get("/latest").blockingHandler(ctx -> {
@@ -46,7 +49,7 @@ public class EvergreenController {
                     ctx.fail(500, maybeJson.cause());
                 }
             });
-        });
+        }, false);
 
         // Announce
         router.get("/announce").blockingHandler(ctx -> {
@@ -60,7 +63,7 @@ public class EvergreenController {
                     ctx.fail(500, maybeJson.cause());
                 }
             });
-        });
+        }, false);
 
         return router;
     }

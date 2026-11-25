@@ -220,6 +220,21 @@ public class MainVerticle extends AbstractVerticle {
     private Router apiRouter() {
         Router router = Router.router(vertx);
 
+        // A request a page of another site made the browser send: refused before anything else. A GET
+        // needs no preflight, so the CORS handler cannot refuse one sent with `no-cors`, and a few
+        // GETs act (purge candidates read every artefact, a tools refresh runs processes). Browsers
+        // say where a request comes from in Sec-Fetch-Site; non-browser clients (Lunii Pack, curl)
+        // do not send it and are not concerned.
+        router.route().handler(ctx -> {
+            String site = ctx.request().getHeader("Sec-Fetch-Site");
+            if (isAllowedFetchSite(site, isDevMode())) {
+                ctx.next();
+            } else {
+                LOGGER.warn("Refusing an API request sent from another site (Sec-Fetch-Site: " + site + ")");
+                ctx.response().setStatusCode(403).end();
+            }
+        });
+
         // Handle JSON
         // A POST must say it carries JSON (or, for an upload, a form). A cross-origin request with
         // such a type cannot be sent without a CORS preflight, which the CORS handler refuses.
@@ -239,7 +254,9 @@ public class MainVerticle extends AbstractVerticle {
                 .setBodyLimit(MAX_BODY_BYTES)
                 .setUploadsDirectory(uploadsDirectory())
                 .setDeleteUploadedFilesOnEnd(true));
-        router.routeWithRegex("^(?!/library/upload$).*").handler(BodyHandler.create()
+        // `/library/upload/` too: the route above matches it, and a JSON body handler after it would
+        // have read a body of up to MAX_BODY_BYTES in memory.
+        router.routeWithRegex("^(?!/library/upload/?$).*").handler(BodyHandler.create()
                 .setBodyLimit(MAX_JSON_BODY_BYTES)
                 .setUploadsDirectory(uploadsDirectory())
                 .setDeleteUploadedFilesOnEnd(true));
@@ -301,12 +318,26 @@ public class MainVerticle extends AbstractVerticle {
         return extra == null || extra.isBlank() ? own : "(" + own + ")|(" + java.util.regex.Pattern.quote(extra.trim()) + ")";
     }
 
+    /**
+     * Whether a request with this Sec-Fetch-Site header may reach the API: absent (not a browser,
+     * or an old one), {@code same-origin} (the application's own page) or {@code none} (typed in the
+     * address bar, a bookmark). In dev mode also {@code same-site}: the UI of `yarn start` runs on
+     * another port of localhost.
+     */
+    static boolean isAllowedFetchSite(String site, boolean devMode) {
+        if (site == null) {
+            return true;
+        }
+        String s = site.trim().toLowerCase(java.util.Locale.ROOT);
+        return s.equals("same-origin") || s.equals("none") || (devMode && s.equals("same-site"));
+    }
+
     static boolean isAcceptedPostContentType(String contentType, String path) {
         if (contentType == null) {
             return false;
         }
         String ct = contentType.toLowerCase(java.util.Locale.ROOT).trim();
-        boolean upload = path != null && path.endsWith("/library/upload");
+        boolean upload = path != null && (path.endsWith("/library/upload") || path.endsWith("/library/upload/"));
         // An upload is a form and nothing else: its body limit is the large one, and a JSON body
         // is held in memory, not streamed to disk.
         return upload ? ct.startsWith("multipart/form-data") : ct.startsWith("application/json");
