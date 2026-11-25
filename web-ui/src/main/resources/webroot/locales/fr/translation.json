@@ -764,6 +764,60 @@
       "updated": "Histoire mise à jour sur la Lunii, à la même place.",
       "failed": "Échec de la mise à jour de l'histoire sur la Lunii"
     }
+  },
+  "sendQueue": {
+    "selection": "{{count}} pack sélectionné",
+    "selection_plural": "{{count}} packs sélectionnés",
+    "select": "Sélectionner « {{title}} » pour l'envoi sur la Lunii",
+    "selectAll": "Tout sélectionner",
+    "clear": "Tout désélectionner",
+    "send": "Envoyer la sélection sur la Lunii",
+    "progress": "Pack {{current}}/{{total}} : {{title}}",
+    "overall": "Progression de l'envoi : {{percent}} %",
+    "cancel": "Annuler la suite",
+    "cancelling": "Arrêt après ce pack…",
+    "appliesToAll": "Cette réponse vaudra aussi pour les autres packs de la sélection.",
+    "phases": {
+      "preparing": "préparation",
+      "verifying": "vérification",
+      "converting": "conversion",
+      "transferring": "transfert"
+    },
+    "reasons": {
+      "official": "histoire officielle, non transférable",
+      "onDevice": "déjà sur la Lunii",
+      "cancelled": "envoi annulé",
+      "declined": "écarté lors de la question",
+      "nothing": "rien à envoyer",
+      "space": "pas assez de place",
+      "conversion": "la conversion a échoué",
+      "busy": "la Lunii est restée occupée",
+      "incompatible": "format incompatible avec la Lunii",
+      "transfer": "le transfert a échoué",
+      "unknown": "résultat inconnu (suivi perdu)",
+      "error": "erreur inattendue",
+      "noDevice": "Lunii débranchée"
+    },
+    "summary": {
+      "title": "Envoi de la sélection terminé",
+      "counts": "Envoyés : {{sent}} · Ignorés : {{skipped}} · En échec : {{failed}}",
+      "sent": "Envoyés",
+      "skipped": "Ignorés",
+      "failed": "En échec"
+    }
+  },
+  "spaceEstimate": {
+    "summary": "Place nécessaire : {{required}} · Place libre : {{free}}",
+    "rough": "(estimation approximative)",
+    "estimating": "Estimation de la place nécessaire…",
+    "plugFirst": "Branchez la Lunii pour estimer la place et envoyer",
+    "tooBig": "Ça ne tient pas : il manque {{missing}}. Retirez des packs de la sélection, ou libérez de la place sur la Lunii.",
+    "blocked": "Pas assez de place sur la Lunii pour cette sélection",
+    "refusal": {
+      "title": "Pas assez de place sur la Lunii",
+      "content": "Ce pack prendra environ {{required}} une fois au format de la Lunii, mais elle n'a que {{free}} de libre : il manque {{missing}}.",
+      "content_plural": "Ces {{count}} packs prendront environ {{required}} une fois au format de la Lunii, mais elle n'a que {{free}} de libre : il manque {{missing}}.",
+      "explain": "Rien n'a été converti ni envoyé. Libérez de la place en retirant des histoires de la Lunii, ou envoyez moins de packs à la fois. L'estimation compte la conversion (MP3 et images pour les Lunii récentes, WAV pour la première Lunii) et la place minimale qu'occupe chaque fichier sur la carte."
+    }
   }
-
 }

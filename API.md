@@ -183,6 +183,20 @@ before records existed, unreadable), a conversion when the modification time and
 on which is older, anything that would leave a pack with no entry, and entries that are not
 readable packs.
 
+## Space a pack takes on the device (library)
+
+`POST http://localhost:8080/api/library/estimate` `{"paths": ["<library entry>", …], "format": "fs"|"raw"}`
+(or `"path"` for one) → `{"format", "clusterSize", "clusterSizeSource", "total", "method", "packs":
+[{"path", "bytes", "method"}], "errors": [{"path", "message"}]}`. Read-only and fast: nothing is
+converted, only sizes and audio headers are read. `bytes` is what the pack will occupy once in that
+format: for `fs` (V2/V3) MP3 audio and RLE images, each file rounded up to the cluster
+(`clusterSizeSource`: `device` when the partition reports a plausible one, else `default`, 32 KiB);
+for `raw` (V1) 32 kHz WAV (about 230 MB an hour), rounded to the 512-byte sector. `method` is
+`measured` (already in that format), `estimated` (sizes predicted from durations) or `rough` (from the
+pack size alone); the top-level one is the least precise of all. Compare `total` with
+`storage.free` of `GET /api/device/infos`. Unknown names are listed in `errors` and left out of the
+total; 1 to 500 paths per request, else 400 `INVALID_REQUEST`.
+
 ## Spoken titles (editor)
 
 `/api/tts` speaks a node title for the editor's *Générer la voix* button. Same request rules as

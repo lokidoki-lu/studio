@@ -17,7 +17,6 @@ import {fetchEvergreenInfos, fetchEvergreenLatestRelease, fetchEvergreenAnnounce
 import {generateFilename, sortPacks} from "../utils/packs";
 import {readFromArchive, readFromLibrary, adoptLibraryAssets, discardLibraryAssets} from "../utils/reader";
 import {httpErrorMessage} from "../utils/fetch";
-import {simplifiedSample} from "../utils/sample";
 import {updateFromLibrary} from "../services/deviceRepair";
 import {needsRepairOffer} from "../utils/deviceRepairEvents";
 import DeviceRepairOffer from "../components/DeviceRepairOffer";
@@ -313,13 +312,25 @@ const followedPacks = new Set();
 /** The failure text of a refused request, with the repair offer when it applies. */
 const withRepairOffer = (text, e) => e && needsRepairOffer(e.code) ? <>{text}<DeviceRepairOffer /></> : <>{text}</>;
 
-export const actionAddFromLibrary = (uuid, path, format, driver, context, t, mode = 'add') => {
-    // mode 'update': the pack already on the device is replaced in place (deviceUpdate.*)
-    const updating = mode === 'update';
+/*
+ * options (the send queue, utils/sendQueue.js): onProgress(progress) as the transfer goes, and
+ * onSettled(outcome) exactly once, with {status: 'sent'} or {status: 'failed', reason, message?},
+ * reason being 'busy' (the device was busy: worth trying again), 'incompatible', 'transfer' or
+ * 'unknown' (tracking lost). Without options, nothing changes.
+ * options.mode: 'add' (default) sends the pack, 'update' replaces the pack already on the device
+ * in place (deviceUpdate.*).
+ */
+export const actionAddFromLibrary = (uuid, path, format, driver, context, t, options = {}) => {
+    const updating = options.mode === 'update';
     const keys = updating
         ? {adding: 'deviceUpdate.toasts.updating', added: 'deviceUpdate.toasts.updated', failed: 'deviceUpdate.toasts.failed'}
         : {adding: 'toasts.device.adding', added: 'toasts.device.added', failed: 'toasts.device.addingFailed'};
     const send = updating ? updateFromLibrary : addFromLibrary;
+    const settled = (outcome) => {
+        if (options.onSettled) {
+            options.onSettled(outcome);
+        }
+    };
     return dispatch => mutex.acquire()
         .then(
             release => {
@@ -330,10 +341,12 @@ export const actionAddFromLibrary = (uuid, path, format, driver, context, t, mod
                     toast.error(t('toasts.device.notCompatible'));
                     // Always release the mutex
                     release();
+                    settled({status: 'failed', reason: 'incompatible'});
                 } else if (followedPacks.has(key)) {
                     console.warn('pack ' + uuid + ' is already being transferred to the device');
                     toast.error(t('toasts.device.busy'));
                     release();
+                    settled({status: 'failed', reason: 'busy'});
                 } else {
                     // Then start transfer
                     let toastId = toast(t(keys.adding), { autoClose: false });
@@ -351,9 +364,17 @@ export const actionAddFromLibrary = (uuid, path, format, driver, context, t, mod
                             followedPacks.add(key);
 
                             const doneSubscription = followTransfer(transferId, context.channel, {
-                                onProgress: updateProgress(toastId),
+                                onProgress: progress => {
+                                    updateProgress(toastId)(progress);
+                                    if (options.onProgress) {
+                                        options.onProgress(progress);
+                                    }
+                                },
                                 onVerdict: verdict => {
                                     followedPacks.delete(key);
+                                    settled(verdict.success ? {status: 'sent'}
+                                        : verdict.unknown ? {status: 'failed', reason: 'unknown'}
+                                        : {status: 'failed', reason: 'transfer', message: verdict.message});
                                     if (verdict.success) {
                                         toast.update(toastId, {progress: null, type: toast.TYPE.SUCCESS, render: t(keys.added), autoClose: 5000});
                                     } else if (verdict.unknown) {
@@ -388,12 +409,16 @@ export const actionAddFromLibrary = (uuid, path, format, driver, context, t, mod
                             toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={withRepairOffer(t(keys.failed), e)} error={e} showDetails />, autoClose: false });
                             // Always release the mutex
                             release();
+                            settled({status: 'failed', reason: 'transfer', message: e && e.message, code: e && e.code});
                         });
                 }
             },
             e => {
-                // Device is busy
-                toast.error(t('toasts.device.busy'));
+                // Device is busy. The send queue tries again on its own, without a toast each time.
+                if (!options.onSettled) {
+                    toast.error(t('toasts.device.busy'));
+                }
+                settled({status: 'failed', reason: 'busy'});
             });
 };
 
@@ -646,14 +671,22 @@ export const actionCreatePackInEditor = (t) => {
     }
 };
 
-export const actionLoadSampleInEditor = (t) => {
-    return dispatch => {
-        // Set sample model in editor
-        let model = simplifiedSample();
-        dispatch(setEditorDiagram(model, generateFilename(model)));
-        // Show editor
-        dispatch(showEditor());
-    }
+/** The sample pack (~1 MB of base64) is its own chunk, fetched only when it is asked for. */
+export const loadSample = () => import(/* webpackChunkName: "sample" */ "../utils/sample")
+    .then(module => module.simplifiedSample());
+
+export const actionLoadSampleInEditor = (t, load = loadSample) => {
+    return dispatch => load()
+        .then(model => {
+            // Set sample model in editor
+            dispatch(setEditorDiagram(model, generateFilename(model)));
+            // Show editor
+            dispatch(showEditor());
+        })
+        .catch(e => {
+            console.error('failed to load the sample pack', e);
+            toast(<IssueReportToast content={<>{t('toasts.editor.loadingFailed')}</>} error={e} />, { type: toast.TYPE.ERROR, autoClose: false });
+        });
 };
 
 export const actionUploadToLibrary = (uuid, path, packData, t) => {
