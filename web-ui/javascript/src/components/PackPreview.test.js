@@ -90,7 +90,7 @@ function services(json = story(), details = {path: 'tests.zip', format: 'archive
 
 async function render(pack, svc, onClose = () => {}) {
     await act(async () => {
-        ReactDOM.render(<PackPreview t={t} pack={pack} onClose={onClose}
+        ReactDOM.render(<PackPreview t={t} pack={pack} onClose={onClose} autoplayDelay={0}
                                      fetchDetails={svc.fetchDetails} fetchEntry={svc.fetchEntry}/>, container);
     });
     await flush();
@@ -247,5 +247,67 @@ describe('PackPreview', () => {
 
         expect(container.textContent).toContain('preview.simulation.errorTitle');
         expect(container.textContent).toContain('preview.info.unknown');
+        expect(container.textContent).toContain('preview.simulation.errors.NO_STORY');
+    });
+
+    it('translates why a story.json cannot be simulated', async () => {
+        await render(ARCHIVE, services({stageNodes: [], actionNodes: []}));
+        expect(container.textContent).toContain('preview.simulation.errors.NO_STAGE_NODE');
+    });
+
+    // cover --ok--> one (OK disabled, autoplay) --ok--> two
+    function autoplayStory(audio = 'one.mp3') {
+        const json = story();
+        json.stageNodes[1] = {...json.stageNodes[1], audio, controlSettings: {...CONTROLS, ok: false, autoplay: true},
+            okTransition: {actionNode: 'next', optionIndex: 0}};
+        json.actionNodes.push({id: 'next', options: ['two']});
+        return json;
+    }
+
+    it('ignores OK where the node does not accept it, and moves on at the end of its audio', async () => {
+        await render(ARCHIVE, services(autoplayStory()));
+        click(button('preview.simulation.ok'));
+        await flush();
+        click(button('preview.simulation.ok'));
+        await flush();
+        expect(container.querySelector('.pack-preview-node').textContent).toBe('Un');
+
+        click(button('preview.simulation.ok'));
+        await flush();
+        act(() => {
+            document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
+        });
+        await flush();
+        expect(container.querySelector('.pack-preview-node').textContent).toBe('Un');
+
+        act(() => {
+            container.querySelector('audio').dispatchEvent(new Event('ended'));
+        });
+        await flush();
+        expect(container.querySelector('.pack-preview-node').textContent).toBe('Deux');
+    });
+
+    it('moves on from a node with autoplay and no audio', async () => {
+        await render(ARCHIVE, services(autoplayStory(null)));
+        click(button('preview.simulation.ok'));
+        await flush();
+        click(button('preview.simulation.ok'));
+        await flush();
+        await flush();
+        expect(container.querySelector('.pack-preview-node').textContent).toBe('Deux');
+    });
+
+    it('turns the wheel with the arrows after a click on one of its buttons', async () => {
+        await render(ARCHIVE, services());
+        click(button('preview.simulation.ok'));
+        await flush();
+        click(button('preview.simulation.ok'));
+        await flush();
+        const right = button('preview.simulation.right');
+        act(() => {
+            right.dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowRight', bubbles: true}));
+        });
+        await flush();
+        expect(container.querySelector('.pack-preview-node').textContent).toBe('Deux');
     });
 });

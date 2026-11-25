@@ -409,7 +409,12 @@
       "unavailableTitle": "Simulation indisponible pour ce format",
       "unavailable": "Les packs aux formats brut et FS rangent leurs images et leurs sons dans le format de l'appareil (adressage par secteurs, chiffrement pour FS) : il faudrait décoder tout le pack pour les lire. Convertissez-le au format archive pour le simuler.",
       "errorTitle": "Simulation indisponible",
-      "error": "Le pack n'a pas pu être lu ({{error}})."
+      "error": "Le pack n'a pas pu être lu ({{error}}).",
+      "errors": {
+        "NO_STAGE_NODE": "il n'a aucun nœud",
+        "NO_STORY": "story.json est absent",
+        "INVALID_STORY": "story.json est illisible"
+      }
     }
   },
 
