@@ -379,7 +379,7 @@ export async function generateMissingTitleAudio(missing, {speak = speakTitle, on
                 }
             }
         } catch (e) {
-            e.generated = done;
+            e.generated = done - skipped;
             e.skipped = skipped;
             throw e;
         }

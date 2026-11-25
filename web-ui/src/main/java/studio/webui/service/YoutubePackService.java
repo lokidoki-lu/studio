@@ -251,14 +251,24 @@ public class YoutubePackService {
                 "youtube").toAbsolutePath();
     }
 
-    /** Removes the temporary folders of earlier creations: none runs yet. */
+    /**
+     * A leftover is a job folder untouched for this long. A younger one may belong to a creation
+     * under way in another STUdio started meanwhile (a second launch fails on the port only once
+     * its services, this purge included, have been built).
+     */
+    static final long LEFTOVER_AGE_MILLIS = 6L * 60 * 60 * 1000;
+
+    /** Removes the temporary folders of earlier creations, once they are old enough to be leftovers. */
     void purgeLeftovers() {
         if (!Files.isDirectory(tmpRoot)) {
             return;
         }
         List<Path> left;
         try (Stream<Path> children = Files.list(tmpRoot)) {
-            left = children.filter(p -> !PROGRAMS_DIR.equals(p.getFileName().toString())).collect(Collectors.toList());
+            long before = System.currentTimeMillis() - LEFTOVER_AGE_MILLIS;
+            left = children.filter(p -> !PROGRAMS_DIR.equals(p.getFileName().toString()))
+                    .filter(p -> lastModifiedMillis(p) < before)
+                    .collect(Collectors.toList());
         } catch (IOException | java.io.UncheckedIOException e) {
             LOGGER.debug("Could not list " + tmpRoot + ": " + e.getMessage());
             return;
@@ -266,6 +276,14 @@ public class YoutubePackService {
         if (!left.isEmpty()) {
             LOGGER.info("Removing " + left.size() + " temporary folder(s) left by earlier YouTube pack creations in " + tmpRoot);
             left.forEach(YoutubePackService::deleteQuietly);
+        }
+    }
+
+    private static long lastModifiedMillis(Path path) {
+        try {
+            return Files.getLastModifiedTime(path).toMillis();
+        } catch (IOException e) {
+            return Long.MAX_VALUE;    // unknown: kept
         }
     }
 

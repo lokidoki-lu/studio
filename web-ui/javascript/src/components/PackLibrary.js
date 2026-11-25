@@ -189,6 +189,11 @@ export class PackLibrary extends React.Component {
         return this.props.addFromLibrary(data.uuid, path, data.format, this.state.device.metadata.driver, this.context);
     };
 
+    // Échap or ×: the dialog is closed and nothing is converted nor sent
+    closeEnrichedDialog = () => {
+        this.setState({allowEnrichedDialog: {show: false, data: null}});
+    };
+
     dismissEnrichedDialog = (allow) => {
         return () => {
             const data = this.state.allowEnrichedDialog.data;
@@ -419,7 +424,7 @@ export class PackLibrary extends React.Component {
                        { label: t('dialogs.shared.no'), onClick: this.dismissEnrichedDialog(false)},
                        { label: t('dialogs.shared.yes'), onClick: this.dismissEnrichedDialog(true)}
                    ]}
-                   onClose={this.dismissEnrichedDialog(false)}
+                   onClose={this.closeEnrichedDialog}
             />}
             {this.state.confirmConversionDialog.show &&
             <Modal id="ask-confirm-conversion"

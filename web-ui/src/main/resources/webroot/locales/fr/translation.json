@@ -143,9 +143,9 @@
     },
     "errors": {
       "BUSY": "Un pack est déjà en cours de création.",
-      "TOOLS_MISSING": "yt-dlp ou ffmpeg est introuvable.",
+      "TOOLS_MISSING": "yt-dlp ou ffmpeg est introuvable ({{message}})",
       "BLOCKED": "YouTube a bloqué les téléchargements : réessayez dans quelques heures.",
-      "NOTHING_DOWNLOADED": "Aucune vidéo n'a pu être téléchargée.",
+      "NOTHING_DOWNLOADED": "Aucune vidéo n'a pu être téléchargée ({{message}})",
       "CANCELLED": "Création annulée.",
       "NOT_FOUND": "Création introuvable (STUdio a redémarré ?)."
     }

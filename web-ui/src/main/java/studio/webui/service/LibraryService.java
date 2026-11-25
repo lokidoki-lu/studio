@@ -247,8 +247,10 @@ public class LibraryService {
                 throw new RuntimeException(e);
             }
 
-            // List pack files in library folder
-            try (Stream<Path> paths = Files.walk(Paths.get(libraryPath()), 1)) {
+            // List pack files in library folder. Files.list, not Files.walk: walk stats each entry
+            // and fails the whole listing when one is removed meanwhile (/remove, /convert and
+            // /purge may now run during a listing); a vanished entry is simply not parsed.
+            try (Stream<Path> paths = Files.list(Paths.get(libraryPath()))) {
                 return new JsonArray(
                         paths
                                 .filter(path -> !path.equals(Paths.get(libraryPath())))

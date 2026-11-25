@@ -51,8 +51,13 @@ export class YoutubePack extends React.Component {
     }
 
     componentDidMount() {
-        // A creation started before the page was (re)loaded is followed again; one that ended
-        // while the button was not shown (other view, reload) is announced once
+        this.resume();
+    }
+
+    // A creation started before the page was (re)loaded, or no longer followed (server unreachable
+    // for a while, BUSY on start), is followed again; one that ended while the button was not shown
+    // (other view, reload) is announced once
+    resume = () => {
         fetchCurrentYoutubeJob()
             .then(job => {
                 if (this.unmounted || !job) {
@@ -65,7 +70,7 @@ export class YoutubePack extends React.Component {
                 }
             })
             .catch(() => { /* no creation, or no backend support: the button works anyway */ });
-    }
+    };
 
     componentWillUnmount() {
         this.unmounted = true;
@@ -186,6 +191,9 @@ export class YoutubePack extends React.Component {
     onOpen = () => {
         this.setState({open: true, startError: null});
         this.checkTools(false);
+        if (!isRunning(this.state.job)) {
+            this.resume();
+        }
     };
 
     onClose = () => {
@@ -225,6 +233,8 @@ export class YoutubePack extends React.Component {
                 this.setState({starting: false, startError: this.errorOf(e)});
                 if (e && e.code === 'TOOLS_MISSING') {
                     this.checkTools(true);
+                } else if (e && e.code === 'BUSY') {
+                    this.resume();
                 }
             });
     };
