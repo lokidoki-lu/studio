@@ -136,5 +136,25 @@ describe('storagePercent', () => {
     it('is null without figures', () => {
         expect(storagePercent(null)).toBeNull();
         expect(storagePercent({storage: {size: 0, taken: 0}})).toBeNull();
+        expect(storagePercent({storage: {size: 1000}})).toBeNull();
+    });
+
+    it('works from the free space when the used space is not given', () => {
+        expect(storagePercent({storage: {size: 1000, free: 250}})).toBe(75);
+    });
+});
+
+describe('simpleItems, beyond the defaults', () => {
+    it('finds a pack on the device whatever the case of its uuid', () => {
+        const groups = [{uuid: 'abc-def', packs: [{path: 'a.zip', format: 'archive', title: 'A'}]}];
+        expect(simpleItems(groups, [{uuid: 'ABC-DEF'}])[0].onDevice).toBe(true);
+        expect(simpleItem({uuid: 'ABC-DEF', packs: []}, ['abc-def']).onDevice).toBe(true);
+    });
+
+    it('sorts titles in the language given', () => {
+        const groups = ['b', 'a', 'B'].map((title, i) => ({uuid: 'u' + i, packs: [{path: i + '.zip', title}]}));
+        expect(simpleItems(groups, [], {locale: 'en'}).map(i => i.title)).toEqual(['a', 'b', 'B']);
+        // An unknown tag falls back to the browser's order
+        expect(simpleItems(groups, [], {locale: 'not a tag'}).map(i => i.title)).toEqual(['a', 'b', 'B']);
     });
 });

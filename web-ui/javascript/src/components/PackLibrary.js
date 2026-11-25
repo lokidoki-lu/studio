@@ -17,6 +17,7 @@ import {
     actionLoadLibraryPackInEditor,
     actionConvertInLibrary,
     actionRemoveFromLibrary,
+    actionRemoveManyFromLibrary,
     actionUploadToLibrary,
     actionUploadManyToLibrary,
     actionCreatePackInEditor,
@@ -88,7 +89,6 @@ export class PackLibrary extends React.Component {
     }
 
     componentWillReceiveProps(nextProps, nextContext) {
-        console.log(nextProps);
         this.setState({
             device: nextProps.device,
             library: nextProps.library
@@ -105,7 +105,10 @@ export class PackLibrary extends React.Component {
         this.sendToDevice(JSON.parse(packData));
     };
 
-    /** Sends a library group ({uuid, packs}) to the plugged device, converting it first if needed. */
+    /**
+     * Sends a library group ({uuid, packs}) to the plugged device, converting it first if needed.
+     * Returns a promise settled once the transfer is started, or a dialog asks what to do.
+     */
     sendToDevice = (data) => {
         const driverFormat = this.state.device.metadata.driver;
         // Which artefact goes to the device is decided in utils/packs. It compares no timestamps and
@@ -124,8 +127,7 @@ export class PackLibrary extends React.Component {
             // No identifiable non-converted source is currently in the library, so there is no
             // current source to compare this against and none to offer for re-conversion
             console.log('OK, transferring pack: %o', cached);
-            this.doAddToDevice(cached, cached.path);
-            return;
+            return this.doAddToDevice(cached, cached.path);
         }
 
         if (action === 'convert') {   // No compatible pack: convert the source
@@ -140,11 +142,11 @@ export class PackLibrary extends React.Component {
                 });
             } else {
                 // Pack is converted and stored in the local library, then transferred to the device
-                this.props.convertPackInLibrary(source.uuid, source.path, driverFormat, this.props.settings.allowEnriched, this.context)
+                return this.props.convertPackInLibrary(source.uuid, source.path, driverFormat, this.props.settings.allowEnriched, this.context)
                     .then(path => {
                         // A failed conversion has already been reported, and yields no path
                         if (path) {
-                            this.doAddToDevice({...source, format: driverFormat}, path);
+                            return this.doAddToDevice({...source, format: driverFormat}, path);
                         }
                     });
             }
@@ -155,7 +157,7 @@ export class PackLibrary extends React.Component {
         // The backend is the only thing that can say whether they correspond: it holds what was
         // recorded when the conversion was made, and it reads both artefacts to compare. A verdict
         // it cannot give, for any reason at all, leaves the choice with the user.
-        this.props.verifyConversion(source.path, cached.path)
+        return this.props.verifyConversion(source.path, cached.path)
             .then(response => response && response.verdict)
             .catch(e => {
                 console.error('could not verify the conversion, asking rather than assuming', e);
@@ -165,8 +167,7 @@ export class PackLibrary extends React.Component {
                 const verified = applyProvenanceVerdict(decision, verdict);
                 if (verified.action === 'transfer') {
                     console.log('conversion proven to match the source, transferring: %o', cached);
-                    this.doAddToDevice(cached, cached.path);
-                    return;
+                    return this.doAddToDevice(cached, cached.path);
                 }
                 console.log('conversion not proven (%s), asking', verified.verdict);
                 this.setState({
@@ -185,7 +186,7 @@ export class PackLibrary extends React.Component {
 
     doAddToDevice = (data, path) => {
         // Transfer pack and show progress
-        this.props.addFromLibrary(data.uuid, path, data.format, this.state.device.metadata.driver, this.context);
+        return this.props.addFromLibrary(data.uuid, path, data.format, this.state.device.metadata.driver, this.context);
     };
 
     dismissEnrichedDialog = (allow) => {
@@ -669,6 +670,7 @@ export const mapDispatchToProps = (dispatch, ownProps) => ({
     loadLibraryPackInEditor: (path) => dispatch(actionLoadLibraryPackInEditor(path, ownProps.t)),
     convertPackInLibrary: (uuid, path, format, allowEnriched, context) => dispatch(actionConvertInLibrary(uuid, path, format, allowEnriched, context, ownProps.t)),
     removeFromLibrary: (path) => dispatch(actionRemoveFromLibrary(path, ownProps.t)),
+    removeManyFromLibrary: (paths) => dispatch(actionRemoveManyFromLibrary(paths, ownProps.t)),
     uploadPackToLibrary: (path, packData) => dispatch(actionUploadToLibrary(null, path, packData, ownProps.t)),
     uploadPacksToLibrary: (files) => dispatch(actionUploadManyToLibrary(files, ownProps.t)),
     verifyConversion: (sourcePath, convertedPath) => verifyConversion(sourcePath, convertedPath),
