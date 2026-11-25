@@ -37,6 +37,17 @@ class YoutubePackRequestTest {
         assertEquals(96, r.bitrate);
         assertEquals(10, r.menuSize);
         assertEquals(50, r.maxVideos);
+        assertEquals(YoutubeImageStyle.COLOR, r.imageStyle);
+    }
+
+    @Test
+    void imageStyle() {
+        JsonObject body = new JsonObject().put("urls", "https://youtu.be/abcdefghijk");
+        assertEquals(YoutubeImageStyle.DRAWING, YoutubePackRequest.fromJson(body.copy().put("imageStyle", "drawing")).imageStyle);
+        assertEquals(YoutubeImageStyle.NEGATIVE, YoutubePackRequest.fromJson(body.copy().put("imageStyle", "NEGATIVE")).imageStyle);
+        assertEquals(YoutubeImageStyle.COLOR, YoutubePackRequest.fromJson(body.copy().put("imageStyle", "")).imageStyle);
+        assertEquals(YoutubePackException.Code.INVALID_REQUEST, refusal(body.copy().put("imageStyle", "sepia")));
+        assertEquals(YoutubePackException.Code.INVALID_REQUEST, refusal(body.copy().put("imageStyle", 3)));
     }
 
     @Test

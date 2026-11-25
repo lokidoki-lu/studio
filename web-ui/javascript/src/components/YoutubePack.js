@@ -11,7 +11,7 @@ import {toast} from "react-toastify";
 
 import {actionRefreshLibrary} from "../actions";
 import {fetchYoutubeTools, startYoutubePack, fetchYoutubeJob, fetchCurrentYoutubeJob, cancelYoutubePack} from "../services/youtube";
-import {BITRATES, defaultForm, formProblem, buildRequest, isRunning, progressPercent, lastLines,
+import {BITRATES, IMAGE_STYLES, imageStyleSampleUrl, setImageStyle, defaultForm, formProblem, buildRequest, isRunning, progressPercent, lastLines,
     errorText, pendingJobId, setPendingJobId} from "../utils/youtube";
 import Modal from "./Modal";
 import {TITLE_VOICES} from "../utils/titleAssets";
@@ -218,6 +218,11 @@ export class YoutubePack extends React.Component {
         };
     };
 
+    onImageStyle = (event) => {
+        setImageStyle(event.target.value);
+        this.onField('imageStyle')(event);
+    };
+
     onStart = () => {
         const maxLinks = this.state.tools && this.state.tools.maxLinks;
         if (this.state.starting || formProblem(this.state.form, maxLinks)) {
@@ -304,6 +309,8 @@ export class YoutubePack extends React.Component {
         const { t } = this.props;
         const { form, tools, startError } = this.state;
         const voices = (tools && Array.isArray(tools.voices) && tools.voices.length > 0) ? tools.voices : [form.voice];
+        const imageStyles = (tools && Array.isArray(tools.imageStyles))
+            ? tools.imageStyles.filter(s => IMAGE_STYLES.includes(s)) : IMAGE_STYLES;
         const problem = form.links ? formProblem(form, tools && tools.maxLinks) : null;
         return <div className="youtube-pack-form">
             <label htmlFor="youtube-pack-links">{t('youtubePack.links')}</label>
@@ -321,6 +328,14 @@ export class YoutubePack extends React.Component {
                 <select id="youtube-pack-voice" value={form.voice} onChange={this.onField('voice')}>
                     {voices.map(v => <option key={v} value={v}>{voiceLabel(t, v)}</option>)}
                 </select>
+                <label htmlFor="youtube-pack-image-style" title={t('youtubePack.help.imageStyle')}>{t('youtubePack.imageStyle')}</label>
+                <div className="youtube-pack-image-style">
+                    <select id="youtube-pack-image-style" value={form.imageStyle} onChange={this.onImageStyle}>
+                        {imageStyles.map(s => <option key={s} value={s}>{t(`youtubePack.imageStyles.${s}`)}</option>)}
+                    </select>
+                    <img src={imageStyleSampleUrl(form.imageStyle)} width={160} height={120}
+                         alt={t('youtubePack.imageStylePreview') + ' : ' + t(`youtubePack.imageStyles.${form.imageStyle}`)} />
+                </div>
             </div>
 
             <fieldset className="youtube-pack-options">

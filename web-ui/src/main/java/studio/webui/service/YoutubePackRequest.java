@@ -53,10 +53,12 @@ public final class YoutubePackRequest {
     public final int menuSize;
     public final int bitrate;
     public final int maxVideos;
+    public final YoutubeImageStyle imageStyle;
 
     private YoutubePackRequest(List<String> urls, String title, String description, String voice, String engine,
                                boolean cleanTitles, boolean sponsorBlock, boolean seasons, boolean autoplayNext,
-                               boolean pauses, int minDuration, int maxDuration, int menuSize, int bitrate, int maxVideos) {
+                               boolean pauses, int minDuration, int maxDuration, int menuSize, int bitrate, int maxVideos,
+                               YoutubeImageStyle imageStyle) {
         this.urls = urls;
         this.title = title;
         this.description = description;
@@ -72,6 +74,7 @@ public final class YoutubePackRequest {
         this.menuSize = menuSize;
         this.bitrate = bitrate;
         this.maxVideos = maxVideos;
+        this.imageStyle = imageStyle;
     }
 
     public static YoutubePackRequest fromJson(JsonObject body) {
@@ -135,11 +138,14 @@ public final class YoutubePackRequest {
         if (!BITRATES.contains(bitrate)) {
             throw invalid("D\u00e9bit audio non propos\u00e9 : " + bitrate + " (48, 64, 96 ou 128)");
         }
+        String style = text(body, "imageStyle", 20);
+        YoutubeImageStyle imageStyle = style == null ? YoutubeImageStyle.DEFAULT
+                : YoutubeImageStyle.fromId(style).orElseThrow(() -> invalid("Style d'image inconnu : " + style));
         return new YoutubePackRequest(List.copyOf(normalized), title, description == null ? "" : description, voice, engine,
                 bool(body, "cleanTitles", true), bool(body, "sponsorBlock", true), bool(body, "seasons", true),
                 bool(body, "autoplayNext", false), bool(body, "pauses", true),
                 minDuration, maxDuration, integer(body, "menuSize", DEFAULT_MENU_SIZE, 0, 50), bitrate,
-                integer(body, "maxVideos", DEFAULT_MAX_VIDEOS, 1, MAX_VIDEOS));
+                integer(body, "maxVideos", DEFAULT_MAX_VIDEOS, 1, MAX_VIDEOS), imageStyle);
     }
 
     /**

@@ -192,6 +192,27 @@ describe('YouTube button', () => {
         expect(container.querySelector('.youtube-pack-error')).toBeNull();
     });
 
+    it('previews the chosen picture style and remembers it', async () => {
+        window.localStorage.clear();
+        fetchCurrentYoutubeJob.mockResolvedValue(null);
+        fetchYoutubeTools.mockResolvedValue({ready: true, jsRuntime: true, imageStyles: ['color', 'gray', 'drawing', 'negative']});
+        await mount();
+        act(() => { container.querySelector('.youtube-pack-button').click(); });
+        await flush();
+        const select = document.getElementById('youtube-pack-image-style');
+        const preview = () => document.querySelector('.youtube-pack-image-style img').getAttribute('src');
+        expect(select.value).toBe('color');
+        expect(preview()).toBe('/api/youtube/image-styles/color.png');
+        expect(Array.from(select.options).map(o => o.textContent)).toContain('youtubePack.imageStyles.drawing');
+        act(() => {
+            select.value = 'drawing';
+            select.dispatchEvent(new Event('change', {bubbles: true}));
+        });
+        expect(preview()).toBe('/api/youtube/image-styles/drawing.png');
+        expect(window.localStorage.getItem('youtubeImageStyle')).toBe('drawing');
+        window.localStorage.clear();
+    });
+
     it('translates the refusals it knows, and shows the message of the others', async () => {
         fetchCurrentYoutubeJob.mockResolvedValue(null);
         const {component} = await mount();

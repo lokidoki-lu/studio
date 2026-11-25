@@ -297,7 +297,8 @@ Microsoft).
 ```json
 {"ready": true, "ytDlp": true, "ytDlpVersion": "2026.11.23", "ffmpeg": true, "jsRuntime": true,
  "message": null, "voices": […], "defaultVoice": "fr-FR-DeniseNeural", "bitrates": [48, 64, 96, 128],
- "defaultBitrate": 96, "defaultMenuSize": 10, "defaultMaxVideos": 50, "maxLinks": 20}
+ "defaultBitrate": 96, "defaultMenuSize": 10, "defaultMaxVideos": 50, "maxLinks": 20,
+ "imageStyles": ["color", "gray", "drawing", "negative"], "defaultImageStyle": "color"}
 ```
 
 `message` says what is missing, in French, when `ready` is false.
@@ -308,7 +309,7 @@ Microsoft).
 {"urls": ["https://www.youtube.com/playlist?list=…"], "title": "Les Dalton", "description": "",
  "voice": "fr-FR-DeniseNeural", "engine": "auto", "cleanTitles": true, "sponsorBlock": true,
  "seasons": true, "autoplayNext": false, "pauses": true, "minDuration": 0, "maxDuration": 0,
- "menuSize": 10, "bitrate": 96, "maxVideos": 50}
+ "menuSize": 10, "bitrate": 96, "maxVideos": 50, "imageStyle": "color"}
 ```
 
 - `urls`: required, 1 to 20 links (an array, or one string with one link per line). Only YouTube
@@ -330,6 +331,13 @@ Microsoft).
   slices; 0 = never.
 - `bitrate`: story audio, 48, 64, 96 or 128 kbit/s.
 - `maxVideos`: 1 to 200; videos beyond are left out, with a warning.
+- `imageStyle`: how the pictures (thumbnails, cover, menus) look: `color` (as they are, the
+  default), `gray` (shades of grey, contrast stretched), `drawing` (white outlines on black, like
+  the official packs) or `negative` (inverted shades of grey). The title bands are drawn after, so
+  they stay readable.
+
+`GET /api/youtube/image-styles/<style>.png` → a 320×240 sample picture in that style (a drawn
+landscape with a title band), for the dialog's preview; `404` for an unknown style.
 
 The pack is the one Lunii Pack writes: a cover (mosaic of up to four thumbnails with the title), an
 optional main menu of sub-menus, and for each video a title stage (thumbnail cropped to 320×240,
