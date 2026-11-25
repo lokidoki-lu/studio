@@ -241,10 +241,15 @@ The pack is the one Lunii Pack writes: a cover (mosaic of up to four thumbnails 
 optional main menu of sub-menus, and for each video a title stage (thumbnail cropped to 320×240,
 spoken title) then the story (mono MP3, 44.1 kHz, loudness normalised, autoplay). Node uuids derive
 from the links asked for and the video ids, so making the same pack again gives the same uuids
-(an update on the device), and two packs of the same title stay two packs. It is added to
+(and version 1): the device sees the pack it already has, which must be removed from it before the
+new one is sent. Two packs of the same title stay two packs. It is added to
 the library under `<title>.zip`, or `<title> (2).zip`… when that name is taken: an existing pack is
-never replaced. When YouTube asks to prove one is not a robot, downloads stop and the pack is made
-with the videos already downloaded (`result.blocked`).
+never replaced. When YouTube asks to prove one is not a robot (or answers "too many requests"),
+downloads stop and the pack is made with the videos already downloaded (`result.blocked`). A video
+that asks to confirm the viewer's age, a link that cannot be read in time, a download left
+unfinished: that video is skipped (a warning in `log`), the others go on. So is a story whose MP3
+exceeds 256 MiB, and the stories that would take the pack beyond 2 GiB: STUdio could not read such
+a pack back, to convert or send it.
 
 `GET /api/youtube/jobs/{id}`, `GET /api/youtube/jobs/current` (the running creation, else the last
 one; `404` when there has been none) →
@@ -276,4 +281,7 @@ A finished job's `error`: `BLOCKED` (YouTube refused every download), `NOTHING_D
 
 Processes are started from an argument list, never through a shell; the link comes after `--` so
 it can never be read as an option; each run has a time limit (60 min per download,
-`-Dstudio.youtube.downloadTimeoutMinutes`; 30 min per conversion) and is killed on cancel.
+`-Dstudio.youtube.downloadTimeoutMinutes`; 30 min per conversion) and is killed on cancel. Python
+runs with `-E`, from an empty folder of STUdio's temporary folder: nothing is imported from the
+current folder, and packages installed with `pip install --user` are found. What an interrupted
+creation left in the temporary folder is removed when STUdio starts.

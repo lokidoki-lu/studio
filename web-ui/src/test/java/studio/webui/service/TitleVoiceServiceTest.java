@@ -120,7 +120,9 @@ public class TitleVoiceServiceTest {
 
         List<String> cmd = runner.commands.get(1);
         assertEquals("python-test", cmd.get(0));
-        assertEquals(List.of("-I", "-m", "edge_tts", "--voice", "fr-FR-HenriNeural", "--file"), cmd.subList(1, 7));
+        // -E rather than -I: packages installed with "pip install --user" are found
+        assertEquals(List.of("python-test", "-E", "-c", "import edge_tts"), runner.commands.get(0));
+        assertEquals(List.of("-E", "-m", "edge_tts", "--voice", "fr-FR-HenriNeural", "--file"), cmd.subList(1, 7));
         for (List<String> c : runner.commands) {
             assertFalse(c.stream().anyMatch(a -> a.contains("loup")), "the text must not be an argument");
             assertFalse(c.get(0).toLowerCase().matches(".*(cmd|sh|bash)(\\.exe)?"));
@@ -198,15 +200,64 @@ public class TitleVoiceServiceTest {
     @DisplayName("the real runner kills a process that outlives its time limit")
     void realRunnerTimeout() {
         String java = Paths.get(System.getProperty("java.home"), "bin", "java").toString();
-        TitleVoiceService.CommandRunner real = new TitleVoiceService.ProcessCommandRunner();
+        TitleVoiceService.CommandRunner real = new TitleVoiceService.ProcessCommandRunner(null);
         // `java` with no class prints usage and exits quickly: exit code, no timeout
         assertThrows(TitleVoiceService.CommandTimeoutException.class, () ->
                 real.run(List.of(java, "-cp", System.getProperty("java.class.path"), Sleeper.class.getName()), Map.of(), Duration.ofMillis(300)));
     }
 
+    @Test
+    @DisplayName("the real runner starts the programs in an empty folder of its own, not in STUdio's")
+    void realRunnerStartsInItsOwnFolder() throws Exception {
+        String java = Paths.get(System.getProperty("java.home"), "bin", "java").toString();
+        Path dir = tmp.resolve("cwd");
+        Path out = tmp.resolve("user.dir.txt");
+        int code = new TitleVoiceService.ProcessCommandRunner(dir).run(List.of(java, "-cp", absoluteClassPath(),
+                WriteUserDir.class.getName(), out.toString()), Map.of(), Duration.ofSeconds(30));
+        assertEquals(0, code);
+        assertEquals(dir.toRealPath(), Paths.get(Files.readString(out)).toRealPath());
+    }
+
+    @Test
+    void programLocationsLoseTheirQuotes() {
+        assertEquals("C:\\Program Files\\Python\\python.exe", TitleVoiceService.unquote("  \"C:\\Program Files\\Python\\python.exe\" "));
+        assertEquals("/usr/bin/python3", TitleVoiceService.unquote("'/usr/bin/python3'"));
+        assertEquals("python", TitleVoiceService.unquote("python"));
+        assertEquals("\"", TitleVoiceService.unquote("\""));
+        assertNull(TitleVoiceService.unquote(null));
+        String old = System.getProperty(TitleVoiceService.PYTHON_PROP);
+        System.setProperty(TitleVoiceService.PYTHON_PROP, "\"C:\\Mon Python\\python.exe\"");
+        try {
+            assertEquals("C:\\Mon Python\\python.exe", TitleVoiceService.defaultPythonCandidates().get(0));
+        } finally {
+            if (old == null) {
+                System.clearProperty(TitleVoiceService.PYTHON_PROP);
+            } else {
+                System.setProperty(TitleVoiceService.PYTHON_PROP, old);
+            }
+        }
+    }
+
+    /** The test class path with absolute entries, for a process started in another folder. */
+    static String absoluteClassPath() {
+        StringBuilder sb = new StringBuilder();
+        for (String e : System.getProperty("java.class.path").split(java.io.File.pathSeparator)) {
+            if (!e.isEmpty()) {
+                sb.append(sb.length() > 0 ? java.io.File.pathSeparator : "").append(Paths.get(e).toAbsolutePath());
+            }
+        }
+        return sb.toString();
+    }
+
     public static class Sleeper {
         public static void main(String[] args) throws Exception {
             Thread.sleep(30_000);
+        }
+    }
+
+    public static class WriteUserDir {
+        public static void main(String[] args) throws Exception {
+            Files.writeString(Paths.get(args[0]), System.getProperty("user.dir"));
         }
     }
 }
