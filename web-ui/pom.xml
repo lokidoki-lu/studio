@@ -132,8 +132,18 @@
                     <exclude>studio-linux.sh</exclude>
                     <exclude>studio-macos.sh</exclude>
                     <exclude>studio-windows.bat</exclude>
+                    <exclude>webroot/**</exclude>
                 </excludes>
                 <filtering>true</filtering>
+            </resource>
+            <!-- the web root (translations...) is copied as is, never filtered: nothing in it is a
+                 Maven property, and filtering re-encodes the text -->
+            <resource>
+                <directory>src/main/resources</directory>
+                <includes>
+                    <include>webroot/**</include>
+                </includes>
+                <filtering>false</filtering>
             </resource>
             <!-- resource processing with a different output directory for scripts -->
             <resource>

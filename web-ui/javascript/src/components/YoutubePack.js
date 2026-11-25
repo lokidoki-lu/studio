@@ -14,8 +14,15 @@ import {fetchYoutubeTools, startYoutubePack, fetchYoutubeJob, fetchCurrentYoutub
 import {BITRATES, defaultForm, formProblem, buildRequest, isRunning, progressPercent, lastLines,
     errorText, pendingJobId, setPendingJobId} from "../utils/youtube";
 import Modal from "./Modal";
+import {TITLE_VOICES} from "../utils/titleAssets";
 
 import './YoutubePack.css';
+
+// The voice's name as the editor shows it ("Denise (femme)"), its identifier otherwise
+const voiceLabel = (t, value) => {
+    const known = TITLE_VOICES.find(v => v.value === value);
+    return known ? t('editor.titleVoice.voices.' + known.key) : value;
+};
 
 const POLL_MILLIS = 1000;
 // Successive failures to reach the backend before the button stops following the creation
@@ -312,7 +319,7 @@ export class YoutubePack extends React.Component {
                 <input id="youtube-pack-description" type="text" maxLength={500} value={form.description} onChange={this.onField('description')} />
                 <label htmlFor="youtube-pack-voice">{t('youtubePack.voice')}</label>
                 <select id="youtube-pack-voice" value={form.voice} onChange={this.onField('voice')}>
-                    {voices.map(v => <option key={v} value={v}>{v}</option>)}
+                    {voices.map(v => <option key={v} value={v}>{voiceLabel(t, v)}</option>)}
                 </select>
             </div>
 

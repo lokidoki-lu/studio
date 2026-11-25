@@ -184,7 +184,9 @@ class PackViewer extends React.Component {
                     <a href="" onClick={this.pauseClicked}>
                         <g className="button actionable">
                             <circle className="button actionable" cx="850" cy="242" r="30" />
-                            <text x="832" y="250" fontSize="32">&#9646;&#9646;</text>
+                            {/* Two bars drawn, not the ▮▮ glyph: its width depends on the font, which moved it off centre */}
+                            <rect className="button-glyph" x="838" y="228" width="9" height="28" rx="1.5" />
+                            <rect className="button-glyph" x="853" y="228" width="9" height="28" rx="1.5" />
                         </g>
                     </a>
 

@@ -25,6 +25,16 @@ describe('YouTube dialog', () => {
             sponsorBlock: true, seasons: true, autoplayNext: false, pauses: true});
     });
 
+    it('starts from the voice chosen in the editor when the backend offers it', () => {
+        window.localStorage.setItem('titleVoice', 'fr-FR-EloiseNeural');
+        try {
+            expect(defaultForm({defaultVoice: 'fr-FR-DeniseNeural', voices: ['fr-FR-DeniseNeural', 'fr-FR-EloiseNeural']}).voice).toBe('fr-FR-EloiseNeural');
+            expect(defaultForm({defaultVoice: 'fr-FR-DeniseNeural', voices: ['fr-FR-DeniseNeural']}).voice).toBe('fr-FR-DeniseNeural');
+        } finally {
+            window.localStorage.removeItem('titleVoice');
+        }
+    });
+
     it('says what is wrong with the form', () => {
         const form = defaultForm(null);
         expect(formProblem(form)).toBe('youtubePack.problems.noLink');

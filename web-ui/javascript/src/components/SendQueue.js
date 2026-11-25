@@ -54,8 +54,21 @@ export default class SendQueue extends React.Component {
     renderBar() {
         const {t, state, queue, device, visible} = this.props;
         const count = queue.selectedGroups().length;
-        if (count === 0 || state.run) {
+        if (state.run) {
             return null;
+        }
+        if (count === 0) {
+            // Shown even with nothing selected, at the same height: appearing on the first tick, the
+            // bar used to push the grid down under the pointer, and the next click missed its box
+            if (!visible || visible.length === 0) {
+                return null;
+            }
+            return <div className="send-queue-bar send-queue-idle">
+                <span className="send-queue-space">{t('sendQueue.hint')}</span>
+                <span className="send-queue-actions">
+                    <button type="button" className="ui-btn" onClick={() => queue.select(visible, true)}>{t('sendQueue.selectAll')}</button>
+                </span>
+            </div>;
         }
         const plugged = !!(device && device.metadata);
         const estimate = state.estimate;

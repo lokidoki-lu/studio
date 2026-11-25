@@ -805,6 +805,7 @@
     "selection": "{{count}} pack sélectionné",
     "selection_plural": "{{count}} packs sélectionnés",
     "select": "Sélectionner « {{title}} » pour l'envoi sur la Lunii",
+    "hint": "Cochez des packs pour les envoyer ensemble sur la Lunii.",
     "selectAll": "Tout sélectionner",
     "clear": "Tout désélectionner",
     "send": "Envoyer la sélection sur la Lunii",

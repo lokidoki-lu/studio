@@ -346,7 +346,7 @@ exceeds 256 MiB, and the stories that would take the pack beyond 2 GiB: STUdio c
 a pack back, to convert or send it.
 
 `GET /api/youtube/jobs/{id}`, `GET /api/youtube/jobs/current` (the running creation, else the last
-one; `404` when there has been none) →
+one; `204` without a body when there has been none) →
 
 ```json
 {"id": "…", "state": "RUNNING", "step": "DOWNLOADING", "progress": 0.42, "current": 3, "total": 8,
