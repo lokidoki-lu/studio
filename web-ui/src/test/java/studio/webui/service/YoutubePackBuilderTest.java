@@ -169,4 +169,27 @@ class YoutubePackBuilderTest {
         BufferedImage empty = YoutubePackBuilder.mosaic(new ArrayList<>(), "Titre");
         assertEquals(240, empty.getHeight());
     }
+
+    @Test
+    void wrappedLinesNeverSplitACharacter() {
+        BufferedImage img = new BufferedImage(10, 10, BufferedImage.TYPE_INT_RGB);
+        java.awt.Graphics2D g = img.createGraphics();
+        g.setFont(new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.BOLD, 22));
+        java.awt.FontMetrics fm = g.getFontMetrics();
+        g.dispose();
+        // One word far too long for a line, made of characters outside the BMP, then cut to two lines
+        List<String> lines = YoutubePackBuilder.wrap("\ud835\udc00".repeat(60) + " fin", fm, 100, 2);
+        assertEquals(2, lines.size());
+        for (String l : lines) {
+            for (int i = 0; i < l.length(); i++) {
+                char c = l.charAt(i);
+                if (Character.isHighSurrogate(c)) {
+                    assertTrue(i + 1 < l.length() && Character.isLowSurrogate(l.charAt(i + 1)), "lone surrogate in " + l);
+                    i++;
+                } else {
+                    assertTrue(!Character.isLowSurrogate(c), "lone surrogate in " + l);
+                }
+            }
+        }
+    }
 }

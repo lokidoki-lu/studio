@@ -104,4 +104,35 @@ class YoutubeTitlesTest {
         assertEquals("les-histoires-d-ete", YoutubeTitles.slug("Les histoires d'\u00e9t\u00e9 !"));
         assertEquals("pack", YoutubeTitles.slug("\u2728"));
     }
+
+    @Test
+    void onlyEmojiAreRemovedNotOtherSymbols() {
+        // Box-drawing separators split the title instead of disappearing
+        assertEquals("Les Dalton - Le magot", YoutubeTitles.clean("Les Dalton \u2502 Le magot", null));
+        assertEquals("Les Dalton - Le magot", YoutubeTitles.clean("Les Dalton \u2503 Le magot \ud83c\udfac", null));
+        assertEquals("Les Dalton - Le magot", YoutubeTitles.clean("Les Dalton \u00a6 Le magot", null));
+        assertEquals("Il fait 20\u00b0 \u2116 5 \u00a9 Studio\u2122", YoutubeTitles.clean("Il fait 20\u00b0 \u2116 5 \u00a9 Studio\u2122", null));
+        assertEquals("Le loup", YoutubeTitles.clean("\u2b50 Le loup \u2764\ufe0f \ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67", null));
+    }
+
+    @Test
+    void aNumberGivenToADuplicateIsNotAnotherTitle() {
+        assertEquals(List.of("A", "A 3", "A 2"), YoutubeTitles.numberDuplicates(List.of("A", "A", "A 2")));
+        assertEquals(List.of("A 2", "A", "A 3", "A 4"), YoutubeTitles.numberDuplicates(List.of("A 2", "A", "A", "A")));
+    }
+
+    @Test
+    void commonPrefixWithCharactersWhoseLowerCaseIsLonger() {
+        // "\u0130".toLowerCase() is two characters: the prefix found on lower-cased titles was longer
+        // than the second title (StringIndexOutOfBoundsException, the whole creation failed)
+        List<String> titles = List.of("i\u0307i\u0307i\u0307i\u0307i\u0307i\u0307 abc: premier", "\u0130\u0130\u0130\u0130\u0130\u0130 abc: x");
+        assertEquals(titles, YoutubeTitles.removeCommonPrefix(titles));
+        assertEquals(List.of("Premier", "Second"), YoutubeTitles.removeCommonPrefix(List.of("S\u00e9rie: premier", "s\u00c9RIE: second")));
+        assertEquals(List.of("Un - a", "Un - b"), YoutubeTitles.removeCommonPrefix(List.of("Un - a", "Un - b")));
+    }
+
+    @Test
+    void fileNameIsNotCutInsideAnEmoji() {
+        assertEquals("a".repeat(79), YoutubeTitles.fileName("a".repeat(79) + "\ud83d\ude00 la suite"));
+    }
 }

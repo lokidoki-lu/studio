@@ -141,10 +141,26 @@ public class TitleVoiceService {
     private static final long NEGATIVE_PROBE_TTL_MILLIS = 60_000;
 
     public TitleVoiceService() {
-        this(new ProcessCommandRunner(), defaultPythonCandidates(), defaultPowershell(),
-                Paths.get(System.getProperty("studio.tmpdir", System.getProperty("user.home") + "/.studio/tmp/"), "tts"),
-                Duration.ofSeconds(Long.getLong(TIMEOUT_PROP, 60)));
+        this(defaultTmpRoot(), Duration.ofSeconds(Long.getLong(TIMEOUT_PROP, 60)));
     }
+
+    private TitleVoiceService(Path tmpRoot, Duration timeout) {
+        this(new ProcessCommandRunner(tmpRoot.resolve(PROGRAMS_DIR)), defaultPythonCandidates(), defaultPowershell(), tmpRoot, timeout);
+    }
+
+    private static Path defaultTmpRoot() {
+        return Paths.get(System.getProperty("studio.tmpdir", System.getProperty("user.home") + "/.studio/tmp/"), "tts").toAbsolutePath();
+    }
+
+    /** Empty folder, under the temporary folder, where the programs are started (see {@link ProcessCommandRunner}). */
+    static final String PROGRAMS_DIR = "cwd";
+
+    /**
+     * Python started with {@code -E} (environment variables ignored) from an empty folder, so that
+     * nothing is imported from the current folder, while the packages installed with
+     * {@code pip install --user} stay visible (they are not with {@code -I}).
+     */
+    static final String PYTHON_FLAG = "-E";
 
     public TitleVoiceService(CommandRunner runner, List<String> pythonCandidates, String powershell, Path tmpRoot, Duration timeout) {
         this.runner = runner;
@@ -158,17 +174,32 @@ public class TitleVoiceService {
 
     static List<String> defaultPythonCandidates() {
         Set<String> candidates = new LinkedHashSet<>();
-        String prop = System.getProperty(PYTHON_PROP);
-        if (prop != null && !prop.isBlank()) {
-            candidates.add(prop.trim());
+        String prop = unquote(System.getProperty(PYTHON_PROP));
+        if (prop != null && !prop.isEmpty()) {
+            candidates.add(prop);
         }
-        String env = System.getenv(PYTHON_ENV);
-        if (env != null && !env.isBlank()) {
-            candidates.add(env.trim());
+        String env = unquote(System.getenv(PYTHON_ENV));
+        if (env != null && !env.isEmpty()) {
+            candidates.add(env);
         }
         candidates.add("python");
         candidates.add("python3");
         return new ArrayList<>(candidates);
+    }
+
+    /**
+     * A program location as people write it on Windows, {@code "C:\Program Files\...\python.exe"}:
+     * trimmed, without the surrounding quotes (no shell removes them here, and a path cannot hold them).
+     */
+    static String unquote(String location) {
+        if (location == null) {
+            return null;
+        }
+        String s = location.trim();
+        while (s.length() >= 2 && (s.startsWith("\"") && s.endsWith("\"") || s.startsWith("'") && s.endsWith("'"))) {
+            s = s.substring(1, s.length() - 1).trim();
+        }
+        return s;
     }
 
     /** The Windows PowerShell executable, by absolute path so that PATH cannot substitute another one. */
@@ -233,7 +264,7 @@ public class TitleVoiceService {
         edgeProbedAt = now;
         for (String python : pythonCandidates) {
             try {
-                int code = runner.run(List.of(python, "-I", "-c", "import edge_tts"), Map.of(), Duration.ofSeconds(20));
+                int code = runner.run(List.of(python, PYTHON_FLAG, "-c", "import edge_tts"), Map.of(), Duration.ofSeconds(20));
                 if (code == 0) {
                     LOGGER.info("edge-tts found with " + python);
                     edgePython = python;
@@ -320,7 +351,7 @@ public class TitleVoiceService {
 
     /** The edge command line. Text and output are files; the voice has been checked against {@link #VOICE_NAME}. */
     static List<String> edgeCommand(String python, String voice, Path textFile, Path out) {
-        return List.of(python, "-I", "-m", "edge_tts",
+        return List.of(python, PYTHON_FLAG, "-m", "edge_tts",
                 "--voice", voice,
                 "--file", textFile.toString(),
                 "--write-media", out.toString());
@@ -427,9 +458,24 @@ public class TitleVoiceService {
 
     /** Starts the process directly (no shell), discards its output, kills it on timeout. */
     static final class ProcessCommandRunner implements CommandRunner {
+        /**
+         * Empty folder the programs start in, or null for STUdio's own. Python puts the current
+         * folder first in its module path (with {@code -E}, unlike {@code -I}): an
+         * {@code edge_tts.py} lying in STUdio's folder would be run instead of the package.
+         */
+        private final Path directory;
+
+        ProcessCommandRunner(Path directory) {
+            this.directory = directory;
+        }
+
         @Override
         public int run(List<String> command, Map<String, String> environment, Duration timeout) throws IOException, InterruptedException {
             ProcessBuilder pb = new ProcessBuilder(command);
+            if (directory != null) {
+                pb.directory(Files.createDirectories(directory).toFile());
+                pb.command(YoutubePackService.ProcessRunner.programRelativeToStudio(command));
+            }
             pb.environment().putAll(environment);
             pb.redirectInput(ProcessBuilder.Redirect.from(nullFile()));
             pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
