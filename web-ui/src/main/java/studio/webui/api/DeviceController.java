@@ -17,6 +17,7 @@ import studio.driver.StoryTellerException;
 import studio.webui.service.ApiErrors;
 import studio.webui.service.DeviceUpdateService;
 import studio.webui.service.IStoryTellerService;
+import studio.webui.service.LibrarySendGuard;
 import studio.webui.service.LibraryService;
 
 import io.vertx.ext.web.RoutingContext;
@@ -25,6 +26,7 @@ import java.io.File;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 public class DeviceController {
@@ -96,6 +98,12 @@ public class DeviceController {
             File packFile = libraryService.libraryEntry(packPath).map(Path::toFile).orElse(null);
             if (packFile == null) {
                 ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "Not an entry of the local library: " + packPath));
+                return;
+            }
+            // Never an official pack, and only the pack the uuid names
+            Optional<StoryTellerException> refused = LibrarySendGuard.refusal(libraryService, uuid, packPath, packFile.toPath());
+            if (refused.isPresent()) {
+                ApiErrors.respond(ctx, refused.get());
                 return;
             }
             // Start transfer to device
@@ -176,7 +184,8 @@ public class DeviceController {
             for (Object o : folders) {
                 names.add(String.valueOf(o));
             }
-            storyTellerService.removeOrphanFolders(names)
+            // From the device check, with its token: refused if the Lunii changed since
+            storyTellerService.removeOrphanFolders(names, stringField(body, "deviceToken"))
                     .whenComplete((results, e) -> {
                         if (e != null) {
                             LOGGER.error("Failed to remove unreferenced pack folders", e);
@@ -368,12 +377,13 @@ public class DeviceController {
             }
             String action = stringField(body, "action");
             String fingerprint = stringField(body, "fingerprint");
-            if (!("discard".equals(action) || "adopt".equals(action)) || fingerprint == null) {
+            String deviceToken = stringField(body, "deviceToken");
+            if (!("discard".equals(action) || "adopt".equals(action)) || fingerprint == null || deviceToken == null) {
                 ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
-                        "'action' must be 'discard' or 'adopt', and 'fingerprint' the one the check reported"));
+                        "'action' must be 'discard' or 'adopt', and 'fingerprint' and 'deviceToken' the ones the check reported"));
                 return;
             }
-            storyTellerService.resolvePendingIndex("adopt".equals(action), fingerprint)
+            storyTellerService.resolvePendingIndex("adopt".equals(action), fingerprint, deviceToken)
                     .whenComplete((done, e) -> {
                         if (e != null) {
                             LOGGER.error("Failed to resolve the pending pack index", e);
@@ -391,14 +401,42 @@ public class DeviceController {
                 return;
             }
             String folder = stringField(body, "folder");
-            if (folder == null) {
-                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "'folder' is required"));
+            String state = stringField(body, "state");
+            String deviceToken = stringField(body, "deviceToken");
+            if (folder == null || state == null || deviceToken == null) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                        "'folder', and the 'state' and 'deviceToken' the check reported, are required"));
                 return;
             }
-            storyTellerService.resolveInterruptedUpdate(folder)
+            storyTellerService.resolveInterruptedUpdate(folder, state, deviceToken)
                     .whenComplete((done, e) -> {
                         if (e != null) {
                             LOGGER.error("Failed to resolve the interrupted update", e);
+                            ApiErrors.respond(ctx, e);
+                        } else {
+                            sendJson(ctx, new JsonObject().put("success", Boolean.TRUE.equals(done)));
+                        }
+                    });
+        }, false);
+
+        // Removes from the index a pack the check reported without content, if it still has none:
+        // {"uuid", "deviceToken"}.
+        router.post("/repair/missingContent").blockingHandler(ctx -> {
+            JsonObject body = jsonBody(ctx);
+            if (body == null) {
+                return;
+            }
+            String uuid = canonicalUuid(stringField(body, "uuid"));
+            String deviceToken = stringField(body, "deviceToken");
+            if (uuid == null || deviceToken == null) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                        "'uuid' (a pack UUID) and the 'deviceToken' the check reported are required"));
+                return;
+            }
+            storyTellerService.removeMissingContentEntry(uuid, deviceToken)
+                    .whenComplete((done, e) -> {
+                        if (e != null) {
+                            LOGGER.error("Failed to remove the entry without content", e);
                             ApiErrors.respond(ctx, e);
                         } else {
                             sendJson(ctx, new JsonObject().put("success", Boolean.TRUE.equals(done)));
@@ -448,6 +486,11 @@ public class DeviceController {
             File packFile = libraryService.libraryEntry(packPath).map(Path::toFile).orElse(null);
             if (packFile == null) {
                 ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST, "Not an entry of the local library: " + packPath));
+                return;
+            }
+            Optional<StoryTellerException> refused = LibrarySendGuard.refusal(libraryService, uuid, packPath, packFile.toPath());
+            if (refused.isPresent()) {
+                ApiErrors.respond(ctx, refused.get());
                 return;
             }
             storyTellerService.updatePack(uuid, packFile)

@@ -13,15 +13,24 @@ import io.vertx.core.logging.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.text.SimpleDateFormat;
+import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -63,6 +72,18 @@ public class DeviceUpdateService implements IStoryTellerService.DevicePackListen
     private final LibraryService libraryService;
     private CompletableFuture<JsonObject> inFlight;
 
+    /**
+     * Comparisons of the card with a library folder that found a difference, so that a pack never
+     * recognised is not read in full again at every listing. Keyed by what would change the answer:
+     * the device, the pack, its size and version on the card, the library folder and its origin.
+     */
+    private final Set<String> knownMismatches = Collections.newSetFromMap(new LinkedHashMap<String, Boolean>() {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
+            return size() > 500;
+        }
+    });
+
     public DeviceUpdateService(IStoryTellerService storyTellerService, LibraryService libraryService) {
         this.storyTellerService = storyTellerService;
         this.libraryService = libraryService;
@@ -76,15 +97,24 @@ public class DeviceUpdateService implements IStoryTellerService.DevicePackListen
 
     private synchronized JsonObject readStore() {
         Path path = storePath();
-        try {
-            if (Files.isRegularFile(path)) {
+        if (Files.isRegularFile(path)) {
+            try {
                 JsonObject root = new JsonObject(new String(Files.readAllBytes(path), StandardCharsets.UTF_8));
                 if (root.getValue("devices") instanceof JsonObject) {
                     return root;
                 }
+                throw new IllegalStateException("no 'devices' object");
+            } catch (IOException | RuntimeException e) {
+                // Set aside, not overwritten by the next record: what it holds may still be recovered.
+                Path aside = path.resolveSibling(path.getFileName() + ".corrupt-"
+                        + new SimpleDateFormat("yyyyMMdd-HHmmss-SSS").format(new Date()));
+                LOGGER.warn("Unreadable record of the packs written to devices: " + path + ", set aside as " + aside, e);
+                try {
+                    Files.move(path, aside);
+                } catch (IOException | RuntimeException moveFailure) {
+                    LOGGER.warn("Could not set aside " + path, moveFailure);
+                }
             }
-        } catch (IOException | RuntimeException e) {
-            LOGGER.warn("Unreadable record of the packs written to devices: " + path, e);
         }
         return new JsonObject().put("schemaVersion", 1).put("devices", new JsonObject());
     }
@@ -94,7 +124,15 @@ public class DeviceUpdateService implements IStoryTellerService.DevicePackListen
         try {
             Files.createDirectories(path.getParent());
             Path tmp = path.resolveSibling(path.getFileName() + ".new");
-            Files.write(tmp, root.encodePrettily().getBytes(StandardCharsets.UTF_8));
+            try (FileChannel channel = FileChannel.open(tmp, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+                    StandardOpenOption.TRUNCATE_EXISTING)) {
+                ByteBuffer bytes = ByteBuffer.wrap(root.encodePrettily().getBytes(StandardCharsets.UTF_8));
+                while (bytes.hasRemaining()) {
+                    channel.write(bytes);
+                }
+                // On disk before it replaces the previous record
+                channel.force(true);
+            }
             try {
                 Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             } catch (AtomicMoveNotSupportedException e) {
@@ -121,6 +159,39 @@ public class DeviceUpdateService implements IStoryTellerService.DevicePackListen
         }
         device.put(uuid.toLowerCase(), new JsonObject().put("origin", origin).put("recordedAt", System.currentTimeMillis()));
         writeStore(root);
+    }
+
+    /**
+     * Records {@code origin} unless a record appeared meanwhile, and answers the record now in place.
+     * A comparison of the card takes time: a pack written during it was recorded by {@link #onWritten},
+     * and that record, not the older content the comparison read, is what the card holds.
+     */
+    synchronized String recordIfAbsent(String deviceKey, String uuid, String origin) {
+        Optional<String> existing = recordedOrigin(deviceKey, uuid);
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+        record(deviceKey, uuid, origin);
+        return origin;
+    }
+
+    /** Forgets the records of a device's packs that are not on it any more. */
+    synchronized void forgetAbsent(String deviceKey, Set<String> presentUuids) {
+        JsonObject root = readStore();
+        JsonObject device = root.getJsonObject("devices").getJsonObject(deviceKey);
+        if (device == null) {
+            return;
+        }
+        boolean changed = false;
+        for (String uuid : new HashSet<>(device.fieldNames())) {
+            if (!presentUuids.contains(uuid)) {
+                device.remove(uuid);
+                changed = true;
+            }
+        }
+        if (changed) {
+            writeStore(root);
+        }
     }
 
     synchronized void forget(String deviceKey, String uuid) {
@@ -178,6 +249,13 @@ public class DeviceUpdateService implements IStoryTellerService.DevicePackListen
             library.put(String.valueOf(group.getString("uuid")).toLowerCase(), group.getJsonArray("packs"));
         }
         JsonArray result = new JsonArray();
+        if (deviceKey != null) {
+            Set<String> present = new HashSet<>();
+            for (Object p : devicePacks) {
+                present.add(String.valueOf(((JsonObject) p).getString("uuid")).toLowerCase());
+            }
+            forgetAbsent(deviceKey, present);
+        }
         for (Object p : devicePacks) {
             JsonObject pack = (JsonObject) p;
             String uuid = String.valueOf(pack.getString("uuid")).toLowerCase();
@@ -209,7 +287,10 @@ public class DeviceUpdateService implements IStoryTellerService.DevicePackListen
 
         boolean currentFolderExists = false;
         if (!recorded.isPresent()) {
-            // No record: compare the card with each folder artefact, most recent first.
+            // No record: compare the card with each folder artefact, most recent first — not while
+            // the device is busy (a pack may be being written), and not again for a folder that was
+            // already found different from the pack as it is on the card.
+            boolean busy = storyTellerService.deviceBusy();
             for (Object a : artefacts) {
                 JsonObject artefact = (JsonObject) a;
                 if (!"fs".equals(artefact.getString("format"))) {
@@ -220,13 +301,22 @@ public class DeviceUpdateService implements IStoryTellerService.DevicePackListen
                     currentFolderExists = true;
                 }
                 Optional<File> folder = libraryService.libraryEntry(artefact.getString("path")).map(Path::toFile);
-                if (origin.isPresent() && folder.isPresent()
-                        && storyTellerService.packContentMatches(uuid, folder.get()).join()) {
-                    recorded = origin;
-                    if (deviceKey != null) {
-                        record(deviceKey, uuid, origin.get());
+                if (!origin.isPresent() || !folder.isPresent() || busy) {
+                    continue;
+                }
+                String mismatchKey = deviceKey + "|" + uuid + "|" + devicePack.getValue("sizeInBytes") + "|"
+                        + devicePack.getValue("version") + "|" + artefact.getString("path") + "|" + origin.get();
+                synchronized (knownMismatches) {
+                    if (knownMismatches.contains(mismatchKey)) {
+                        continue;
                     }
+                }
+                if (Boolean.TRUE.equals(storyTellerService.packContentMatches(uuid, folder.get()).join())) {
+                    recorded = deviceKey != null ? Optional.of(recordIfAbsent(deviceKey, uuid, origin.get())) : origin;
                     break;
+                }
+                synchronized (knownMismatches) {
+                    knownMismatches.add(mismatchKey);
                 }
             }
         }

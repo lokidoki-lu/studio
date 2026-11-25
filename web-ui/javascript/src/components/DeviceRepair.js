@@ -10,10 +10,9 @@ import {withTranslation} from "react-i18next";
 
 import Modal from "./Modal";
 import {
-    fetchDiagnosis, resolvePendingIndex, resolveInterruptedUpdate, removeOrphanFolders,
+    fetchDiagnosis, resolvePendingIndex, resolveInterruptedUpdate, removeOrphanFolders, removeMissingContent,
     startIntegrityCheck, fetchIntegrityCheck
 } from "../services/deviceRepair";
-import {removeFromDevice} from "../services/device";
 import {onOpenDeviceRepair} from "../utils/deviceRepairEvents";
 import {sizeUnit} from "../utils/purge";
 
@@ -97,9 +96,12 @@ export class DeviceRepair extends React.Component {
         return this.props.t(`libraryPurge.units.${unit.key}`, { value: unit.value });
     };
 
-    /** Asks first; runs `run` (a promise) on confirmation, then checks the device again. */
-    ask = (message, run) => () => {
-        this.setState({confirm: {message, run}});
+    /**
+     * Asks first; runs `run` (a promise) on confirmation, then checks the device again. `doneText`
+     * replaces "repair done" when the action only starts something (a transfer).
+     */
+    ask = (message, run, doneText) => () => {
+        this.setState({confirm: {message, run, doneText}});
     };
 
     doConfirm = () => {
@@ -111,7 +113,7 @@ export class DeviceRepair extends React.Component {
         this.setState({confirm: null, busy: true, message: null});
         return Promise.resolve()
             .then(confirm.run)
-            .then(() => this.safeSetState({message: {type: 'ok', text: t('deviceRepair.done')}}))
+            .then(() => this.safeSetState({message: {type: 'ok', text: confirm.doneText || t('deviceRepair.done')}}))
             .catch(e => this.safeSetState({message: {type: 'error', text: t('deviceRepair.failed', {message: e && e.message ? e.message : String(e)})}}))
             .finally(() => {
                 this.safeSetState({busy: false});
@@ -154,7 +156,17 @@ export class DeviceRepair extends React.Component {
         this.setState(state => ({selectedOrphans: {...state.selectedOrphans, [folder]: checked}}));
     };
 
-    renderPendingIndex(p) {
+    /** What adopting the pending index asks: the titles it drops from the Lunii, when it drops any. */
+    adoptConfirmation(p) {
+        const { t } = this.props;
+        const removed = p.removed || [];
+        if (removed.length === 0) {
+            return t('deviceRepair.pendingIndex.confirmAdopt');
+        }
+        return t('deviceRepair.pendingIndex.confirmAdoptRemoving', {titles: removed.map(u => this.packLabel(u)).join(', ')});
+    }
+
+    renderPendingIndex(p, token) {
         const { t } = this.props;
         const kind = `deviceRepair.pendingIndex.kinds.${p.kind}`;
         const details = { added: (p.added || []).length, removed: (p.removed || []).length, current: p.currentCount, pending: p.pendingCount };
@@ -165,7 +177,7 @@ export class DeviceRepair extends React.Component {
                 ? <>
                     <p className="device-repair-safe">{t('deviceRepair.pendingIndex.safe')}</p>
                     <button type="button" className="ui-btn" disabled={this.state.busy}
-                            onClick={this.ask(t('deviceRepair.pendingIndex.confirmDiscard'), () => resolvePendingIndex('discard', p.fingerprint))}>
+                            onClick={this.ask(t('deviceRepair.pendingIndex.confirmDiscard'), () => resolvePendingIndex('discard', p.fingerprint, token))}>
                         {t('deviceRepair.pendingIndex.discard')}
                     </button>
                 </>
@@ -174,19 +186,20 @@ export class DeviceRepair extends React.Component {
                     <div className="device-repair-choice">
                         <div>
                             <button type="button" className="ui-btn" disabled={this.state.busy}
-                                    onClick={this.ask(t('deviceRepair.pendingIndex.confirmKeep'), () => resolvePendingIndex('discard', p.fingerprint))}>
+                                    onClick={this.ask(t('deviceRepair.pendingIndex.confirmKeep'), () => resolvePendingIndex('discard', p.fingerprint, token))}>
                                 {t('deviceRepair.pendingIndex.keep')}
                             </button>
                             <p className="device-repair-hint">{t(`deviceRepair.pendingIndex.keepMeans.${p.kind}`, details)}</p>
                         </div>
                         {p.canAdopt && <div>
                             <button type="button" className="ui-btn" disabled={this.state.busy}
-                                    onClick={this.ask(t('deviceRepair.pendingIndex.confirmAdopt'), () => resolvePendingIndex('adopt', p.fingerprint))}>
+                                    onClick={this.ask(this.adoptConfirmation(p), () => resolvePendingIndex('adopt', p.fingerprint, token))}>
                                 {t('deviceRepair.pendingIndex.adopt')}
                             </button>
                             <p className="device-repair-hint">{t(`deviceRepair.pendingIndex.adoptMeans.${p.kind}`, details)}</p>
                         </div>}
                     </div>
+                    {!p.canAdopt && <p className="device-repair-hint">{t('deviceRepair.pendingIndex.cannotAdopt', {count: (p.incomplete || []).length})}</p>}
                 </>}
         </section>;
     }
@@ -199,21 +212,23 @@ export class DeviceRepair extends React.Component {
         const orphans = d.orphans || [];
         const missing = d.missingContent || [];
         const interrupted = d.interruptedUpdates || [];
-        const selected = orphans.filter(o => this.state.selectedOrphans[o.folder]).map(o => o.folder);
+        const selected = orphans.filter(o => this.state.selectedOrphans[o.folder] && !o.referencedByPendingIndex).map(o => o.folder);
+        const token = d.deviceToken;
         return <>
             <p className={d.problems > 0 ? 'device-repair-warning' : 'device-repair-safe'}>
                 {d.problems > 0 ? t('deviceRepair.problems', {count: d.problems}) : t('deviceRepair.noProblem', {count: d.indexedPacks})}
             </p>
-            {d.pendingIndex && this.renderPendingIndex(d.pendingIndex)}
+            {d.pendingIndex && this.renderPendingIndex(d.pendingIndex, token)}
             {interrupted.length > 0 && <section className="device-repair-section">
                 <h5>{t('deviceRepair.interrupted.title')}</h5>
                 <ul>
                     {interrupted.map(u => <li key={u.folder}>
                         <span>{t(`deviceRepair.interrupted.states.${u.state}`, {folder: u.folder})}</span>{' '}
-                        <button type="button" className="ui-btn" disabled={this.state.busy}
-                                onClick={this.ask(t(`deviceRepair.interrupted.confirm.${u.state}`, {folder: u.folder}), () => resolveInterruptedUpdate(u.folder))}>
+                        {/* No repair is offered when STUdio cannot tell which copy holds the story */}
+                        {u.state !== 'CONFLICT' && <button type="button" className="ui-btn" disabled={this.state.busy}
+                                onClick={this.ask(t(`deviceRepair.interrupted.confirm.${u.state}`, {folder: u.folder}), () => resolveInterruptedUpdate(u.folder, u.state, token))}>
                             {t(`deviceRepair.interrupted.actions.${u.state}`)}
-                        </button>
+                        </button>}
                     </li>)}
                 </ul>
             </section>}
@@ -223,13 +238,15 @@ export class DeviceRepair extends React.Component {
                 <ul className="device-repair-list">
                     {orphans.map(o => <li key={o.folder}>
                         <label>
-                            <input type="checkbox" checked={this.state.selectedOrphans[o.folder] === true} onChange={this.toggleOrphan(o.folder)} />
+                            <input type="checkbox" checked={this.state.selectedOrphans[o.folder] === true && !o.referencedByPendingIndex}
+                                   disabled={o.referencedByPendingIndex === true} onChange={this.toggleOrphan(o.folder)} />
                             {' '}<code>{o.folder}</code> — {this.formatSize(o.sizeInBytes)} — {t(o.complete ? 'deviceRepair.orphans.complete' : 'deviceRepair.orphans.partial')}
+                            {o.referencedByPendingIndex && <> — {t('deviceRepair.orphans.pending')}</>}
                         </label>
                     </li>)}
                 </ul>
                 <button type="button" className="ui-btn ui-btn-danger" disabled={this.state.busy || selected.length === 0}
-                        onClick={this.ask(t('deviceRepair.orphans.confirm', {count: selected.length}), () => removeOrphanFolders(selected))}>
+                        onClick={this.ask(t('deviceRepair.orphans.confirm', {count: selected.length}), () => removeOrphanFolders(selected, token))}>
                     {t('deviceRepair.orphans.remove', {count: selected.length})}
                 </button>
             </section>}
@@ -239,7 +256,7 @@ export class DeviceRepair extends React.Component {
                     {missing.map(m => <li key={m.uuid}>
                         <span title={m.uuid}>{this.packLabel(m.uuid)}</span>{' '}
                         <button type="button" className="ui-btn" disabled={this.state.busy}
-                                onClick={this.ask(t('deviceRepair.missing.confirm'), () => removeFromDevice(m.uuid))}>
+                                onClick={this.ask(t('deviceRepair.missing.confirm'), () => removeMissingContent(m.uuid, token))}>
                             {t('deviceRepair.missing.remove')}
                         </button>
                     </li>)}
@@ -255,6 +272,19 @@ export class DeviceRepair extends React.Component {
         const titles = this.props.titles || {};
         return titles[String(uuid).toLowerCase()] || uuid;
     }
+
+    /** "Send again from the library", asked first with the versions it replaces (L9). */
+    resend = (p) => {
+        const { t } = this.props;
+        const title = this.packLabel(p.uuid, p.title);
+        const status = this.props.updateStatusOf ? this.props.updateStatusOf(p.uuid) : null;
+        const known = status && status.deviceVersion !== undefined && status.deviceVersion !== null
+            && status.libraryVersion !== undefined && status.libraryVersion !== null;
+        const message = known
+            ? t('deviceRepair.integrity.confirmResend', {title, device: status.deviceVersion, library: status.libraryVersion})
+            : t('deviceRepair.integrity.confirmResendNoVersion', {title});
+        return this.ask(message, () => this.props.onResend(p.uuid), t('deviceRepair.integrity.resendStarted'));
+    };
 
     renderIntegrity() {
         const { t } = this.props;
@@ -297,12 +327,16 @@ export class DeviceRepair extends React.Component {
                         </ul>
                         {p.official
                             ? <p className="device-repair-hint">{t('deviceRepair.integrity.official')}</p>
-                            : library.indexOf(String(p.uuid).toLowerCase()) !== -1 && this.props.onResend
-                                ? <button type="button" className="ui-btn ui-btn-primary" disabled={this.state.busy}
-                                          onClick={() => this.props.onResend(p.uuid)}>
-                                    {t('deviceRepair.integrity.resend')}
-                                  </button>
-                                : <p className="device-repair-hint">{t('deviceRepair.integrity.notInLibrary')}</p>}
+                            // An update replaces a folder that is there: a missing one is removed from the index first
+                            : (p.problems || []).some(problem => problem.code === 'FOLDER_MISSING')
+                                ? <p className="device-repair-hint">{t('deviceRepair.integrity.folderMissing')}</p>
+                                : library.indexOf(String(p.uuid).toLowerCase()) !== -1 && this.props.onResend
+                                    ? <button type="button" className="ui-btn ui-btn-primary" disabled={this.state.busy}
+                                              onClick={this.resend(p)}>
+                                        {t('deviceRepair.integrity.resend')}
+                                      </button>
+                                    : <p className="device-repair-hint">{t('deviceRepair.integrity.notInLibrary')}</p>}
+                        {p.structureOnly && <p className="device-repair-hint">{t('deviceRepair.integrity.structureOnly')}</p>}
                     </li>)}
                 </ul>}
             </>}
@@ -357,6 +391,8 @@ DeviceRepair.propTypes = {
     // Titles by lower-case uuid, for packs the check names
     titles: PropTypes.object,
     onResend: PropTypes.func,
+    // The update status of a pack (GET /api/device/updates), for the versions a resend replaces
+    updateStatusOf: PropTypes.func,
     onChanged: PropTypes.func,
     className: PropTypes.string,
     t: PropTypes.func
