@@ -51,6 +51,8 @@ class DeviceUpdateServiceTest {
     private boolean busy;
     /** Run in the middle of a comparison, as a transfer finishing meanwhile would. */
     private Runnable duringComparison = () -> { };
+    /** When set, what a comparison answers (an error, nothing, the queue busy) instead of the fake card. */
+    private java.util.function.Supplier<CompletableFuture<Boolean>> comparisonAnswer;
 
     private void setProperty(String key, String value) {
         previous.putIfAbsent(key, System.getProperty(key));
@@ -114,13 +116,16 @@ class DeviceUpdateServiceTest {
             }
 
             @Override
-            public CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames) {
+            public CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames, String deviceToken) {
                 return CompletableFuture.completedFuture(new JsonArray());
             }
 
             @Override
             public CompletableFuture<Boolean> packContentMatches(String uuid, File packFolder) {
                 comparisons++;
+                if (comparisonAnswer != null) {
+                    return comparisonAnswer.get();
+                }
                 boolean same = matching.contains(packFolder.getName());
                 duringComparison.run();
                 return CompletableFuture.completedFuture(same);
@@ -272,6 +277,47 @@ class DeviceUpdateServiceTest {
         // Another state of the card (another version on it): compared again
         status(device(2), groups(artefact("a.fs", "fs", 1)));
         assertEquals(2, comparisons);
+    }
+
+    @Test
+    @DisplayName("P6: a comparison that fails is not taken for a difference: not remembered, no badge, tried again")
+    void failedComparisonIsNotADifference() throws IOException {
+        folder("a.fs", "current");
+        comparisonAnswer = () -> CompletableFuture.failedFuture(new IOException("card read error"));
+        JsonObject s = status(device(1), groups(artefact("a.fs", "fs", 1)));
+        assertEquals("UNKNOWN", s.getString("status"));
+        status(device(1), groups(artefact("a.fs", "fs", 1)));
+        assertEquals(2, comparisons, "compared again: the error was not remembered as a difference");
+
+        // A real difference is remembered
+        comparisonAnswer = null;
+        assertEquals("UPDATE_AVAILABLE", status(device(1), groups(artefact("a.fs", "fs", 1))).getString("status"));
+        assertEquals("UPDATE_AVAILABLE", status(device(1), groups(artefact("a.fs", "fs", 1))).getString("status"));
+        assertEquals(3, comparisons);
+    }
+
+    @Test
+    @DisplayName("P6: a comparison not answered in time is abandoned and unknown; one refused because the queue got busy stops the others")
+    void comparisonNeverBlocksTheListing() throws IOException {
+        folder("a.fs", "current");
+        folder("b.fs", "older");
+        CompletableFuture<Boolean> never = new CompletableFuture<>();
+        comparisonAnswer = () -> never;
+        updates.comparisonTimeoutMillis = 50;
+        long start = System.nanoTime();
+        JsonObject s = status(device(1), groups(artefact("a.fs", "fs", 1), artefact("b.fs", "fs", 1)));
+        assertTrue(System.nanoTime() - start < java.util.concurrent.TimeUnit.SECONDS.toNanos(5));
+        assertEquals("UNKNOWN", s.getString("status"));
+        assertTrue(never.isCancelled(), "abandoned, so that it does not start later");
+
+        // The queue got busy between deviceBusy() and the comparison: no more comparisons now
+        comparisons = 0;
+        comparisonAnswer = () -> CompletableFuture.failedFuture(new DeviceOperationQueue.QueueBusyException());
+        assertEquals("UNKNOWN", status(device(1), groups(artefact("a.fs", "fs", 1), artefact("b.fs", "fs", 1))).getString("status"));
+        assertEquals(1, comparisons);
+        comparisonAnswer = null;
+        status(device(1), groups(artefact("a.fs", "fs", 1), artefact("b.fs", "fs", 1)));
+        assertEquals(3, comparisons, "nothing was remembered: both folders compared once the device is free");
     }
 
     @Test

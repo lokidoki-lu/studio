@@ -38,8 +38,12 @@ public interface IStoryTellerService {
     /** Names of the pack content folders on the device that the pack index does not reference. */
     CompletableFuture<JsonArray> orphanFolders();
 
-    /** Removes the named unreferenced pack content folders, and reports what happened to each. */
-    CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames);
+    /**
+     * Removes the named unreferenced pack content folders, and reports what happened to each. The
+     * {@code deviceToken} the check answered with is required: refused if absent, or if it no longer
+     * names the Lunii plugged.
+     */
+    CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames, String deviceToken);
 
     /**
      * The block size the plugged device's partition reports (V2/V3 only), from which the library
@@ -73,11 +77,6 @@ public interface IStoryTellerService {
         return CompletableFuture.failedFuture(unsupported());
     }
 
-    /** As {@code removeOrphanFolders(folderNames)}, refused if {@code deviceToken} no longer names the Lunii. */
-    default CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames, String deviceToken) {
-        return removeOrphanFolders(folderNames);
-    }
-
     /** Removes from the index a pack whose content is missing, only if it still is. */
     default CompletableFuture<Boolean> removeMissingContentEntry(String uuid, String deviceToken) {
         return CompletableFuture.failedFuture(unsupported());
@@ -98,9 +97,13 @@ public interface IStoryTellerService {
         return CompletableFuture.failedFuture(unsupported());
     }
 
-    /** Whether the pack on the device holds exactly what sending {@code packFolder} would write. */
+    /**
+     * Whether the pack on the device holds exactly what sending {@code packFolder} would write. Fails,
+     * rather than answering {@code false}, when that cannot be told (no device, read error, device
+     * busy: {@link DeviceOperationQueue.QueueBusyException}).
+     */
     default CompletableFuture<Boolean> packContentMatches(String uuid, File packFolder) {
-        return CompletableFuture.completedFuture(false);
+        return CompletableFuture.failedFuture(unsupported());
     }
 
     /**
@@ -124,6 +127,20 @@ public interface IStoryTellerService {
     }
 
     default void setDevicePackListener(DevicePackListener listener) {
+    }
+
+    /**
+     * What the server checks about a library pack before it is written to a Lunii (see
+     * {@link LibrarySendGuard}): checked again when the transfer actually starts, in the device
+     * queue, since the library entry may have changed while the transfer waited.
+     */
+    @FunctionalInterface
+    interface SendGuard {
+        /** The refusal, or empty if {@code packFile} may be written as the pack {@code uuid}. */
+        Optional<studio.driver.StoryTellerException> refusal(String uuid, File packFile);
+    }
+
+    default void setSendGuard(SendGuard guard) {
     }
 
     private static studio.driver.StoryTellerException unsupported() {

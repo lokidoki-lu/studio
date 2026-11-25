@@ -337,7 +337,8 @@ public class StoryTellerService implements IStoryTellerService {
 
     private CompletableFuture<Void> runAddPack(String transferId, String uuid, File packFile) {
         notifier.started(transferId);
-        CompletableFuture<Void> outcome = isPackOnDevice(uuid)
+        CompletableFuture<Void> outcome = checkedAgain(uuid, packFile)
+                .thenCompose(ignored -> isPackOnDevice(uuid))
                 .thenCompose(present -> {
                     if (present) {
                         throw alreadyOnDevice(uuid);
@@ -365,6 +366,33 @@ public class StoryTellerService implements IStoryTellerService {
                 notifier.succeeded(transferId);
             }
         });
+    }
+
+    private volatile SendGuard sendGuard;
+
+    @Override
+    public void setSendGuard(SendGuard guard) {
+        this.sendGuard = guard;
+    }
+
+    /**
+     * The send guard, checked again when the transfer starts (in the device queue): the library
+     * entry checked when the request was accepted may have been replaced by another pack, or found
+     * official, while the transfer waited. A guard that fails refuses the transfer.
+     */
+    private CompletableFuture<Void> checkedAgain(String uuid, File packFile) {
+        SendGuard guard = sendGuard;
+        if (guard == null) {
+            return CompletableFuture.completedFuture(null);
+        }
+        Optional<StoryTellerException> refused;
+        try {
+            refused = guard.refusal(uuid, packFile);
+        } catch (RuntimeException e) {
+            refused = Optional.of(new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                    "The library entry " + packFile.getName() + " could not be checked again before the transfer: nothing was sent", e));
+        }
+        return refused.isPresent() ? CompletableFuture.failedFuture(refused.get()) : CompletableFuture.completedFuture(null);
     }
 
     private CompletableFuture<TransferStatus> uploadPackV1(String transferId, File packFile) {
@@ -460,13 +488,12 @@ public class StoryTellerService implements IStoryTellerService {
      * Removes the named unreferenced folders, one after the other, and reports each outcome. A
      * folder that is referenced by the index, or that is not there, is left alone and reported.
      */
-    public CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames) {
-        return removeOrphanFolders(folderNames, null);
-    }
-
-    /** As {@link #removeOrphanFolders(List)}; with a device token, refused if the Lunii changed since the check. */
     @Override
     public CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames, String deviceToken) {
+        if (deviceToken == null || deviceToken.isEmpty()) {
+            return CompletableFuture.failedFuture(new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                    "The 'deviceToken' the device check answered with is required: nothing was removed"));
+        }
         return queue.submit(() -> {
             if (fsDevice == null) {
                 return CompletableFuture.failedFuture(device != null
@@ -474,9 +501,7 @@ public class StoryTellerService implements IStoryTellerService {
                         : noDevice());
             }
             JsonArray results = new JsonArray();
-            CompletableFuture<Void> chain = deviceToken == null
-                    ? CompletableFuture.completedFuture(null)
-                    : fsDriver.requireDeviceToken(deviceToken);
+            CompletableFuture<Void> chain = fsDriver.requireDeviceToken(deviceToken);
             for (String name : folderNames) {
                 chain = chain.thenCompose(ignored -> fsDriver.removeUnreferencedPackContentFolder(name)
                         .handle((removed, t) -> {
@@ -659,7 +684,17 @@ public class StoryTellerService implements IStoryTellerService {
             if (fsDevice == null) {
                 return CompletableFuture.failedFuture(device != null ? notOnRawDevice("Resolving an interrupted update") : noDevice());
             }
-            return fsDriver.resolveInterruptedUpdate(folder, state, deviceToken);
+            if (!"NO_COMPLETE_COPY".equals(state)) {
+                return fsDriver.resolveInterruptedUpdate(folder, state, deviceToken);
+            }
+            // That repair removes the pack from the index: what is known to be on this Lunii forgets it too.
+            return fsDeviceKey().thenCompose(key -> fsDriver.packsUsingFolder(folder)
+                    .thenCompose(removed -> fsDriver.resolveInterruptedUpdate(folder, state, deviceToken).thenApply(done -> {
+                        if (Boolean.TRUE.equals(done)) {
+                            key.ifPresent(k -> removed.forEach(uuid -> notifyRemoved(k, uuid.toString())));
+                        }
+                        return done;
+                    })));
         });
     }
 
@@ -734,15 +769,19 @@ public class StoryTellerService implements IStoryTellerService {
 
     @Override
     public CompletableFuture<Boolean> packContentMatches(String uuid, File packFolder) {
-        if (fsDevice == null || packFolder == null || !packFolder.isDirectory()) {
+        if (fsDevice == null) {
+            return CompletableFuture.failedFuture(noDevice());
+        }
+        if (packFolder == null || !packFolder.isDirectory()) {
             return CompletableFuture.completedFuture(false);
         }
         // In the device queue: the pack is read in full, and must not be read while it is being
-        // replaced (nor hold handles that would make the rename of an update fail on Windows).
-        return queue.submit(() -> fsDevice == null
-                        ? CompletableFuture.completedFuture(false)
-                        : fsDriver.packContentMatches(uuid, packFolder.getAbsolutePath()))
-                .exceptionally(e -> false);
+        // replaced (nor hold handles that would make the rename of an update fail on Windows). Only
+        // when the queue is idle, so that the caller never waits behind a transfer. An error is a
+        // failure, never "different": only a difference may be remembered by the caller.
+        return queue.submitIfIdle(() -> fsDevice == null
+                ? CompletableFuture.<Boolean>failedFuture(noDevice())
+                : fsDriver.packContentMatches(uuid, packFolder.getAbsolutePath()));
     }
 
     @Override
@@ -792,7 +831,7 @@ public class StoryTellerService implements IStoryTellerService {
             notifier.failed(transferId, noDevice());
             return CompletableFuture.failedFuture(noDevice());
         }
-        CompletableFuture<Optional<String>> key = fsDeviceKey();
+        CompletableFuture<Optional<String>> key = checkedAgain(uuid, packFile).thenCompose(ignored -> fsDeviceKey());
         return key.thenCompose(deviceKey -> fsDriver.updatePack(uuid, packFile.getAbsolutePath(), notifier.listener(transferId))
                 .thenApply(status -> {
                     deviceKey.ifPresent(k -> notifyWritten(k, uuid, packFile));

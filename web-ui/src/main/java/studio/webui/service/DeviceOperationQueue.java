@@ -68,6 +68,13 @@ public class DeviceOperationQueue {
         }
     }
 
+    /** The failure of {@link #submitIfIdle} when another operation is queued or running. */
+    public static final class QueueBusyException extends StoryTellerException {
+        QueueBusyException() {
+            super(Reason.UNKNOWN, "Another device operation is queued or running: the operation was not queued");
+        }
+    }
+
     private final long timeoutMillis;
     private CompletableFuture<?> tail = CompletableFuture.completedFuture(null);
     private CompletableFuture<?> stuck;
@@ -135,6 +142,21 @@ public class DeviceOperationQueue {
             }
         });
         return result;
+    }
+
+    /**
+     * As {@link #submit}, but only when no other operation is queued or running — checked and
+     * queued atomically. Otherwise fails at once with {@link QueueBusyException}, nothing queued: for
+     * an optional read whose caller must not wait behind a transfer. Cancelling the returned future
+     * before the operation starts means it never starts.
+     */
+    public <T> CompletableFuture<T> submitIfIdle(Supplier<CompletableFuture<T>> operation) {
+        synchronized (this) {
+            if (!tail.isDone() || !unsettled.isEmpty()) {
+                return CompletableFuture.failedFuture(new QueueBusyException());
+            }
+            return submit(operation);
+        }
     }
 
     private <T> CompletableFuture<T> start(Supplier<CompletableFuture<T>> operation, long submittedIn,

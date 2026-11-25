@@ -185,7 +185,13 @@ public class DeviceController {
                 names.add(String.valueOf(o));
             }
             // From the device check, with its token: refused if the Lunii changed since
-            storyTellerService.removeOrphanFolders(names, stringField(body, "deviceToken"))
+            String deviceToken = stringField(body, "deviceToken");
+            if (deviceToken == null) {
+                ApiErrors.respond(ctx, new StoryTellerException(StoryTellerException.Reason.INVALID_REQUEST,
+                        "The 'deviceToken' the device check answered with is required"));
+                return;
+            }
+            storyTellerService.removeOrphanFolders(names, deviceToken)
                     .whenComplete((results, e) -> {
                         if (e != null) {
                             LOGGER.error("Failed to remove unreferenced pack folders", e);
@@ -357,6 +363,9 @@ public class DeviceController {
     private static void mountMaintenanceRoutes(Router router, IStoryTellerService storyTellerService, LibraryService libraryService) {
         DeviceUpdateService updates = new DeviceUpdateService(storyTellerService, libraryService);
         storyTellerService.setDevicePackListener(updates);
+        // The checks of addFromLibrary / updateFromLibrary, made again when the transfer starts
+        storyTellerService.setSendGuard((uuid, packFile) ->
+                LibrarySendGuard.refusal(libraryService, uuid, packFile.getName(), packFile.toPath()));
 
         // Read-only check of the device's bookkeeping. Runs in the device queue.
         router.get("/diagnosis").blockingHandler(ctx -> storyTellerService.diagnosis()

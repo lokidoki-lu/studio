@@ -305,7 +305,7 @@ public class MockStoryTellerService implements IStoryTellerService {
     }
 
     @Override
-    public CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames) {
+    public CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames, String deviceToken) {
         return CompletableFuture.completedFuture(new JsonArray());
     }
 }

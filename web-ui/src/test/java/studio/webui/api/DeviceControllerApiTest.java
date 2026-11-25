@@ -186,8 +186,15 @@ class DeviceControllerApiTest {
         assertEquals(new JsonArray().add("0A0B0C0D"),
                 new JsonObject(get("/api/device/orphans").body()).getJsonArray("folders"));
 
-        HttpResponse<String> removed = post("/api/device/orphans/remove",
+        // Without the token of the device check: refused, nothing removed
+        HttpResponse<String> noToken = post("/api/device/orphans/remove",
                 new JsonObject().put("folders", new JsonArray().add("0A0B0C0D")));
+        assertEquals(400, noToken.statusCode());
+        assertEquals("INVALID_REQUEST", new JsonObject(noToken.body()).getString("error"));
+        assertTrue(service.removedFolders.isEmpty());
+
+        HttpResponse<String> removed = post("/api/device/orphans/remove",
+                new JsonObject().put("folders", new JsonArray().add("0A0B0C0D")).put("deviceToken", "t"));
         assertEquals(200, removed.statusCode());
         JsonObject body = new JsonObject(removed.body());
         assertTrue(body.getBoolean("success"));
@@ -341,12 +348,6 @@ class DeviceControllerApiTest {
         }
 
         @Override
-        public CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames, String deviceToken) {
-            lastOrphanToken = deviceToken;
-            return removeOrphanFolders(folderNames);
-        }
-
-        @Override
         public CompletableFuture<Optional<JsonObject>> deviceInfos() {
             return CompletableFuture.completedFuture(Optional.empty());
         }
@@ -395,7 +396,8 @@ class DeviceControllerApiTest {
         }
 
         @Override
-        public CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames) {
+        public CompletableFuture<JsonArray> removeOrphanFolders(List<String> folderNames, String deviceToken) {
+            lastOrphanToken = deviceToken;
             removedFolders.addAll(folderNames);
             JsonArray results = new JsonArray();
             folderNames.forEach(n -> results.add(new JsonObject().put("folder", n).put("removed", true)));
