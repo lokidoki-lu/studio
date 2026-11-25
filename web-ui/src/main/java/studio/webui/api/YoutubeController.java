@@ -55,8 +55,8 @@ public class YoutubeController {
         }), false);
 
         // The running creation, or the last one: the dialog finds it again after being closed.
-        // Blocking handlers: the service lock may be held while the tools are probed (processes),
-        // which must never stall the event loop.
+        // Blocking handlers: they take the service lock, which the event loop must never wait for
+        // (the tools are probed outside of it).
         router.get("/jobs/current").blockingHandler(ctx -> handle(ctx, () -> json(ctx, 200,
                 service.current().orElseThrow(() -> new YoutubePackException(YoutubePackException.Code.NOT_FOUND,
                         "Aucune cr\u00e9ation en cours")).toJson())), false);
@@ -76,7 +76,12 @@ public class YoutubeController {
         try {
             action.run();
         } catch (YoutubePackException e) {
-            LOGGER.warn("YouTube pack request refused: " + e.getMessage());
+            // "No creation yet" is the usual answer when the dialog opens: not worth a warning
+            if (e.getCode() == YoutubePackException.Code.NOT_FOUND) {
+                LOGGER.debug("YouTube pack request: " + e.getMessage());
+            } else {
+                LOGGER.warn("YouTube pack request refused: " + e.getMessage());
+            }
             json(ctx, e.getCode().status, new JsonObject()
                     .put("success", false)
                     .put("error", e.getCode().name())

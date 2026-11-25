@@ -124,16 +124,30 @@
       "WRITING": "Adding to the library",
       "FINISHED": "Finished"
     },
-    "done": "Pack \"{{title}}\" added to the library: {{count}} story(ies) ({{path}}).",
-    "silent": "{{count}} title(s) without a voice: generate them in the editor before sending the pack to the device.",
+    "done": "Pack \"{{title}}\" added to the library: {{count}} story ({{path}}).",
+    "done_plural": "Pack \"{{title}}\" added to the library: {{count}} stories ({{path}}).",
+    "silent": "{{count}} title without a voice: generate it in the editor before sending the pack to the device.",
+    "silent_plural": "{{count}} titles without a voice: generate them in the editor before sending the pack to the device.",
     "blocked": "YouTube blocked the remaining downloads: try again in a few hours for the missing videos.",
     "failed": "Failed: {{message}}",
     "cancelled": "Creation cancelled: nothing was added to the library.",
-    "warnings": "{{count}} warning(s): see the log below.",
+    "warnings": "{{count}} warning: see the log below.",
+    "warnings_plural": "{{count}} warnings: see the log below.",
     "background": "You may close this window: the creation goes on, and the \"From YouTube\" button follows its progress.",
     "toasts": {
-      "done": "Pack \"{{title}}\" created from YouTube: {{count}} story(ies).",
-      "failed": "Creating the pack from YouTube failed: {{message}}"
+      "done": "Pack \"{{title}}\" created from YouTube: {{count}} story.",
+      "done_plural": "Pack \"{{title}}\" created from YouTube: {{count}} stories.",
+      "failed": "Creating the pack from YouTube failed: {{message}}",
+      "interrupted": "The YouTube pack creation was interrupted (did STUdio restart?).",
+      "unreachable": "STUdio is not answering: the YouTube pack creation is no longer followed. Open the library again to find it."
+    },
+    "errors": {
+      "BUSY": "A pack is already being created.",
+      "TOOLS_MISSING": "yt-dlp or ffmpeg cannot be found ({{message}})",
+      "BLOCKED": "YouTube blocked the downloads: try again in a few hours.",
+      "NOTHING_DOWNLOADED": "No video could be downloaded ({{message}})",
+      "CANCELLED": "Creation cancelled.",
+      "NOT_FOUND": "Unknown creation (did STUdio restart?)."
     }
   },
 
@@ -155,6 +169,7 @@
     },
     "unselectedHint": "Unchecked by default: these are files you added yourself.",
     "total": "Space freed: {{size}} ({{count}} selected)",
+    "total_plural": "Space freed: {{size}} ({{count}} selected)",
     "cancel": "Cancel",
     "confirm": "Delete permanently",
     "units": {
@@ -215,7 +230,8 @@
       "files": "{{count}} files",
       "preview": "Preview “{{title}}”",
       "edit": "Open “{{title}}” in the editor",
-      "remove": "Delete “{{title}}” from the library"
+      "remove": "Delete “{{title}}” from the library",
+      "sending": "Sending…"
     },
     "removeDialog": {
       "content": "Delete “{{title}}” from the library?",
@@ -249,7 +265,8 @@
       "available": "available",
       "notInstalled": "not installed",
       "generatedOnline": "Online voice: {{voice}}",
-      "generatedOffline": "Computer voice"
+      "generatedOffline": "Computer voice",
+      "unknown": "unknown (STUdio is not answering)"
     },
     "titleGenerator": {
       "audio": "Generate the voice from the title",
@@ -399,7 +416,12 @@
       "unavailableTitle": "Simulation unavailable for this format",
       "unavailable": "Raw and FS packs store their images and sounds in the device's format (sector addressing, enciphered for FS): the whole pack would have to be decoded to read them. Convert it to the archive format to simulate it.",
       "errorTitle": "Simulation unavailable",
-      "error": "The pack could not be read ({{error}})."
+      "error": "The pack could not be read ({{error}}).",
+      "errors": {
+        "NO_STAGE_NODE": "it has no node",
+        "NO_STORY": "story.json is missing",
+        "INVALID_STORY": "story.json cannot be read"
+      }
     }
   },
 
@@ -483,7 +505,8 @@
       "titleVoiceFallback": "Online voice unavailable, the computer voice was used ({{reason}})",
       "titleVoiceNothingMissing": "Every title already has audio",
       "titleVoiceGenerating": "Generating voices… {{done}} / {{total}}",
-      "titleVoiceGenerated": "{{count}} voice(s) generated",
+      "titleVoiceGenerated": "{{count}} voice generated",
+      "titleVoiceGenerated_plural": "{{count}} voices generated",
       "titleVoiceStopped": "Generation stopped after {{done}} / {{total}}: {{message}}",
       "saving": "Saving story pack to library...",
       "saved": "Saved story pack to library.",
@@ -506,7 +529,9 @@
       "verifyDiagramErrors": "The diagram contains {{count}} node with errors.",
       "verifyDiagramErrors_plural": "The diagram contains {{count}} nodes with errors.",
       "verifyDiagramOK": "The diagram is valid.",
-      "verifyDiagramNightModeNoActionNodes": "Night mode is enabled but the diagram does not contain any action node."
+      "verifyDiagramNightModeNoActionNodes": "Night mode is enabled but the diagram does not contain any action node.",
+      "titleVoiceSkipped": "{{count}} title refused by the voice (too long or empty), left without audio.",
+      "titleVoiceSkipped_plural": "{{count}} titles refused by the voice (too long or empty), left without audio."
     },
     "viewer": {
       "missingPrev": "Cannot find previous option.",
@@ -529,7 +554,8 @@
       "loadingFailed": "Failed to load current version.",
       "fetchingFailed": "Failed to fetch latest release."
     },
-    "reportIssue": "Report this issue"
+    "reportIssue": "Report this issue",
+    "unreachable": "STUdio is not answering: check that it is still running."
   },
 
   "dialogs": {
@@ -537,7 +563,8 @@
       "cancel": "Cancel",
       "yes": "Yes",
       "no": "No",
-      "ok": "OK"
+      "ok": "OK",
+      "close": "Close"
     },
     "announce": {
       "optout": "Do not show these announces anymore"

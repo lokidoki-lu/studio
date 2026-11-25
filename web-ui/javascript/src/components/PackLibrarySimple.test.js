@@ -68,6 +68,7 @@ function actions() {
         loadLibraryPackInEditor: jest.fn(),
         convertPackInLibrary: jest.fn(() => Promise.resolve('converted.pack')),
         removeFromLibrary: jest.fn(() => Promise.resolve()),
+        removeManyFromLibrary: jest.fn(() => Promise.resolve()),
         uploadPackToLibrary: jest.fn(),
         uploadPacksToLibrary: jest.fn(),
         verifyConversion: jest.fn(() => Promise.resolve({verdict: 'UNKNOWN'})),
@@ -150,6 +151,40 @@ describe('PackLibrarySimple', () => {
         expect(props.addFromLibrary).toHaveBeenCalledWith('u-arc', 'converted.pack', 'fs', 'fs', expect.anything());
     });
 
+    it('starts one sending at a time, and says it is under way', async () => {
+        const props = actions();
+        let converted;
+        props.convertPackInLibrary = jest.fn(() => new Promise(resolve => { converted = resolve; }));
+        const device = {...DEVICE, metadata: {...DEVICE.metadata, driver: 'fs'}, packs: []};
+        const library = {...LIBRARY, packs: [{uuid: 'u-arc', packs: [{uuid: 'u-arc', path: 'arc.zip', format: 'archive', title: 'Archive', size: 1}]}]};
+        renderSimple({device, library, ...props});
+        const send = button(card('Archive'), 'simpleLibrary.card.send');
+        act(() => { send.click(); });
+        act(() => { send.click(); });
+        expect(props.convertPackInLibrary).toHaveBeenCalledTimes(1);
+        expect(send.disabled).toBe(true);
+        expect(send.textContent).toBe('simpleLibrary.card.sending');
+        converted('converted.pack');
+        await flush();
+        expect(props.addFromLibrary).toHaveBeenCalledTimes(1);
+        expect(button(card('Archive'), 'simpleLibrary.card.send').disabled).toBe(false);
+    });
+
+    it('offers no sending of an official pack, as the full library', () => {
+        const props = actions();
+        const library = {...LIBRARY, packs: [{uuid: 'u-off', packs: [{uuid: 'u-off', path: 'off.pack', format: 'raw', title: 'Officiel', size: 1, official: true}]}]};
+        renderSimple({device: {...DEVICE, packs: []}, library, ...props});
+        expect(button(card('Officiel'), 'simpleLibrary.card.send')).toBeUndefined();
+    });
+
+    it('recognises a pack of the library on the Lunii whatever the case of its uuid', () => {
+        const props = actions();
+        const device = {...DEVICE, packs: [{uuid: 'U-RAW', title: 'Les Dalton', version: 1, format: 'raw'}]};
+        renderSimple({device, library: LIBRARY, ...props});
+        expect(card('Les Dalton').classList.contains('on-device')).toBe(true);
+        expect(byLabel('simpleLibrary.device.save {"title":"Les Dalton"}')).toBeNull();
+    });
+
     it('cannot send without a Lunii, and says so', () => {
         const props = actions();
         renderSimple({device: {metadata: null, packs: []}, library: LIBRARY, ...props});
@@ -167,7 +202,9 @@ describe('PackLibrarySimple', () => {
         expect(dialog.textContent).toContain('simpleLibrary.removeDialog.contentMany');
         act(() => { button(dialog, 'dialogs.shared.yes').click(); });
         await flush();
-        expect(props.removeFromLibrary.mock.calls).toEqual([['zip.zip'], ['zip.fs.pack']]);
+        // In one go: one toast and one refresh of the library
+        expect(props.removeManyFromLibrary.mock.calls).toEqual([[['zip.zip', 'zip.fs.pack']]]);
+        expect(props.removeFromLibrary).not.toHaveBeenCalled();
         expect(document.getElementById('modal-confirm-simple-pack-remove')).toBeNull();
     });
 

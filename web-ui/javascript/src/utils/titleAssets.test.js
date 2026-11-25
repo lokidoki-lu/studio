@@ -11,6 +11,7 @@ import {
     generateMissingTitleAudio,
     layoutTitle,
     speakTitle,
+    TITLE_MAX_LENGTH,
     voiceRequest,
     wrapText
 } from './titleAssets';
@@ -146,10 +147,10 @@ describe('generateMissingTitleAudio', () => {
             return {dataUrl: 'data:' + text};
         });
         const progress = [];
-        const count = await generateMissingTitleAudio(
+        const result = await generateMissingTitleAudio(
             [{text: 'a', apply: d => applied.push(d)}, {text: 'b', apply: d => applied.push(d)}],
             {speak, onProgress: (d, t) => progress.push(d + '/' + t)});
-        expect(count).toBe(2);
+        expect(result).toEqual({done: 2, skipped: 0, fallbackReason: null});
         expect(order).toEqual(['a', 'b']);
         expect(applied).toEqual(['data:a', 'data:b']);
         expect(progress).toEqual(['1/2', '2/2']);
@@ -178,6 +179,62 @@ describe('generateMissingTitleAudio', () => {
 
         expect(first.audio).toBe('data:tts-Premier');
         expect(second.audio).toBe('data:recorded');
+        expect(speak).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips a title the server refuses, counts it, and goes on', async () => {
+        const refused = Object.assign(new Error('Texte trop long'), {status: 400, code: 'INVALID_REQUEST'});
+        const speak = jest.fn()
+            .mockRejectedValueOnce(refused)
+            .mockResolvedValueOnce({dataUrl: 'ok', fallbackReason: 'hors ligne'})
+            .mockResolvedValueOnce({dataUrl: 'ok'});
+        const applied = [];
+        const entries = ['a', 'b', 'c'].map(text => ({text, apply: d => applied.push(text)}));
+        jest.spyOn(console, 'warn').mockImplementation(() => {});
+        const result = await generateMissingTitleAudio(entries, {speak});
+        console.warn.mockRestore();
+        expect(result).toEqual({done: 3, skipped: 1, fallbackReason: 'hors ligne'});
+        expect(applied).toEqual(['b', 'c']);
+    });
+
+    it('stops when the voice is unavailable, saying how many were refused before', async () => {
+        const refused = Object.assign(new Error('vide'), {status: 400, code: 'INVALID_REQUEST'});
+        const down = Object.assign(new Error('Aucune voix'), {status: 503, code: 'TTS_UNAVAILABLE'});
+        const speak = jest.fn().mockRejectedValueOnce(refused).mockRejectedValueOnce(down);
+        const entries = ['a', 'b', 'c'].map(text => ({text, apply: () => {}}));
+        jest.spyOn(console, 'warn').mockImplementation(() => {});
+        await expect(generateMissingTitleAudio(entries, {speak})).rejects.toMatchObject({code: 'TTS_UNAVAILABLE', generated: 0, skipped: 1});
+        console.warn.mockRestore();
+        expect(speak).toHaveBeenCalledTimes(2);
+    });
+
+    it('gives a menu option its voice even when the options before it are removed meanwhile', async () => {
+        const m = menu('Menu', 'q', [{name: 'Le loup', audio: null}, {name: 'La chèvre', audio: null}]);
+        const missing = collectMissingTitleAudio([m]);
+        const goat = m.optionsStages[1];
+        const speak = jest.fn(async (text) => {
+            // While the wolf is spoken, the user removes it
+            if (text === 'Le loup') m.optionsStages.splice(0, 1);
+            return {dataUrl: 'data:' + text};
+        });
+        await generateMissingTitleAudio(missing, {speak});
+        expect(m.optionsStages).toEqual([goat]);
+        expect(goat.audio).toBe('data:La chèvre');
+    });
+
+    it('leaves alone a title renamed, or a node removed, while the batch runs', async () => {
+        const renamed = stage('stage', 'Premier');
+        const removed = stage('stage', 'Second');
+        const nodes = [renamed, removed];
+        const missing = collectMissingTitleAudio(nodes, {isInModel: node => nodes.indexOf(node) !== -1});
+        const speak = jest.fn(async (text) => {
+            renamed.name = 'Autre titre';
+            nodes.splice(1, 1);
+            return {dataUrl: 'data:' + text};
+        });
+        await generateMissingTitleAudio(missing, {speak});
+        expect(renamed.audio).toBeNull();
+        expect(removed.audio).toBeNull();
         expect(speak).toHaveBeenCalledTimes(1);
     });
 
@@ -211,8 +268,21 @@ describe('pronunciations (as in Lunii Pack)', () => {
         expect(applyPronunciations('(Luke) - Dalton.', pairs)).toBe('(Louc) - Daltonne.');
     });
 
+    it('replaces in one pass: a spoken form is not replaced again', () => {
+        expect(applyPronunciations('Dalton', parsePronunciations('Dalton = Daltonne ; Daltonne = Daltone'))).toBe('Daltonne');
+        expect(applyPronunciations('Luke et Lucky Luke', parsePronunciations('Luke = Lucky Luke ; Lucky Luke = Louc')))
+            .toBe('Lucky Luke et Louc');
+    });
+
     it('treats the written form literally, not as a pattern', () => {
         expect(applyPronunciations('Mr. X et MrsX', parsePronunciations('Mr. = Monsieur'))).toBe('Monsieur X et MrsX');
+    });
+
+    it('keep the text sent within the server limit', async () => {
+        global.fetch = jest.fn(() => Promise.resolve({ok: true, json: () => Promise.resolve({data: 'AA=='})}));
+        await speakTitle('a '.repeat(240) + 'b', 'system', 'a = aaaa');
+        expect(JSON.parse(global.fetch.mock.calls[0][1].body).text).toHaveLength(TITLE_MAX_LENGTH);
+        delete global.fetch;
     });
 
     it('are applied to the text sent for speech', async () => {

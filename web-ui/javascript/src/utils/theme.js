@@ -14,22 +14,27 @@ export function nextTheme(theme) {
     return THEMES[(i + 1) % THEMES.length];
 }
 
-/* The saved choice, or 'auto' when there is none or the storage cannot be read. */
-export function loadTheme(storage = window.localStorage) {
+/*
+ * The saved choice, or 'auto' when there is none or the storage cannot be read. Reading
+ * window.localStorage itself throws when the browser blocks storage: it is done inside the try.
+ */
+export function loadTheme(storage) {
     try {
-        const saved = storage.getItem(LOCAL_STORAGE_THEME);
+        const store = storage === undefined ? window.localStorage : storage;
+        const saved = store.getItem(LOCAL_STORAGE_THEME);
         return THEMES.includes(saved) ? saved : 'auto';
     } catch (e) {
         return 'auto';
     }
 }
 
-export function saveTheme(theme, storage = window.localStorage) {
+export function saveTheme(theme, storage) {
     try {
+        const store = storage === undefined ? window.localStorage : storage;
         if (theme === 'auto') {
-            storage.removeItem(LOCAL_STORAGE_THEME);
+            store.removeItem(LOCAL_STORAGE_THEME);
         } else {
-            storage.setItem(LOCAL_STORAGE_THEME, theme);
+            store.setItem(LOCAL_STORAGE_THEME, theme);
         }
     } catch (e) {
         // Not remembered, still applied for this session.

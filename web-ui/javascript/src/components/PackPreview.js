@@ -17,6 +17,8 @@ import {sizeUnit} from "../utils/purge";
 
 import './PackPreview.css';
 
+const AUTOPLAY_WITHOUT_AUDIO_MILLIS = 1500;
+
 function blobText(blob) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -61,6 +63,8 @@ export class PackPreview extends React.Component {
         this.assets = new Map();
         this.urls = [];
         this.closed = false;
+        // Moves on from a node with autoplay and no audio, as the device does
+        this.autoplayTimer = null;
         this.dialogRef = React.createRef();
     }
 
@@ -81,6 +85,7 @@ export class PackPreview extends React.Component {
 
     componentWillUnmount() {
         this.closed = true;
+        clearTimeout(this.autoplayTimer);
         document.removeEventListener('keydown', this.onKeyDown);
         this.urls.forEach(url => URL.revokeObjectURL(url));
         this.urls = [];
@@ -96,12 +101,17 @@ export class PackPreview extends React.Component {
         this.loadEntry('story.json')
             .then(blob => {
                 if (!blob) {
-                    throw new Error('story.json');
+                    throw Object.assign(new Error('story.json'), {code: 'NO_STORY'});
                 }
                 return blobText(blob);
             })
             .then(text => {
-                const story = JSON.parse(text);
+                let story;
+                try {
+                    story = JSON.parse(text);
+                } catch (e) {
+                    throw Object.assign(new Error(e.message), {code: 'INVALID_STORY'});
+                }
                 const simulation = createSimulation(story);
                 if (this.closed) {
                     return;
@@ -109,7 +119,16 @@ export class PackPreview extends React.Component {
                 const simState = simulation.start();
                 this.setState({story, simulation, simState}, () => this.showAssets(simState, false));
             })
-            .catch(e => !this.closed && this.setState({storyError: e.message || String(e)}));
+            .catch(e => !this.closed && this.setState({storyError: this.storyErrorText(e)}));
+    };
+
+    // The simulator's and the reader's refusals have a translation; others (network, backend) a message
+    storyErrorText = (e) => {
+        const {t} = this.props;
+        if (e && e.code) {
+            return t(`preview.simulation.errors.${e.code}`);
+        }
+        return (e && e.message) || String(e);
     };
 
     /** The object URL of an asset of the pack, loaded once, or null if the pack has none by that name. */
@@ -148,10 +167,27 @@ export class PackPreview extends React.Component {
                     return;
                 }
                 this.setState({image, audio, assetError: false});
+                if (withAudio && !audio) {
+                    this.autoplayWithoutAudio(simState);
+                }
                 // The wheel's neighbours, ahead of time: images are small
                 simulation.neighbourImages(simState).forEach(name => this.asset(name).catch(() => {}));
             })
             .catch(() => !this.closed && this.state.simState === simState && this.setState({assetError: true}));
+    };
+
+    autoplayWithoutAudio = (simState) => {
+        const {simulation, options} = this.state;
+        if (!simulation.controls(simState).autoplay || !options.autoplay) {
+            return;
+        }
+        clearTimeout(this.autoplayTimer);
+        // A short wait shows the node, and keeps a loop of such nodes from spinning
+        this.autoplayTimer = setTimeout(() => {
+            if (!this.closed && this.state.simState === simState && this.state.started && this.state.options.autoplay) {
+                this.onAdvance();
+            }
+        }, this.props.autoplayDelay !== undefined ? this.props.autoplayDelay : AUTOPLAY_WITHOUT_AUDIO_MILLIS);
     };
 
     move = (result) => {
@@ -190,7 +226,24 @@ export class PackPreview extends React.Component {
         this.move(action(simulation, simState));
     };
 
-    onOk = () => this.act((sim, state) => sim.ok(state));
+    // The end of the audio of an autoplay node, or OK in the viewer, which checks the controls itself
+    onAdvance = () => this.act((sim, state) => sim.ok(state));
+    // OK pressed: only when the node accepts it (before the start, every button starts the simulation)
+    onOk = () => {
+        const {simulation, simState, started, options} = this.state;
+        if (simulation && started) {
+            if (!simulation.canOk(simState, options.autoplay)) {
+                return;
+            }
+            // In place of autoplay (OK disabled), as in the viewer: once the audio has ended
+            const player = !simulation.controls(simState).ok && this.dialogRef.current
+                && this.dialogRef.current.querySelector('audio');
+            if (player && !player.ended) {
+                return;
+            }
+        }
+        this.onAdvance();
+    };
     onHome = () => this.act((sim, state) => sim.home(state));
     onWheelLeft = () => this.act((sim, state) => sim.wheel(state, -1));
     onWheelRight = () => this.act((sim, state) => sim.wheel(state, 1));
@@ -206,14 +259,16 @@ export class PackPreview extends React.Component {
     };
 
     onKeyDown = (e) => {
+        // Escape closes the preview through its Modal
         if (e.key === 'Escape' || e.key === 'Esc') {
-            e.preventDefault();
-            this.props.onClose();
             return;
         }
-        // Keys typed in a control (a focused button, link, the audio player) are that control's
+        // Keys typed in a control are that control's: Enter on a focused button or link presses it;
+        // the arrows still turn the wheel after a click on a button, except in a field or the player
         const target = e.target;
-        if (target && target.closest && target.closest('button, a, audio, input, select, textarea')) {
+        const arrow = e.key === 'ArrowLeft' || e.key === 'ArrowRight';
+        const controls = arrow ? 'audio, input, select, textarea' : 'button, a, audio, input, select, textarea';
+        if (target && target.closest && target.closest(controls)) {
             return;
         }
         const keys = {
@@ -316,7 +371,7 @@ export class PackPreview extends React.Component {
                     <dt>{t('preview.info.version')}</dt>
                     <dd>{`v${pack.version}`}</dd>
                     <dt>{t('preview.info.size')}</dt>
-                    <dd>{details ? this.formatSize(details.size) : <span className="pack-preview-muted">{t(detailsError ? 'preview.info.unknown' : 'preview.info.loading')}</span>}</dd>
+                    <dd>{details && details.size >= 0 ? this.formatSize(details.size) : details ? <span className="pack-preview-muted">{t('preview.info.unknown')}</span> : <span className="pack-preview-muted">{t(detailsError ? 'preview.info.unknown' : 'preview.info.loading')}</span>}</dd>
                     {this.renderCounts()}
                     <dt>{t('preview.info.duration')}</dt>
                     <dd>{this.renderAudioDuration()}</dd>
@@ -358,7 +413,7 @@ export class PackPreview extends React.Component {
                 wheelClickedLeft={this.onWheelLeft}
                 wheelClickedRight={this.onWheelRight}
                 homeClicked={this.onHome}
-                okClicked={this.onOk}
+                okClicked={this.onAdvance}
                 closeClicked={this.props.onClose}
                 // Before the first button press, every button starts the simulation
                 controls={started ? simulation.controls(simState) : {wheel: true, ok: true, home: true, pause: false, autoplay: false}}
@@ -420,7 +475,9 @@ PackPreview.propTypes = {
     onClose: PropTypes.func.isRequired,
     // For tests: the library services
     fetchDetails: PropTypes.func,
-    fetchEntry: PropTypes.func
+    fetchEntry: PropTypes.func,
+    // For tests: the wait before leaving a node with autoplay and no audio
+    autoplayDelay: PropTypes.number
 };
 
 export default withTranslation()(PackPreview);

@@ -65,26 +65,41 @@ export function simpleItem(group, deviceUuids) {
         files: packs.length,
         timestamp: packs.reduce((latest, p) => Math.max(latest, p.timestamp || 0), 0),
         editable: packs.find(p => p.format === 'archive') || null,
-        onDevice: deviceUuids.indexOf(group.uuid) !== -1
+        // Regardless of case: the device and story.json may not write the uuid alike
+        onDevice: deviceUuids.some(uuid => String(uuid).toLowerCase() === String(group.uuid).toLowerCase())
     };
 }
 
-const COMPARATORS = {
-    title: (a, b) => a.title.localeCompare(b.title, 'fr', {numeric: true, sensitivity: 'base'}),
-    recent: (a, b) => b.timestamp - a.timestamp,
-    size: (a, b) => (b.size || 0) - (a.size || 0)
+// Titles in the order of the language of the interface (undefined: the browser's)
+const comparator = (sort, locale) => {
+    switch (sort) {
+        case 'recent':
+            return (a, b) => b.timestamp - a.timestamp;
+        case 'size':
+            return (a, b) => (b.size || 0) - (a.size || 0);
+        default: {
+            let collator;
+            try {
+                collator = new Intl.Collator(locale || undefined, {numeric: true, sensitivity: 'base'});
+            } catch (e) {
+                // Not a language tag the browser knows
+                collator = new Intl.Collator(undefined, {numeric: true, sensitivity: 'base'});
+            }
+            return (a, b) => collator.compare(a.title, b.title);
+        }
+    }
 };
 
 /**
  * The cards to show: the groups matching the search, optionally only those not on the device yet,
  * sorted. Never changes the arrays it is given.
  */
-export function simpleItems(groups, devicePacks, {query = '', sort = 'title', notOnDevice = false} = {}) {
-    const deviceUuids = (devicePacks || []).map(p => p.uuid);
+export function simpleItems(groups, devicePacks, {query = '', sort = 'title', notOnDevice = false, locale} = {}) {
+    const deviceUuids = (devicePacks || []).map(p => String(p.uuid).toLowerCase());
     const items = matchingGroups(groups || [], query)
         .map(group => simpleItem(group, deviceUuids))
         .filter(item => !notOnDevice || !item.onDevice);
-    return items.sort(COMPARATORS[sort] || COMPARATORS.title);
+    return items.sort(comparator(sort, locale));
 }
 
 /** The uuids of the device after moving the pack at `index` by `delta` (-1 up, +1 down), or null. */
@@ -104,5 +119,11 @@ export function storagePercent(metadata) {
     if (!storage || !(storage.size > 0)) {
         return null;
     }
-    return Math.min(100, Math.max(0, Math.round(100 * storage.taken / storage.size)));
+    // Some drivers give only the free space
+    const taken = typeof storage.taken === 'number' ? storage.taken
+        : (typeof storage.free === 'number' ? storage.size - storage.free : NaN);
+    if (!Number.isFinite(taken)) {
+        return null;
+    }
+    return Math.min(100, Math.max(0, Math.round(100 * taken / storage.size)));
 }

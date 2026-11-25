@@ -4,7 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-import {errorMessage, errorCode, handleJsonOrError} from './fetch';
+import {errorMessage, errorCode, handleJsonOrError, apiFetch, httpErrorMessage} from './fetch';
 
 describe('errorMessage', () => {
     it('keeps only the readable message of a JSON refusal', () => {
@@ -19,9 +19,17 @@ describe('errorMessage', () => {
 });
 
 describe('handleJsonOrError', () => {
-    it('rejects with the status text and the backend message', async () => {
-        const response = {ok: false, statusText: 'Conflict', text: () => Promise.resolve('{"message":"already there"}')};
-        await expect(handleJsonOrError(response)).rejects.toThrow('Conflict: already there');
+    it('rejects with the backend message alone when it gives one', async () => {
+        const response = {ok: false, status: 409, statusText: 'Conflict', text: () => Promise.resolve('{"message":"already there"}')};
+        const error = await handleJsonOrError(response).catch(e => e);
+        expect(error.message).toBe('already there');
+        expect(error.status).toBe(409);
+    });
+
+    it('rejects with the status text and the body otherwise', async () => {
+        const response = {ok: false, status: 500, statusText: 'Internal Server Error', text: () => Promise.resolve('boom')};
+        await expect(handleJsonOrError(response)).rejects.toThrow('Internal Server Error: boom');
+        expect(httpErrorMessage('Bad Gateway', '')).toBe('Bad Gateway');
     });
 
     it('keeps the backend error code and the HTTP status on the rejection', async () => {
@@ -29,7 +37,7 @@ describe('handleJsonOrError', () => {
             text: () => Promise.resolve('{"success":false,"error":"TRANSFER_NOT_FOUND","message":"No transfer with id x"}')};
         const error = await handleJsonOrError(response).catch(e => e);
         expect(error).toBeInstanceOf(Error);
-        expect(error.message).toBe('Not Found: No transfer with id x');
+        expect(error.message).toBe('No transfer with id x');
         expect(error.code).toBe('TRANSFER_NOT_FOUND');
         expect(error.status).toBe(404);
     });
@@ -44,6 +52,30 @@ describe('handleJsonOrError', () => {
     it('resolves with the parsed body of a successful response', async () => {
         const response = {ok: true, json: () => Promise.resolve({transferId: 't'})};
         await expect(handleJsonOrError(response)).resolves.toEqual({transferId: 't'});
+    });
+});
+
+describe('apiFetch', () => {
+    afterEach(() => {
+        delete global.fetch;
+    });
+
+    it('says STUdio does not answer when the request gets no answer at all', async () => {
+        global.fetch = jest.fn(() => Promise.reject(new TypeError('Failed to fetch')));
+        const error = await apiFetch('/api/library/infos').catch(e => e);
+        expect(error.code).toBe('UNREACHABLE');
+        expect(error.message).toMatch(/STUdio/);
+        expect(error.cause).toBeInstanceOf(TypeError);
+    });
+
+    it('passes the answer, and any other failure, through', async () => {
+        const answer = {ok: true};
+        global.fetch = jest.fn(() => Promise.resolve(answer));
+        await expect(apiFetch('/api/x', {method: 'POST'})).resolves.toBe(answer);
+        expect(global.fetch).toHaveBeenCalledWith('/api/x', {method: 'POST'});
+        const aborted = new Error('aborted');
+        global.fetch = jest.fn(() => Promise.reject(aborted));
+        await expect(apiFetch('/api/x')).rejects.toBe(aborted);
     });
 });
 

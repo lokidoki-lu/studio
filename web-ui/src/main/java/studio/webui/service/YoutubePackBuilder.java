@@ -41,7 +41,8 @@ import java.util.zip.ZipOutputStream;
  * each story a title stage (image + spoken title) followed by the story stage (audio, autoplay).
  *
  * <p>Node identifiers are derived from the pack identifier and each story's key, so building the
- * same pack again gives the same uuids and the device sees an update, not a new pack.
+ * same pack again gives the same uuids (and version 1): the device sees the pack it already has, not
+ * an update, and keeps the old one until it is removed from the device.
  */
 public final class YoutubePackBuilder {
 
@@ -383,14 +384,17 @@ public final class YoutubePackBuilder {
                 words.add(w);
                 continue;
             }
-            // A word too long for a line is cut
+            // A word too long for a line is cut, between characters (never inside a surrogate pair)
             StringBuilder cur = new StringBuilder();
-            for (char c : w.toCharArray()) {
-                if (cur.length() > 0 && fm.stringWidth(cur.toString() + c + "-") > maxWidth) {
+            for (int i = 0; i < w.length(); ) {
+                int cp = w.codePointAt(i);
+                String c = new String(Character.toChars(cp));
+                if (cur.length() > 0 && fm.stringWidth(cur + c + "-") > maxWidth) {
                     words.add(cur + "-");
                     cur.setLength(0);
                 }
                 cur.append(c);
+                i += c.length();
             }
             words.add(cur.toString());
         }
@@ -414,7 +418,7 @@ public final class YoutubePackBuilder {
             lines = new ArrayList<>(lines.subList(0, maxLines));
             String last = YoutubeTitles.strip(lines.get(maxLines - 1), ".,;:- ");
             while (!last.isEmpty() && fm.stringWidth(last + "\u2026") > maxWidth) {
-                last = last.substring(0, last.length() - 1);
+                last = last.substring(0, last.offsetByCodePoints(last.length(), -1));
             }
             lines.set(maxLines - 1, last + "\u2026");
         }

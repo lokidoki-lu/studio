@@ -110,10 +110,40 @@ class PackDetailsTest {
     @Test
     @DisplayName("a WAV gets its duration from its byte rate and data chunk, past other chunks")
     void wavIsExact() throws IOException {
-        PackDetails.Duration duration = PackDetails.wavDuration(new ByteArrayInputStream(wav(64_000, 64_000 * 3)));
+        PackDetails.Duration duration = PackDetails.wavDuration(new ByteArrayInputStream(wav(64_000, 64_000 * 3)), -1);
         assertNotNull(duration);
         assertFalse(duration.estimated);
         assertEquals(3.0, duration.seconds, 0.001);
+    }
+
+    @Test
+    @DisplayName("S3: a WAV declaring a placeholder data size (0xFFFFFFFF) is capped at the entry size")
+    void wavPlaceholderDataSizeIsCapped() throws IOException {
+        byte[] wav = wav(64_000, 64_000 * 2);
+        // The data size is the last int of the header
+        ByteBuffer.wrap(wav).order(ByteOrder.LITTLE_ENDIAN).putInt(wav.length - 64_000 * 2 - 4, 0xFFFFFFFF);
+        PackDetails.Duration duration = PackDetails.wavDuration(new ByteArrayInputStream(wav), wav.length);
+        assertNotNull(duration);
+        assertEquals(2.0, duration.seconds, 0.001);
+    }
+
+    @Test
+    @DisplayName("R5: an asset present twice in the archive is measured once, as the readers keep the last")
+    void duplicateEntriesAreCountedOnce() throws IOException {
+        Path pack = library.resolve("dup.zip");
+        try (org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream zip =
+                     new org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream(pack.toFile())) {
+            for (byte[] bytes : new byte[][]{"{}".getBytes(StandardCharsets.UTF_8), wav(64_000, 64_000), wav(64_000, 64_000 * 3)}) {
+                String name = bytes.length == 2 ? "story.json" : "assets/a.wav";
+                zip.putArchiveEntry(new org.apache.commons.compress.archivers.zip.ZipArchiveEntry(name));
+                zip.write(bytes);
+                zip.closeArchiveEntry();
+            }
+        }
+
+        JsonObject audio = service.packDetails("dup.zip").orElseThrow().getJsonObject("audio");
+        assertEquals(1, audio.getInteger("measured"));
+        assertEquals(3.0, audio.getDouble("seconds"), 0.05);
     }
 
     @Test
