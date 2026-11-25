@@ -17,7 +17,6 @@ import io.vertx.ext.web.Router;
 import io.vertx.ext.web.handler.BodyHandler;
 import io.vertx.ext.web.handler.CorsHandler;
 import io.vertx.ext.web.handler.ErrorHandler;
-import io.vertx.ext.web.handler.StaticHandler;
 import io.vertx.ext.web.handler.sockjs.BridgeOptions;
 import io.vertx.ext.web.handler.sockjs.SockJSHandler;
 import io.vertx.ext.web.handler.sockjs.SockJSHandlerOptions;
@@ -170,7 +169,9 @@ public class MainVerticle extends AbstractVerticle {
                 context.response().setStatusCode(404).end();
             }
         });
-        router.route().handler(StaticHandler.create().setCachingEnabled(false));
+        // Not Vert.x-Web's StaticHandler: in 3.9 it opens every file on the event loop, and froze
+        // the whole server for seconds whenever the antivirus held that open. See WebrootHandler.
+        router.route().handler(WebrootHandler.create(vertx));
 
         // Error handler
         ErrorHandler errorHandler = ErrorHandler.create(isDevMode());
