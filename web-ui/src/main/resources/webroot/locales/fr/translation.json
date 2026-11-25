@@ -225,7 +225,8 @@
       "files": "{{count}} fichiers",
       "preview": "Aperçu de « {{title}} »",
       "edit": "Ouvrir « {{title}} » dans l'éditeur",
-      "remove": "Supprimer « {{title}} » de la bibliothèque"
+      "remove": "Supprimer « {{title}} » de la bibliothèque",
+      "sending": "Envoi en cours…"
     },
     "removeDialog": {
       "content": "Supprimer « {{title}} » de la bibliothèque ?",

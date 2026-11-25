@@ -772,6 +772,39 @@ export const actionRemoveFromLibrary = (path, t) => {
     }
 };
 
+/**
+ * Removes several files of the library (every file of a pack, in the simplified library): one after the
+ * other, with one toast and one refresh of the library for all of them. A failed file does not stop
+ * the others.
+ */
+export const actionRemoveManyFromLibrary = (paths, t) => {
+    return dispatch => {
+        let toastId = toast(t('toasts.library.removing'), { autoClose: false });
+        let failure = null;
+        return paths.reduce(
+            (previous, path) => previous.then(() => removeFromLibrary(path)
+                .then(resp => {
+                    if (!resp.success) {
+                        failure = failure || new Error(path);
+                    }
+                })
+                .catch(e => {
+                    console.error('failed to remove pack from library', e);
+                    failure = failure || e;
+                })),
+            Promise.resolve())
+            .then(() => {
+                if (failure) {
+                    toast.update(toastId, { type: toast.TYPE.ERROR, render: <IssueReportToast content={<>{t('toasts.library.removingFailed')}</>} error={failure} showDetails />, autoClose: false });
+                } else {
+                    toast.update(toastId, {type: toast.TYPE.SUCCESS, render: t('toasts.library.removed'), autoClose: 5000});
+                }
+                // Refresh library metadata and packs list, once
+                return dispatch(actionRefreshLibrary(t));
+            });
+    }
+};
+
 export const actionLoadEvergreen = (announceOptOut, t) => {
     return dispatch => {
         let toastId = toast(t('toasts.evergreen.loading'), { autoClose: false });
