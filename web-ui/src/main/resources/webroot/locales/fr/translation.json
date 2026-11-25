@@ -687,7 +687,7 @@
     "interrupted": {
       "title": "Mise à jour d'histoire interrompue",
       "states": {
-        "COPY_INTERRUPTED": "{{folder}} : une copie de mise à jour inachevée est restée à côté de l'histoire, dont le dossier est complet.",
+        "COPY_INTERRUPTED": "{{folder}} : une copie de mise à jour, inachevée ou pas encore mise en place, est restée à côté de l'histoire, dont le dossier est complet.",
         "PROMOTE_NEW": "{{folder}} : le dossier de l'histoire est incomplet, mais une copie complète de la nouvelle version est là.",
         "SWAP_INTERRUPTED": "{{folder}} : interrompue pendant la bascule ; le dossier de l'histoire est absent, la nouvelle version est complète.",
         "CLEANUP_INTERRUPTED": "{{folder}} : la nouvelle version est en place ; l'ancienne n'a pas fini d'être supprimée.",
@@ -695,11 +695,14 @@
         "PREVIOUS_ONLY": "{{folder}} : le dossier de l'histoire est absent ; l'ancienne version reste, sous un nom temporaire.",
         "NEW_ONLY": "{{folder}} : le dossier de l'histoire est absent ; seule une copie complète de la nouvelle version reste.",
         "ABANDONED_COPY": "{{folder}} : le dossier de l'histoire est absent et la seule copie restante est inachevée : elle ne peut pas servir.",
-        "CONFLICT": "{{folder}} : plusieurs copies de cette histoire coexistent, ou aucune n'est complète, et STUdio ne peut pas savoir sans risque laquelle garder. Rien n'est modifié : gardez les dossiers tels quels et vérifiez la carte (outil de vérification du disque).",
-        "UNREFERENCED": "{{folder}} : restes d'une mise à jour d'une histoire qui n'est plus sur la Lunii."
+        "CONFLICT": "{{folder}} : le dossier de l'histoire et ses deux restes de mise à jour coexistent, dont au moins une copie complète, et STUdio ne peut pas savoir sans risque laquelle garder. Rien n'est modifié. Pour en sortir : vérifiez la carte (chkdsk sous Windows, Utilitaire de disque sur Mac), copiez les trois dossiers de .content sur l'ordinateur pour les garder, déplacez .studio-new-{{folder}} et .studio-old-{{folder}} hors de .content (sans les supprimer), puis relancez la vérification.",
+        "UNREFERENCED": "{{folder}} : restes d'une mise à jour d'une histoire qui n'est plus sur la Lunii.",
+        "NEW_REPLACES_DAMAGED": "{{folder}} : le dossier de l'histoire est complet mais ne passe pas la vérification d'intégrité ; la copie de la nouvelle version, à côté, est complète et la passe.",
+        "PREVIOUS_REPLACES_DAMAGED": "{{folder}} : le dossier de l'histoire est complet mais ne passe pas la vérification d'intégrité ; l'ancienne version, à côté, est complète et la passe.",
+        "NO_COMPLETE_COPY": "{{folder}} : ni le dossier de l'histoire ni ses restes de mise à jour ne sont une copie complète : il n'y a rien à garder sur la Lunii."
       },
       "actions": {
-        "COPY_INTERRUPTED": "Supprimer la copie inachevée",
+        "COPY_INTERRUPTED": "Supprimer la copie de mise à jour",
         "PROMOTE_NEW": "Mettre la copie complète en place",
         "SWAP_INTERRUPTED": "Terminer la mise à jour",
         "CLEANUP_INTERRUPTED": "Supprimer l'ancienne version",
@@ -707,18 +710,24 @@
         "PREVIOUS_ONLY": "Remettre l'histoire en place",
         "NEW_ONLY": "Mettre la copie en place",
         "ABANDONED_COPY": "Supprimer la copie inachevée",
-        "UNREFERENCED": "Ranger les restes"
+        "UNREFERENCED": "Ranger les restes",
+        "NEW_REPLACES_DAMAGED": "Mettre la copie saine en place",
+        "PREVIOUS_REPLACES_DAMAGED": "Remettre l'ancienne version saine",
+        "NO_COMPLETE_COPY": "Retirer l'histoire et ses restes"
       },
       "confirm": {
-        "COPY_INTERRUPTED": "Supprimer la copie inachevée de {{folder}} ? STUdio vérifie d'abord l'intégrité de l'histoire en place, et ne supprime rien si elle n'est pas intacte.",
+        "COPY_INTERRUPTED": "Supprimer la copie de mise à jour de {{folder}} ? Une copie inachevée ne contient rien d'utilisable ; une copie complète n'est supprimée que si l'histoire en place passe la vérification d'intégrité. STUdio vérifie aussi, en écrivant un petit fichier témoin aussitôt effacé, que les deux noms ne désignent pas le même dossier sur la carte.",
         "PROMOTE_NEW": "Mettre la copie complète de {{folder}} à la place du dossier incomplet ? Seul le dossier incomplet est supprimé.",
         "SWAP_INTERRUPTED": "Mettre la nouvelle version de {{folder}} en place (un renommage), puis supprimer l'ancienne ? Si la nouvelle ne passe pas la vérification d'intégrité, l'ancienne est remise en place et rien n'est supprimé.",
-        "CLEANUP_INTERRUPTED": "Supprimer l'ancienne version de {{folder}} ? STUdio vérifie d'abord l'intégrité de la nouvelle, et ne supprime rien si elle n'est pas intacte.",
+        "CLEANUP_INTERRUPTED": "Supprimer l'ancienne version de {{folder}} ? STUdio vérifie d'abord l'intégrité de la nouvelle, et ne supprime rien si elle n'est pas intacte. Il vérifie aussi, en écrivant un petit fichier témoin aussitôt effacé, que les deux noms ne désignent pas le même dossier sur la carte.",
         "RESTORE_PREVIOUS": "Remettre l'ancienne version de {{folder}} à la place du dossier incomplet ? Seul le dossier incomplet est supprimé.",
         "PREVIOUS_ONLY": "Remettre l'ancienne version de {{folder}} en place (un renommage) ?",
         "NEW_ONLY": "Mettre la copie de {{folder}} en place (un renommage) ?",
         "ABANDONED_COPY": "Supprimer la copie inachevée de {{folder}} ? L'histoire restera sans contenu : renvoyez-la ensuite.",
-        "UNREFERENCED": "Ranger les restes de {{folder}} ? Les copies inachevées sont supprimées ; une copie complète est remise sous le nom {{folder}} (elle apparaîtra alors comme dossier orphelin) et n'est pas supprimée."
+        "UNREFERENCED": "Ranger les restes de {{folder}} ? Les copies inachevées sont supprimées ; une copie complète est remise sous le nom {{folder}} (elle apparaîtra alors comme dossier orphelin) et n'est pas supprimée.",
+        "NEW_REPLACES_DAMAGED": "Mettre la copie saine de {{folder}} en place ? Le dossier abîmé n'est pas supprimé : il est seulement renommé en ancienne version, que vous pourrez supprimer ensuite.",
+        "PREVIOUS_REPLACES_DAMAGED": "Remettre l'ancienne version saine de {{folder}} en place ? Le dossier abîmé n'est pas supprimé : il est seulement renommé en copie de mise à jour, que vous pourrez supprimer ensuite.",
+        "NO_COMPLETE_COPY": "Retirer {{folder}} de la Lunii ? L'histoire est retirée de la liste de la Lunii, puis ses dossiers incomplets sont supprimés (aucune copie complète n'existe). Renvoyez-la ensuite depuis la bibliothèque."
       }
     },
     "orphans": {

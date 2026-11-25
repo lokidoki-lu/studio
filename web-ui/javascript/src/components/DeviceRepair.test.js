@@ -305,6 +305,7 @@ describe('texts of the device check', () => {
     const keys = (obj, prefix = '') => Object.keys(obj).reduce((all, k) => typeof obj[k] === 'object'
         ? all.concat(keys(obj[k], prefix + k + '.')) : all.concat(prefix + k), []);
     const STATES = ['COPY_INTERRUPTED', 'PROMOTE_NEW', 'SWAP_INTERRUPTED', 'CLEANUP_INTERRUPTED', 'RESTORE_PREVIOUS',
+        'NEW_REPLACES_DAMAGED', 'PREVIOUS_REPLACES_DAMAGED', 'NO_COMPLETE_COPY',
         'PREVIOUS_ONLY', 'NEW_ONLY', 'ABANDONED_COPY', 'CONFLICT', 'UNREFERENCED'];
 
     it('has the same keys in French and in English', () => {
@@ -332,6 +333,10 @@ describe('texts of the device check', () => {
     it('no longer claims the story is intact, nor advises removing the folders an index drops', () => {
         const fr = read('fr').deviceRepair;
         expect(fr.interrupted.states.COPY_INTERRUPTED).not.toMatch(/intacte/);
+        // A real conflict says how to get out of it; a damaged folder is only ever moved aside
+        expect(fr.interrupted.states.CONFLICT).toMatch(/hors de \.content/);
+        expect(fr.interrupted.confirm.NEW_REPLACES_DAMAGED).toMatch(/n'est pas supprimé/);
+        expect(fr.interrupted.confirm.PREVIOUS_REPLACES_DAMAGED).toMatch(/n'est pas supprimé/);
         expect(fr.interrupted.actions.UNREFERENCED).not.toMatch(/Supprimer/);
         expect(fr.pendingIndex.keepMeans.ADD).not.toMatch(/supprimer ensuite/);
         expect(fr.pendingIndex.adoptMeans.REMOVE).not.toMatch(/supprimer ensuite/);

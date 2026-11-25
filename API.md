@@ -94,7 +94,8 @@ reference. It takes space and makes any later upload of the same pack refuse wit
 
 - `GET /orphans` → `{"folders": ["0A0B0C0D", …]}`. Listed in the device queue, so an upload in
   progress is never reported as an orphan.
-- `POST /orphans/remove` `{"folders": ["0A0B0C0D"]}` → `{"success": true, "results": [{"folder":
+- `POST /orphans/remove` `{"folders": ["0A0B0C0D"], "deviceToken"}` (the token of the device check,
+  required: 400 `INVALID_REQUEST` without it) → `{"success": true, "results": [{"folder":
   "0A0B0C0D", "removed": true}]}`. Only folders named explicitly are removed, and only if the index,
   re-read at that moment, does not reference them. **Removal is permanent.**
 
@@ -129,18 +130,27 @@ check, nothing done), `UNSUPPORTED_ON_DEVICE` (400).
 - `POST /repair/interruptedUpdate` `{"folder": "AAAABBBB", "state", "deviceToken"}` →
   `{"success": true}`, refused with `DEVICE_STATE_CHANGED` if the leftovers are no longer in `state`.
   "Complete" means every file STUdio writes is there; a complete copy is only ever removed once the
-  pack folder left in place is complete and passes the integrity check. `COPY_INTERRUPTED` (complete
-  pack folder + new copy): the new copy is removed. `PROMOTE_NEW` (incomplete pack folder + complete
+  pack folder left in place is complete and passes the integrity check, and no folder is removed while
+  another name of the pack is the same folder on the card (a FAT rename cut short): before every such
+  removal, a marker file is created in one, looked for in the other and removed (the alias probe);
+  an alias is refused (`INVALID_REQUEST`), and two distinct copies holding the same files can be
+  cleaned up. `COPY_INTERRUPTED` (complete pack folder + new copy): the new copy is removed (a
+  complete one only if the pack folder passes the integrity check). `NEW_REPLACES_DAMAGED` /
+  `PREVIOUS_REPLACES_DAMAGED` (complete pack folder failing the integrity check + a new copy /
+  old version that passes it): that copy is renamed into place, the damaged folder only renamed
+  aside (to the old version / new copy name), never removed. `PROMOTE_NEW` (incomplete pack folder + complete
   new copy): the new copy replaces it. `SWAP_INTERRUPTED` (no pack folder, complete new copy + old
   version): the new copy is renamed into place and the old version removed, or, if the new copy fails
   the integrity check, the old version is put back. `CLEANUP_INTERRUPTED` (complete pack folder + old
-  version): the old version is removed, never when both hold the very same files. `RESTORE_PREVIOUS`
+  version): the old version is removed. `RESTORE_PREVIOUS`
   (incomplete pack folder + complete old version): the old version replaces it. `PREVIOUS_ONLY`: the
   old version is put back. `NEW_ONLY`: the complete new copy is put in place. `ABANDONED_COPY`: the
-  unfinished copy, all that is left, is removed. `CONFLICT` (a pack folder next to both leftovers, or
-  no complete copy to keep): always refused, nothing is touched. `UNREFERENCED`: unfinished copies
-  are removed, a complete one is renamed to the pack folder name if it is free. The index is not
-  touched.
+  unfinished copy, all that is left, is removed. `NO_COMPLETE_COPY` (an incomplete pack folder and
+  no complete leftover): the pack is removed from the index, then its incomplete folders. `CONFLICT`
+  (a pack folder next to both leftovers, one at least complete): always refused, nothing is touched;
+  the way out is manual (check the card, move the leftovers out of `.content`, check again).
+  `UNREFERENCED`: unfinished copies are removed, a complete one is renamed to the pack folder name if
+  it is free. The index is only touched by `NO_COMPLETE_COPY`.
 - `POST /repair/missingContent` `{"uuid", "deviceToken"}` → `{"success": true}`: removes from the
   index an entry the check reported without content, only if its folder is still absent or without
   `ni` and no leftover of an update of it is there (`DEVICE_STATE_CHANGED` otherwise).
