@@ -11,19 +11,22 @@ import {toast} from "react-toastify";
 
 import {actionRefreshLibrary} from "../actions";
 import {fetchYoutubeTools, startYoutubePack, fetchYoutubeJob, fetchCurrentYoutubeJob, cancelYoutubePack} from "../services/youtube";
-import {BITRATES, defaultForm, formProblem, buildRequest, isRunning, progressPercent, lastLines} from "../utils/youtube";
+import {BITRATES, defaultForm, formProblem, buildRequest, isRunning, progressPercent, lastLines,
+    errorText, pendingJobId, setPendingJobId} from "../utils/youtube";
 import Modal from "./Modal";
 
 import './YoutubePack.css';
 
 const POLL_MILLIS = 1000;
+// Successive failures to reach the backend before the button stops following the creation
+export const MAX_POLL_FAILURES = 15;
 
 /*
  * The "from YouTube" button of the local library, and its dialog: links and options, then the
  * progress of the creation, which runs in the backend. Closing the dialog does not stop it: the
  * button keeps following it, refreshes the library at the end, and says how it went.
  */
-class YoutubePack extends React.Component {
+export class YoutubePack extends React.Component {
 
     constructor(props) {
         super(props);
@@ -40,25 +43,43 @@ class YoutubePack extends React.Component {
             job: null
         };
         this.timer = null;
+        // No state change, no new request once the button is gone (change of view)
+        this.unmounted = false;
+        this.pollFailures = 0;
+        // Only the answer to the last check of the tools is shown
+        this.toolsRequest = 0;
     }
 
     componentDidMount() {
-        // A creation started before the page was (re)loaded is followed again
+        // A creation started before the page was (re)loaded is followed again; one that ended
+        // while the button was not shown (other view, reload) is announced once
         fetchCurrentYoutubeJob()
             .then(job => {
+                if (this.unmounted || !job) {
+                    return;
+                }
                 if (isRunning(job)) {
                     this.setState({job}, this.follow);
+                } else if ((job.state === 'DONE' || job.state === 'FAILED') && job.id && String(job.id) === pendingJobId()) {
+                    this.finished(job);
                 }
             })
             .catch(() => { /* no creation, or no backend support: the button works anyway */ });
     }
 
     componentWillUnmount() {
+        this.unmounted = true;
         this.stopFollowing();
     }
 
     follow = () => {
         this.stopFollowing();
+        if (this.unmounted) {
+            return;
+        }
+        if (this.state.job && this.state.job.id) {
+            setPendingJobId(this.state.job.id);
+        }
         this.timer = setTimeout(this.poll, POLL_MILLIS);
     };
 
@@ -77,6 +98,10 @@ class YoutubePack extends React.Component {
         }
         fetchYoutubeJob(current.id)
             .then(job => {
+                if (this.unmounted) {
+                    return;
+                }
+                this.pollFailures = 0;
                 this.setState({job});
                 if (isRunning(job)) {
                     this.follow();
@@ -85,18 +110,37 @@ class YoutubePack extends React.Component {
                 }
             })
             .catch(e => {
+                if (this.unmounted) {
+                    return;
+                }
                 console.error('failed to follow the YouTube pack creation', e);
-                // The backend may have restarted: the creation is gone
+                const { t } = this.props;
+                // The backend has restarted: the creation is gone
                 if (e && e.status === 404) {
-                    this.setState({job: null});
+                    this.lost(t('youtubePack.toasts.interrupted'));
+                    return;
+                }
+                this.pollFailures += 1;
+                if (this.pollFailures >= MAX_POLL_FAILURES) {
+                    this.lost(t('youtubePack.toasts.unreachable'));
                 } else {
                     this.follow();
                 }
             });
     };
 
+    // The creation can no longer be followed: the button stops showing it as running
+    lost = (message) => {
+        this.stopFollowing();
+        this.pollFailures = 0;
+        setPendingJobId(null);
+        this.setState({job: null});
+        toast.error(message, { autoClose: false });
+    };
+
     finished = (job) => {
         const { t } = this.props;
+        setPendingJobId(null);
         if (job.state === 'DONE') {
             this.props.refreshLibrary();
         }
@@ -104,16 +148,21 @@ class YoutubePack extends React.Component {
             return;
         }
         if (job.state === 'DONE') {
-            toast.success(t('youtubePack.toasts.done', { title: job.result.title, count: job.result.stories }), { autoClose: 8000 });
+            const result = job.result || {};
+            toast.success(t('youtubePack.toasts.done', { title: result.title, count: result.stories }), { autoClose: 8000 });
         } else if (job.state === 'FAILED') {
-            toast.error(t('youtubePack.toasts.failed', { message: job.message }), { autoClose: false });
+            toast.error(t('youtubePack.toasts.failed', { message: errorText(t, job.error, job.message) }), { autoClose: false });
         }
     };
 
     checkTools = (refresh) => {
+        const request = ++this.toolsRequest;
         this.setState({checking: true, toolsError: null});
         fetchYoutubeTools(refresh)
             .then(tools => {
+                if (this.unmounted || request !== this.toolsRequest) {
+                    return;
+                }
                 this.setState(state => ({
                     tools,
                     checking: false,
@@ -122,9 +171,16 @@ class YoutubePack extends React.Component {
                 }));
             })
             .catch(e => {
+                if (this.unmounted || request !== this.toolsRequest) {
+                    return;
+                }
                 console.error('failed to check yt-dlp and ffmpeg', e);
-                this.setState({checking: false, toolsError: e.message || String(e)});
+                this.setState({checking: false, toolsError: this.errorOf(e)});
             });
+    };
+
+    errorOf = (e) => {
+        return errorText(this.props.t, e && e.code, (e && e.message) || String(e));
     };
 
     onOpen = () => {
@@ -155,11 +211,18 @@ class YoutubePack extends React.Component {
         this.setState({starting: true, startError: null});
         startYoutubePack(buildRequest(this.state.form))
             .then(job => {
+                if (this.unmounted) {
+                    return;
+                }
+                this.pollFailures = 0;
                 this.setState({starting: false, job}, this.follow);
             })
             .catch(e => {
+                if (this.unmounted) {
+                    return;
+                }
                 console.error('failed to start the YouTube pack creation', e);
-                this.setState({starting: false, startError: e.message || String(e)});
+                this.setState({starting: false, startError: this.errorOf(e)});
                 if (e && e.code === 'TOOLS_MISSING') {
                     this.checkTools(true);
                 }
@@ -172,10 +235,17 @@ class YoutubePack extends React.Component {
             return;
         }
         cancelYoutubePack(job.id)
-            .then(updated => this.setState({job: updated}))
+            .then(updated => {
+                if (!this.unmounted) {
+                    this.setState({job: updated});
+                }
+            })
             .catch(e => {
+                if (this.unmounted) {
+                    return;
+                }
                 console.error('failed to cancel the YouTube pack creation', e);
-                this.setState({startError: e.message || String(e)});
+                this.setState({startError: this.errorOf(e)});
             });
     };
 
@@ -191,7 +261,10 @@ class YoutubePack extends React.Component {
             return <p className="youtube-pack-checking">{t('youtubePack.checking')}</p>;
         }
         if (toolsError) {
-            return <div className="youtube-pack-error" role="alert">{t('youtubePack.toolsError', { message: toolsError })}</div>;
+            return <div className="youtube-pack-error" role="alert">
+                <p>{t('youtubePack.toolsError', { message: toolsError })}</p>
+                <button type="button" className="ui-btn" disabled={checking} onClick={() => this.checkTools(true)}>{t('youtubePack.recheck')}</button>
+            </div>;
         }
         if (tools && !tools.ready) {
             return <div className="youtube-pack-error" role="alert">
@@ -281,7 +354,7 @@ class YoutubePack extends React.Component {
                 {job.result.silentTitles > 0 && <p>{t('youtubePack.silent', { count: job.result.silentTitles })}</p>}
                 {job.result.blocked && <p>{t('youtubePack.blocked')}</p>}
             </div>}
-            {job.state === 'FAILED' && <div className="youtube-pack-error" role="alert">{t('youtubePack.failed', { message: job.message })}</div>}
+            {job.state === 'FAILED' && <div className="youtube-pack-error" role="alert">{t('youtubePack.failed', { message: errorText(t, job.error, job.message) })}</div>}
             {job.state === 'CANCELLED' && <div className="youtube-pack-error" role="status">{t('youtubePack.cancelled')}</div>}
             {job.warnings > 0 && <p className="youtube-pack-hint">{t('youtubePack.warnings', { count: job.warnings })}</p>}
             <pre className="youtube-pack-log">{lastLines(job, 12).join('\n')}</pre>

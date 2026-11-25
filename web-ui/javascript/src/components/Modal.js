@@ -6,13 +6,39 @@
 
 import React from 'react';
 import PropTypes from "prop-types";
+import {withTranslation} from "react-i18next";
 
 import './Modal.css';
 
+// The dialogs shown, oldest first: Escape closes the one on top only
+const openModals = [];
 
-class Modal extends React.Component {
+export class Modal extends React.Component {
+
+    componentDidMount() {
+        openModals.push(this);
+        document.addEventListener('keydown', this.onKeyDown);
+    }
+
+    componentWillUnmount() {
+        const i = openModals.indexOf(this);
+        if (i !== -1) {
+            openModals.splice(i, 1);
+        }
+        document.removeEventListener('keydown', this.onKeyDown);
+    }
+
+    onKeyDown = (e) => {
+        if ((e.key === 'Escape' || e.key === 'Esc') && !e.defaultPrevented
+            && openModals[openModals.length - 1] === this && this.props.onClose) {
+            e.preventDefault();
+            this.props.onClose(e);
+        }
+    };
 
     render() {
+        const t = this.props.t || ((key) => key);
+        const closeLabel = t('dialogs.shared.close');
         let classes = 'modal show ';
         if (this.props.className) {
             classes += this.props.className
@@ -22,7 +48,7 @@ class Modal extends React.Component {
                 <div className="modal-dialog modal-dialog-centered" role="document">
                     <div className="modal-content">
                         <div className="modal-header">
-                            <button type="button" className="close" aria-label="Close" onClick={this.props.onClose}>
+                            <button type="button" className="close" aria-label={closeLabel === 'dialogs.shared.close' ? 'Close' : closeLabel} onClick={this.props.onClose}>
                                 <span aria-hidden="true">&times;</span>
                             </button>
                             <h4 className="modal-title">{this.props.title}</h4>
@@ -46,7 +72,9 @@ Modal.propTypes = {
     content: PropTypes.element.isRequired,
     buttons: PropTypes.array.isRequired,
     onClose: PropTypes.func.isRequired,
-    className: PropTypes.string
+    className: PropTypes.string,
+    // From withTranslation
+    t: PropTypes.func
 };
 
-export default Modal;
+export default withTranslation()(Modal);
