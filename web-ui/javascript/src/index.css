@@ -19,6 +19,8 @@ html, body, #root {
     --ui-accent: #3b6fd8;
     --ui-accent-hover: #2f5bb5;
     --ui-accent-soft: rgba(59, 111, 216, .12);
+    /* Text on an accent background: white on the dark blue, dark on the light blue of the dark theme */
+    --ui-on-accent: #ffffff;
     --ui-danger: #c2413a;
     --ui-header-bg: #1d2230;
     --ui-header-text: #eef0f5;
@@ -43,6 +45,7 @@ html, body, #root {
         --ui-accent: #6c9bff;
         --ui-accent-hover: #8fb2ff;
         --ui-accent-soft: rgba(108, 155, 255, .16);
+        --ui-on-accent: #0e1016;
         --ui-danger: #f0776f;
         --ui-header-bg: #0e1016;
         --ui-format-archive: #e8b04a;
@@ -63,6 +66,7 @@ html, body, #root {
     --ui-accent: #6c9bff;
     --ui-accent-hover: #8fb2ff;
     --ui-accent-soft: rgba(108, 155, 255, .16);
+    --ui-on-accent: #0e1016;
     --ui-danger: #f0776f;
     --ui-header-bg: #0e1016;
     --ui-format-archive: #e8b04a;
@@ -127,13 +131,13 @@ code {
 .pack-library .header .btn-primary {
     background-color: var(--ui-accent);
     border-color: var(--ui-accent);
-    color: #fff;
+    color: var(--ui-on-accent);
 }
 .ui-btn-primary:hover, .ui-btn-primary:focus,
 .pack-library .header .btn-primary:hover, .pack-library .header .btn-primary:focus {
     background-color: var(--ui-accent-hover);
     border-color: var(--ui-accent-hover);
-    color: #fff;
+    color: var(--ui-on-accent);
 }
 .ui-btn-danger:hover, .ui-btn-danger:focus {
     border-color: var(--ui-danger);

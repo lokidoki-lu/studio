@@ -124,15 +124,19 @@
       "WRITING": "Ajout à la bibliothèque",
       "FINISHED": "Terminé"
     },
-    "done": "Pack « {{title}} » ajouté à la bibliothèque : {{count}} histoire(s) ({{path}}).",
-    "silent": "{{count}} titre(s) sans voix : générez-les dans l'éditeur avant d'envoyer le pack sur la Lunii.",
+    "done": "Pack « {{title}} » ajouté à la bibliothèque : {{count}} histoire ({{path}}).",
+    "done_plural": "Pack « {{title}} » ajouté à la bibliothèque : {{count}} histoires ({{path}}).",
+    "silent": "{{count}} titre sans voix : générez-le dans l'éditeur avant d'envoyer le pack sur la Lunii.",
+    "silent_plural": "{{count}} titres sans voix : générez-les dans l'éditeur avant d'envoyer le pack sur la Lunii.",
     "blocked": "YouTube a bloqué la suite des téléchargements : réessayez dans quelques heures pour les vidéos manquantes.",
     "failed": "Échec : {{message}}",
     "cancelled": "Création annulée : rien n'a été ajouté à la bibliothèque.",
-    "warnings": "{{count}} avertissement(s) : voyez le journal ci-dessous.",
+    "warnings": "{{count}} avertissement : voyez le journal ci-dessous.",
+    "warnings_plural": "{{count}} avertissements : voyez le journal ci-dessous.",
     "background": "Vous pouvez fermer cette fenêtre : la création continue, le bouton « Depuis YouTube » suit sa progression.",
     "toasts": {
-      "done": "Pack « {{title}} » créé depuis YouTube : {{count}} histoire(s).",
+      "done": "Pack « {{title}} » créé depuis YouTube : {{count}} histoire.",
+      "done_plural": "Pack « {{title}} » créé depuis YouTube : {{count}} histoires.",
       "failed": "La création du pack depuis YouTube a échoué : {{message}}",
       "interrupted": "La création du pack depuis YouTube a été interrompue (STUdio a redémarré ?).",
       "unreachable": "STUdio ne répond plus : la création du pack depuis YouTube n'est plus suivie. Rouvrez la bibliothèque pour la retrouver."
@@ -164,7 +168,8 @@
       "DUPLICATE_SOURCE": "Copie identique d'un fichier plus récent : {{kept}}"
     },
     "unselectedHint": "Décochées par défaut : ce sont des fichiers que vous avez ajoutés vous-même.",
-    "total": "Espace libéré : {{size}} ({{count}} cochée(s))",
+    "total": "Espace libéré : {{size}} ({{count}} cochée)",
+    "total_plural": "Espace libéré : {{size}} ({{count}} cochées)",
     "cancel": "Annuler",
     "confirm": "Supprimer définitivement",
     "units": {
@@ -500,7 +505,8 @@
       "titleVoiceFallback": "Voix en ligne indisponible, voix de l'ordinateur utilisée ({{reason}})",
       "titleVoiceNothingMissing": "Tous les titres ont déjà un audio",
       "titleVoiceGenerating": "Génération des voix… {{done}} / {{total}}",
-      "titleVoiceGenerated": "{{count}} voix générée(s)",
+      "titleVoiceGenerated": "{{count}} voix générée",
+      "titleVoiceGenerated_plural": "{{count}} voix générées",
       "titleVoiceStopped": "Génération arrêtée après {{done}} / {{total}} : {{message}}",
       "saving": "Enregistrement du pack d'histoires dans la bibliothèque...",
       "saved": "Pack d'histoires enregistré dans la bibliothèque.",
