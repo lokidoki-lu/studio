@@ -817,7 +817,9 @@
       "title": "Not enough space on the Lunii",
       "content": "This pack will take about {{required}} once in the Lunii's format, but it only has {{free}} free: {{missing}} short.",
       "content_plural": "These {{count}} packs will take about {{required}} once in the Lunii's format, but it only has {{free}} free: {{missing}} short.",
-      "explain": "Nothing was converted nor sent. Free some space by removing stories from the Lunii, or send fewer packs at a time. The estimate counts the conversion (MP3 and images for recent Lunii, WAV for the first Lunii) and the minimum space each file takes on the card."
+      "explain": "Nothing was converted nor sent. Free some space by removing stories from the Lunii, or send fewer packs at a time. The estimate counts the conversion (MP3 and images for recent Lunii, WAV for the first Lunii) and the minimum space each file takes on the card.",
+      "sendAnyway": "Send anyway",
+      "sendAnywayExplain": "The free space seems too small, but going by a high estimate: it may still fit. \"Send anyway\" tries the transfer; if it really does not fit, the Lunii will refuse it by itself."
     }
   }
 }

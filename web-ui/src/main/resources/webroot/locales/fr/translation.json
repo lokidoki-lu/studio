@@ -817,7 +817,9 @@
       "title": "Pas assez de place sur la Lunii",
       "content": "Ce pack prendra environ {{required}} une fois au format de la Lunii, mais elle n'a que {{free}} de libre : il manque {{missing}}.",
       "content_plural": "Ces {{count}} packs prendront environ {{required}} une fois au format de la Lunii, mais elle n'a que {{free}} de libre : il manque {{missing}}.",
-      "explain": "Rien n'a été converti ni envoyé. Libérez de la place en retirant des histoires de la Lunii, ou envoyez moins de packs à la fois. L'estimation compte la conversion (MP3 et images pour les Lunii récentes, WAV pour la première Lunii) et la place minimale qu'occupe chaque fichier sur la carte."
+      "explain": "Rien n'a été converti ni envoyé. Libérez de la place en retirant des histoires de la Lunii, ou envoyez moins de packs à la fois. L'estimation compte la conversion (MP3 et images pour les Lunii récentes, WAV pour la première Lunii) et la place minimale qu'occupe chaque fichier sur la carte.",
+      "sendAnyway": "Envoyer quand même",
+      "sendAnywayExplain": "La place libre semble insuffisante, mais d'après une estimation haute : il se peut que ça tienne. « Envoyer quand même » tente l'envoi ; si ça ne tient vraiment pas, la Lunii le refusera elle-même."
     }
   }
 }

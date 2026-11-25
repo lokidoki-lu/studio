@@ -220,8 +220,46 @@ describe('sending a selection (simplified view)', () => {
         await flush();
 
         expect(bar().querySelector('.send-queue-warning').textContent).toContain('spaceEstimate.tooBig {"missing":"libraryPurge.units.gb {\\"value\\":\\"1.0\\"}"}');
-        expect(button(bar(), 'sendQueue.send').disabled).toBe(true);
+        // Still enabled: the refusal says why, and offers to send anyway
+        expect(button(bar(), 'sendQueue.send').disabled).toBe(false);
+        act(() => { button(bar(), 'sendQueue.send').click(); });
+        await flush();
+        const refusal = modal('space-refusal');
+        expect(refusal.textContent).toContain('spaceEstimate.refusal.sendAnywayExplain');
+        act(() => { button(refusal, 'dialogs.shared.close').click(); });
+        await flush();
+        expect(modal('space-refusal')).toBeNull();
         expect(props.convertPackInLibrary).not.toHaveBeenCalled();
+        expect(props.addFromLibrary).not.toHaveBeenCalled();
+        expect(container.querySelector('.send-queue-progress')).toBeNull();
+    });
+
+    it('B2: sends a selection anyway when asked to, the estimate being a high one', async () => {
+        const props = actions({bytes: 2e9});
+        render(PackLibrarySimple, {device: device('fs', 3e9), library: LIBRARY, ...props});
+        act(() => { box('Alpha').click(); });
+        act(() => { box('Beta').click(); });
+        await flush();
+        act(() => { button(bar(), 'sendQueue.send').click(); });
+        await flush();
+        act(() => { button(modal('space-refusal'), 'spaceEstimate.refusal.sendAnyway').click(); });
+        await flush(20);
+        expect(modal('space-refusal')).toBeNull();
+        expect(props.addFromLibrary.mock.calls.map(c => c[0])).toEqual(['u-a', 'u-b']);
+        expect(modal('send-queue-summary').textContent).toContain('"sent":2');
+    });
+
+    it('B2: sends a single pack anyway when asked to', async () => {
+        const props = actions({bytes: 5e9});
+        render(PackLibrarySimple, {device: device('fs', 3e9), library: LIBRARY, ...props});
+        act(() => { button(card('Beta'), 'simpleLibrary.card.send').click(); });
+        await flush();
+        const refusal = modal('space-refusal');
+        expect(refusal.textContent).toContain('spaceEstimate.refusal.sendAnywayExplain');
+        act(() => { button(refusal, 'spaceEstimate.refusal.sendAnyway').click(); });
+        await flush();
+        expect(props.addFromLibrary).toHaveBeenCalledWith('u-b', 'u-b.converted_1', 'fs', 'fs', expect.anything());
+        expect(button(card('Beta'), 'simpleLibrary.card.send').disabled).toBe(false);
     });
 
     it('refuses a single pack that does not fit, with an explanation, instead of converting it', async () => {
@@ -235,6 +273,10 @@ describe('sending a selection (simplified view)', () => {
         expect(refusal.textContent).toContain('spaceEstimate.refusal.content');
         expect(refusal.textContent).toContain('spaceEstimate.refusal.explain');
         expect(props.convertPackInLibrary).not.toHaveBeenCalled();
+        expect(props.addFromLibrary).not.toHaveBeenCalled();
+        act(() => { button(refusal, 'dialogs.shared.close').click(); });
+        await flush();
+        expect(modal('space-refusal')).toBeNull();
         expect(props.addFromLibrary).not.toHaveBeenCalled();
         // The button can be used again
         expect(button(card('Alpha'), 'simpleLibrary.card.send').disabled).toBe(false);
@@ -323,5 +365,79 @@ describe('sending a selection (full view)', () => {
         await flush(20);
         expect(modal('ask-allow-enriched')).toBeNull();
         expect(props.convertPackInLibrary).toHaveBeenCalledWith('u-a', 'a.zip', 'raw', false, expect.anything());
+    });
+});
+
+describe('questions asked during a send queue (B1)', () => {
+
+    const both = (uuid, title) => ({uuid, packs: [
+        {uuid, path: uuid + '.converted_1', format: 'fs', title, size: 1},
+        {uuid, path: uuid + '.zip', format: 'archive', title, size: 1}
+    ]});
+    const escape = () => act(() => {
+        document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+    });
+    const start = async (props, library, driver = 'fs') => {
+        render(PackLibrarySimple, {device: device(driver), library, ...props});
+        library.packs.forEach(group => act(() => { box(group.packs[0].title).click(); }));
+        await flush();
+        act(() => { button(bar(), 'sendQueue.send').click(); });
+        await flush();
+    };
+
+    it('asks again when the next conversion has another verdict (unproven, then known not to match)', async () => {
+        const props = actions();
+        const verdicts = {'u-a.zip': 'UNKNOWN', 'u-c.zip': 'MISMATCH', 'u-d.zip': 'UNKNOWN'};
+        props.verifyConversion = jest.fn(source => Promise.resolve({verdict: verdicts[source]}));
+        await start(props, {...LIBRARY, packs: [both('u-a', 'Alpha'), both('u-c', 'Gamma'), both('u-d', 'Delta')]});
+
+        let ask = modal('ask-confirm-conversion');
+        expect(ask.textContent).not.toContain('contentMismatch');
+        act(() => { button(ask, 'dialogs.library.askConfirmConversion.transfer').click(); });
+        await flush();
+
+        // Gamma's conversion does not match its source: "transfer" given for Alpha is no answer for it
+        ask = modal('ask-confirm-conversion');
+        expect(ask).not.toBeNull();
+        expect(ask.textContent).toContain('dialogs.library.askConfirmConversion.contentMismatch');
+        act(() => { button(ask, 'dialogs.library.askConfirmConversion.convert').click(); });
+        await flush(20);
+
+        // Delta is unproven, as Alpha was: answered already
+        expect(modal('ask-confirm-conversion')).toBeNull();
+        expect(props.convertPackInLibrary.mock.calls.map(c => c[0])).toEqual(['u-c']);
+        expect(props.addFromLibrary.mock.calls.map(c => c[1])).toEqual(['u-a.converted_1', 'u-c.converted_9', 'u-d.converted_1']);
+    });
+
+    it('Escape on the conversion question leaves out this pack only, and the next one is asked', async () => {
+        const props = actions();
+        await start(props, {...LIBRARY, packs: [both('u-a', 'Alpha'), both('u-c', 'Gamma')]});
+        expect(modal('ask-confirm-conversion')).not.toBeNull();
+        escape();
+        await flush();
+
+        const ask = modal('ask-confirm-conversion');
+        expect(ask).not.toBeNull();
+        act(() => { button(ask, 'dialogs.library.askConfirmConversion.transfer').click(); });
+        await flush(20);
+        expect(props.addFromLibrary.mock.calls.map(c => c[1])).toEqual(['u-c.converted_1']);
+        const summary = modal('send-queue-summary').textContent;
+        expect(summary).toContain('sendQueue.summary.counts {"sent":1,"skipped":1,"failed":0}');
+        expect(summary).toContain('sendQueue.reasons.declined');
+    });
+
+    it('Escape on the enriched format question leaves out this pack only, and the next one is asked', async () => {
+        const props = actions();
+        await start(props, {...LIBRARY, packs: [pack('u-a', 'Alpha', 'a.zip', 'archive'), pack('u-c', 'Gamma', 'c.zip', 'archive')]}, 'raw');
+        expect(modal('ask-allow-enriched')).not.toBeNull();
+        escape();
+        await flush();
+
+        const ask = modal('ask-allow-enriched');
+        expect(ask).not.toBeNull();
+        act(() => { button(ask, 'dialogs.shared.no').click(); });
+        await flush(20);
+        expect(props.convertPackInLibrary.mock.calls.map(c => [c[0], c[3]])).toEqual([['u-c', false]]);
+        expect(modal('send-queue-summary').textContent).toContain('sendQueue.summary.counts {"sent":1,"skipped":1,"failed":0}');
     });
 });

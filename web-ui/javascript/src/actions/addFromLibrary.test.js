@@ -425,6 +425,22 @@ describe('actionAddFromLibrary: reconciliation with the transfer registry', () =
         expect(deviceService.addFromLibrary).toHaveBeenCalledTimes(2);
     });
 
+    it('B4: the same pack still followed, in the send queue: settled as busy, without a toast', async () => {
+        const channel = fakeChannel({ open: true });
+        deviceService.addFromLibrary.mockResolvedValue({ transferId: 'tid' });
+        await runAddFromLibrary(channel);
+        toast.error.mockClear();
+
+        const onSettled = jest.fn();
+        await actionAddFromLibrary('uuid-1', 'pack.zip', 'fs', 'fs', { channel }, t, { onSettled })(jest.fn());
+        await flush();
+
+        expect(onSettled).toHaveBeenCalledWith({ status: 'failed', reason: 'busy' });
+        expect(toast.error).not.toHaveBeenCalled();
+        expect(deviceService.addFromLibrary).toHaveBeenCalledTimes(1);
+        channel.emit('storyteller.transfer.tid.done', { success: true });
+    });
+
     it('an unsettled transfer is re-read periodically until its verdict is known', async () => {
         jest.useFakeTimers();
         try {

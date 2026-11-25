@@ -24,6 +24,8 @@ export default class LibrarySendQueue {
         this.queue = null;
         this.estimateSequence = 0;
         this.disposed = false;
+        // Settles the space check waiting on the refusal dialog: true to send anyway
+        this.refusalAnswer = null;
     }
 
     get state() {
@@ -40,6 +42,7 @@ export default class LibrarySendQueue {
     /** The view is going away: whatever is left of a run is not sent. */
     dispose() {
         this.disposed = true;
+        this.answerRefusal(false);
         if (this.queue) {
             this.queue.cancel();
         }
@@ -154,19 +157,44 @@ export default class LibrarySendQueue {
         });
     }
 
-    /** Resolves true when `groups` fit (or the space cannot be told); otherwise says why, and false. */
+    /**
+     * Resolves true when `groups` fit (or the space cannot be told). Otherwise says why, and resolves
+     * with the user's answer: false (nothing sent) or true (sent anyway). The estimate is a high one,
+     * and the driver checks the space again itself before writing anything.
+     */
     checkSpace(groups) {
         return this.estimate(groups).then(estimate => {
             if (!estimate || estimate.fits) {
                 return true;
             }
-            this.set({refusal: {...estimate, count: groups.length}});
-            return false;
+            if (this.disposed) {
+                return false;
+            }
+            // A question still open (cannot happen through the interface) is answered no
+            this.answerRefusal(false);
+            return new Promise(resolve => {
+                this.refusalAnswer = resolve;
+                this.set({refusal: {...estimate, count: groups.length}});
+            });
         });
     }
 
-    dismissRefusal() {
+    answerRefusal(sendAnyway) {
+        const answer = this.refusalAnswer;
+        this.refusalAnswer = null;
         this.set({refusal: null});
+        if (answer) {
+            answer(sendAnyway);
+        }
+    }
+
+    dismissRefusal() {
+        this.answerRefusal(false);
+    }
+
+    /** The estimate may be too high: the driver refuses by itself what really does not fit. */
+    sendAnyway() {
+        this.answerRefusal(true);
     }
 
     // --------------------------------------------------------------------------------- queue
