@@ -16,6 +16,15 @@ export async function writeToArchive(diagramModel) {
 
     // Keep track of written assets
     let written = [];
+    // An asset used by several nodes (same data URL or object URL, so same bytes) is read and hashed
+    // once: its file name comes from its hash, so it cannot be told written before it is read
+    const readings = new Map();
+    const readAssetOnce = (url) => {
+        if (!readings.has(url)) {
+            readings.set(url, readAsset(url));
+        }
+        return readings.get(url);
+    };
 
 
     // Actual action nodes
@@ -93,7 +102,7 @@ export async function writeToArchive(diagramModel) {
             // Store assets as separate files in archive
             let imageFile = null;
             if (node.getImage()) {
-                let asset = await readAsset(node.getImage());
+                let asset = await readAssetOnce(node.getImage());
                 imageFile = asset.hash + asset.extension;
                 if (written.indexOf(imageFile) === -1) {
                     zipAssets.file(imageFile, asset.data, {base64: asset.base64});
@@ -102,7 +111,7 @@ export async function writeToArchive(diagramModel) {
             }
             let audioFile = null;
             if (node.getAudio()) {
-                let asset = await readAsset(node.getAudio());
+                let asset = await readAssetOnce(node.getAudio());
                 audioFile = asset.hash + asset.extension;
                 if (written.indexOf(audioFile) === -1) {
                     zipAssets.file(audioFile, asset.data, {base64: asset.base64});
@@ -155,7 +164,7 @@ export async function writeToArchive(diagramModel) {
                 // Store assets as separate files in archive
                 let questionAudioFile = null;
                 if (node.getQuestionAudio()) {
-                    let asset = await readAsset(node.getQuestionAudio());
+                    let asset = await readAssetOnce(node.getQuestionAudio());
                     questionAudioFile = asset.hash + asset.extension;
                     if (written.indexOf(questionAudioFile) === -1) {
                         zipAssets.file(questionAudioFile, asset.data, {base64: asset.base64});
@@ -182,7 +191,7 @@ export async function writeToArchive(diagramModel) {
                     // Store assets as separate files in archive
                     let imageFile = null;
                     if (os.image) {
-                        let asset = await readAsset(os.image);
+                        let asset = await readAssetOnce(os.image);
                         imageFile = asset.hash + asset.extension;
                         if (written.indexOf(imageFile) === -1) {
                             zipAssets.file(imageFile, asset.data, {base64: asset.base64});
@@ -191,7 +200,7 @@ export async function writeToArchive(diagramModel) {
                     }
                     let audioFile = null;
                     if (os.audio) {
-                        let asset = await readAsset(os.audio);
+                        let asset = await readAssetOnce(os.audio);
                         audioFile = asset.hash + asset.extension;
                         if (written.indexOf(audioFile) === -1) {
                             zipAssets.file(audioFile, asset.data, {base64: asset.base64});

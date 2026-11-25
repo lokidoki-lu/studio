@@ -534,7 +534,7 @@ export class PackLibrary extends React.Component {
                                         <span>{t(`library.format.${pack.format}`)}</span>
                                     </div>
                                     <div className="pack-thumb" title={pack.nightModeAvailable && t('library.nightMode')}>
-                                        <img src={pack.image || defaultImage} alt="" width="128" height="128" draggable={false} />
+                                        <img src={pack.image || defaultImage} alt="" width="128" height="128" draggable={false} loading="lazy" decoding="async" />
                                         <div className="pack-version"><span>{`v${pack.version}`}</span></div>
                                         {pack.official && <div className="pack-ribbon"><span>{t('library.official')}</span></div>}
                                     </div>
@@ -603,7 +603,7 @@ export class PackLibrary extends React.Component {
                                             <span>{group.packs[0].title && group.packs[0].title !== "MISSING_PACK_TITLE" ? group.packs[0].title : group.uuid}</span>&nbsp;
                                         </div>
                                         <div className="pack-thumb" title={group.packs[0].nightModeAvailable && t('library.nightMode')}>
-                                            <img src={group.packs[0].image || defaultImage} alt="" width="128" height="128" draggable={false} />
+                                            <img src={group.packs[0].image || defaultImage} alt="" width="128" height="128" draggable={false} loading="lazy" decoding="async" />
                                             {group.packs[0].official && <div className="pack-ribbon"><span>{t('library.official')}</span></div>}
                                         </div>
                                     </div>
