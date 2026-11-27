@@ -1,6 +1,54 @@
 À propos de ce fork
 ===================
 
+> Ce dépôt, [lokidoki-lu/studio](https://github.com/lokidoki-lu/studio), est STUdio adapté pour **Lunii Pack**. Il s'appuie sur
+> [antoinevalentinHA/studio](https://github.com/antoinevalentinHA/studio) et rend l'API locale
+> utilisable par des scripts : état des transferts en HTTP, erreurs typées, opérations sur l'appareil
+> mises en série côté serveur, retrait des dossiers de packs orphelins (voir [API.md](API.md)). Les
+> versions (`studio-web-ui-<version>-dist.zip`) sont sur [la page des releases](https://github.com/lokidoki-lu/studio/releases), et
+> STUdio y vérifie l'arrivée de nouvelles versions. Après les évolutions ci-dessous, le reste du
+> document décrit le fork de base et reste valable.
+
+## Évolutions de cette version (STUdio pour Lunii Pack)
+
+**0.4.3** — le dépôt devient [lokidoki-lu/studio](https://github.com/lokidoki-lu/studio) : STUdio y
+vérifie ses mises à jour, « Signaler un problème » y ouvre une issue, et les releases y sont publiées.
+
+**0.4.3-lunii.9** — corrections de la revue globale ; protection des packs officiels renforcée ;
+chargement visible dans l'interface.
+
+**0.4.3-lunii.8** — import YouTube : choix du style des images ; release automatique sur les tags
+`0.4.3-lunii.N` / `X.Y.Z`.
+
+**0.4.3-lunii.7** — retours des tests : encodage des releases, pause, sélection, voix YouTube.
+
+**0.4.3-lunii.6** — réparation et mise à jour d'un pack sur la Lunii, conversions en flux (moins de
+mémoire), envoi de plusieurs packs à la fois, estimation de la place nécessaire.
+
+**0.4.3-lunii.5**
+- Bibliothèque : poids de chaque pack, création d'un pack depuis YouTube, aperçu d'un pack avec
+  simulation de la Lunii, bibliothèque simplifiée (au choix avec la complète).
+- Éditeur : voix de Lunii Pack pour les titres.
+- Interface : choix du thème (Auto, Clair, Sombre).
+- Les fichiers statiques ne bloquent plus le serveur ; fichiers temporaires YouTube supprimés sous
+  Windows.
+
+**0.4.3-lunii.4**
+- Interface modernisée de la bibliothèque, avec recherche de packs.
+- Purge des vieux packs en une fois.
+- Éditeur : conversion automatique des images au format du pack, générateur de voix et d'image
+  pour les titres, ouverture rapide d'un pack de la bibliothèque.
+
+**0.4.3-lunii.3** — import de plusieurs packs d'un coup dans la bibliothèque.
+
+**0.4.3-lunii.2** — chargement de la bibliothèque beaucoup plus rapide (sans relire chaque pack).
+
+**0.4.3-lunii.1**
+- API pour les scripts comme Lunii Pack : suivi des transferts (`GET /api/device/transfer/{id}`),
+  erreurs typées en JSON, opérations sur l'appareil mises en file côté serveur, retrait des
+  dossiers orphelins (voir [API.md](API.md)).
+- Correctifs de sécurité et de robustesse (pilotes Lunii, extraction des packs V2/V3, conversion).
+
 Ceci est un fork de [marian-m12l/studio](https://github.com/marian-m12l/studio), maintenu de façon
 indépendante et orienté vers la **robustesse à l'usage réel** : que l'appareil soit détecté de
 manière fiable, que les échecs soient rapportés honnêtement, et que ce que STUdio écrit sur la carte
@@ -119,26 +167,23 @@ Deux réserves à connaître avant de lire quoi que ce soit dans ces nombres :
 
 ## Pour commencer
 
-La pré-release publique actuelle de ce fork est la version
-[`0.4.3-fork.2`](https://github.com/antoinevalentinHA/studio/releases/tag/0.4.3-fork.2). C'est une
-**pré-release** : elle est publiée pour élargir la validation au-delà des appareils utilisés pendant
-le développement, non parce que le travail serait terminé. Lisez d'abord *État actuel* et *Limites*
-ci-dessus.
+La version actuelle est la [`0.4.3`](https://github.com/lokidoki-lu/studio/releases/tag/0.4.3). Lisez d'abord *État actuel* et
+*Limites* ci-dessus.
 
 Le lien de téléchargement des instructions amont ci-dessous pointe toujours vers la construction
 d'upstream, qui ne contient **aucune** des modifications décrites ici.
 
-**Télécharger la pré-release.** Prenez `studio-web-ui-0.4.3-fork.2-dist.zip` dans
-[cette release](https://github.com/antoinevalentinHA/studio/releases/tag/0.4.3-fork.2),
-décompressez-la, puis lancez le script de démarrage correspondant à votre plate-forme. Les prérequis
-et le reste de la procédure sont ceux d'amont, décrits sous *Utilisation* ci-dessous.
+**Télécharger la version.** Prenez `studio-web-ui-0.4.3-dist.zip` dans
+[la dernière release](https://github.com/lokidoki-lu/studio/releases/latest), décompressez-la, puis lancez le script de démarrage
+correspondant à votre plate-forme. Les prérequis et le reste de la procédure sont ceux d'amont,
+décrits sous *Utilisation* ci-dessous.
 
 **Ou construire depuis les sources.** Les prérequis amont s'appliquent sans changement — Java JDK 11+
 pour l'exécuter, Maven 3+ pour le construire — mais clonez **ce** dépôt-ci et non celui qui est nommé
 dans *Pour les développeurs* :
 
 ```
-git clone https://github.com/antoinevalentinHA/studio.git
+git clone https://github.com/lokidoki-lu/studio.git
 cd studio
 mvn clean install
 ```
@@ -166,8 +211,8 @@ expliquait est restée, décrivant ainsi des marqueurs absents. Rien d'autre n'y
 [![Release amont](https://img.shields.io/github/v/release/marian-m12l/studio?label=release%20amont)](https://github.com/marian-m12l/studio/releases/latest)
 
 *Ce badge et les liens de téléchargement ci-dessous désignent les constructions **amont**, qui ne
-contiennent pas les changements de ce fork. La pré-release propre à ce fork est
-[`0.4.3-fork.2`](https://github.com/antoinevalentinHA/studio/releases/tag/0.4.3-fork.2) — voir
+contiennent pas les changements de ce fork. La version propre à ce fork est la
+[`0.4.3`](https://github.com/lokidoki-lu/studio/releases/latest) — voir
 [Pour commencer](#pour-commencer).*
 
 > [!WARNING]
@@ -209,7 +254,7 @@ UTILISATION
 * **Téléchargez** [la dernière release amont](https://github.com/marian-m12l/studio/releases/latest)
 — il s'agit de la construction d'upstream, qui ne contient pas les changements de ce fork ; pour ce
 fork, prenez plutôt l'archive de
-[sa propre pré-release](https://github.com/antoinevalentinHA/studio/releases/tag/0.4.3-fork.2) —
+[sa propre release](https://github.com/lokidoki-lu/studio/releases/latest) —
 (ou [construisez l'application](#pour-commencer)).
 * **Décompressez** l'archive de distribution
 * **Exécutez le script de lancement** : `studio-linux.sh`, `studio-macos.sh` ou `studio-windows.bat` selon votre
@@ -315,7 +360,7 @@ POUR LES DÉVELOPPEURS
 
 * Cloner ce dépôt : `git clone https://github.com/marian-m12l/studio.git`
 — il s'agit du dépôt **amont** ; pour construire ce fork, clonez plutôt
-`https://github.com/antoinevalentinHA/studio.git`, voir [Pour commencer](#pour-commencer)
+`https://github.com/lokidoki-lu/studio.git`, voir [Pour commencer](#pour-commencer)
 * Construire l'application : `mvn clean install`
 
 Ceci créera **l'archive de distribution** dans `web-ui/target/`.

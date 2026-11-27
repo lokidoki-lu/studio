@@ -1,10 +1,51 @@
 About this fork
 ===============
 
-> **studio-lunii** is a fork of [antoinevalentinHA/studio](https://github.com/antoinevalentinHA/studio)
-> that makes the local API usable by scripts such as Lunii Pack: transfer state over HTTP, typed
-> errors, server-side serialization of device operations, and removal of orphan pack folders. See
-> [API.md](API.md). Everything below describes the fork it is based on, and still applies.
+> This repository, [lokidoki-lu/studio](https://github.com/lokidoki-lu/studio), is STUdio adapted for **Lunii Pack**. It builds on
+> [antoinevalentinHA/studio](https://github.com/antoinevalentinHA/studio) and makes the local API
+> usable by scripts: transfer state over HTTP, typed errors, server-side serialization of device
+> operations, and removal of orphan pack folders (see [API.md](API.md)). Releases
+> (`studio-web-ui-<version>-dist.zip`) are on [the releases page](https://github.com/lokidoki-lu/studio/releases), and STUdio
+> checks this repository for new versions. After the changes below, the rest of this document
+> describes the fork it is based on, and still applies.
+
+## Changes in this version (STUdio for Lunii Pack)
+
+**0.4.3** — the repository moves to [lokidoki-lu/studio](https://github.com/lokidoki-lu/studio):
+STUdio checks it for updates, "Report an issue" opens an issue there, and releases are published there.
+
+**0.4.3-lunii.9** — fixes from the global review; stronger protection of official packs; visible
+loading state in the UI.
+
+**0.4.3-lunii.8** — YouTube import: choice of image style; automatic release on `0.4.3-lunii.N` /
+`X.Y.Z` tags.
+
+**0.4.3-lunii.7** — fixes from browser testing: release encoding, pause, selection, YouTube voice.
+
+**0.4.3-lunii.6** — repair and update of a pack on the device, streamed conversions (less memory),
+sending several packs at once, estimate of the space needed.
+
+**0.4.3-lunii.5**
+- Library: size of each pack, create a pack from YouTube, pack preview with a simulated device,
+  simplified library (alongside the full one).
+- Editor: Lunii Pack voice for titles.
+- UI: theme picker (Auto, Light, Dark).
+- Static files no longer block the server; YouTube temporary files removed on Windows.
+
+**0.4.3-lunii.4**
+- Modernised library UI, with pack search.
+- Purge old packs in one go.
+- Editor: images converted to the pack format automatically, voice and image generator for titles,
+  fast opening of a library pack.
+
+**0.4.3-lunii.3** — import several packs into the library at once.
+
+**0.4.3-lunii.2** — much faster library loading (packs are no longer re-read one by one).
+
+**0.4.3-lunii.1**
+- API for scripts such as Lunii Pack: transfer tracking (`GET /api/device/transfer/{id}`), typed
+  JSON errors, server-side queue for device operations, removal of orphan folders (see [API.md](API.md)).
+- Security and robustness fixes (Lunii drivers, V2/V3 pack extraction, conversion).
 
 This is a fork of [marian-m12l/studio](https://github.com/marian-m12l/studio), maintained
 independently and focused on **robustness in real use**: making the device detect reliably, making
@@ -81,12 +122,12 @@ conditions documented in `TESTING.md`. What is still open, and known to be:
 
 - an upload that fails part-way leaves an orphan `.content` folder that nothing cleans up;
 - that orphan then makes every later upload of the same pack **refuse**, which is deliberate and
-  explained in the error. studio-lunii adds an explicit way out: `GET /api/device/orphans` and
+  explained in the error. This fork adds an explicit way out: `GET /api/device/orphans` and
   `POST /api/device/orphans/remove` (see [API.md](API.md)); nothing is removed automatically;
 - `deletePack` removes the index entry before the content, so a failed removal leaves the content
   behind, de-indexed;
 - a device is not examined for partial states when it is plugged in, and the web UI never shows
-  unreferenced `.content` folders. In studio-lunii they are reachable through the API only, and
+  unreferenced `.content` folders. In this fork they are reachable through the API only, and
   removed only when a client names them.
 
 Use the operational protocol in `FIELD-VALIDATION.md` if you are writing to a real device.
@@ -119,24 +160,21 @@ Two caveats worth knowing before reading anything into any of those numbers:
 
 ## Getting started
 
-The current public pre-release of this fork is
-[`0.4.3-fork.2`](https://github.com/antoinevalentinHA/studio/releases/tag/0.4.3-fork.2). It is a
-**pre-release**: published to widen validation beyond the devices used during development, not
-because the work is finished. Read *Current status* and *Limitations* above first.
+The current release is [`0.4.3`](https://github.com/lokidoki-lu/studio/releases/tag/0.4.3). Read *Current status* and *Limitations*
+above first.
 
 The download link in the upstream instructions below still points at upstream's own build, which
 does **not** contain any of the changes described here.
 
-**Download the pre-release.** Take `studio-web-ui-0.4.3-fork.2-dist.zip` from
-[that release](https://github.com/antoinevalentinHA/studio/releases/tag/0.4.3-fork.2), unzip it, and
-run the launcher script for your platform. The prerequisites and the rest of the procedure are the
-upstream ones, described under *Usage* below.
+**Download the release.** Take `studio-web-ui-0.4.3-dist.zip` from
+[the latest release](https://github.com/lokidoki-lu/studio/releases/latest), unzip it, and run the launcher script for your platform.
+The prerequisites and the rest of the procedure are the upstream ones, described under *Usage* below.
 
 **Or build from source.** The upstream prerequisites apply unchanged — Java JDK 11+ to run it,
 Maven 3+ to build it — but clone **this** repository rather than the one named in *For developers*:
 
 ```
-git clone https://github.com/antoinevalentinHA/studio.git
+git clone https://github.com/lokidoki-lu/studio.git
 cd studio
 mvn clean install
 ```
@@ -179,8 +217,8 @@ text described markers no longer present. Nothing else in it is edited.
 [![Upstream release](https://img.shields.io/github/v/release/marian-m12l/studio?label=upstream%20release)](https://github.com/marian-m12l/studio/releases/latest)
 
 *This badge and the download links below refer to **upstream** builds, which do not include this
-fork's changes. This fork's own pre-release is
-[`0.4.3-fork.2`](https://github.com/antoinevalentinHA/studio/releases/tag/0.4.3-fork.2) — see
+fork's changes. This fork's own release is
+[`0.4.3`](https://github.com/lokidoki-lu/studio/releases/latest) — see
 [Getting started](#getting-started).*
 
 > [!WARNING]
@@ -221,7 +259,7 @@ USAGE
 
 * **Download** [the latest upstream release](https://github.com/marian-m12l/studio/releases/latest)
 — this is upstream's build and does not contain this fork's changes; for this fork, take the archive
-from [its own pre-release](https://github.com/antoinevalentinHA/studio/releases/tag/0.4.3-fork.2)
+from [its own release](https://github.com/lokidoki-lu/studio/releases/latest)
 instead —
 (alternatively, you can [build the application](#for-developers)).
 * **Unzip** the distribution archive
@@ -324,7 +362,7 @@ FOR DEVELOPERS
 
 * Clone this repository: `git clone https://github.com/marian-m12l/studio.git`
 — that is **upstream's** repository; to build this fork clone
-`https://github.com/antoinevalentinHA/studio.git` instead, see [Getting started](#getting-started)
+`https://github.com/lokidoki-lu/studio.git` instead, see [Getting started](#getting-started)
 * Build the application: `mvn clean install`
 
 This will produce the **distribution archive** in `web-ui/target/`.
