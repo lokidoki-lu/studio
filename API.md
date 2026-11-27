@@ -1,6 +1,6 @@
 # Device API for scripted clients
 
-This fork (studio-lunii) makes the local API usable by a program, not only by the web UI. Every
+This fork (lokidoki-lu/studio) makes the local API usable by a program, not only by the web UI. Every
 route below is under `http://localhost:8080/api/device`. Bodies are JSON.
 
 ## Requests the server accepts
