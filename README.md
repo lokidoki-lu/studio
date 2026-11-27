@@ -6,8 +6,46 @@ About this fork
 > usable by scripts: transfer state over HTTP, typed errors, server-side serialization of device
 > operations, and removal of orphan pack folders (see [API.md](API.md)). Releases
 > (`studio-web-ui-<version>-dist.zip`) are on [the releases page](https://github.com/lokidoki-lu/studio/releases), and STUdio
-> checks this repository for new versions. Everything below describes the fork it is based on, and
-> still applies.
+> checks this repository for new versions. After the changes below, the rest of this document
+> describes the fork it is based on, and still applies.
+
+## Changes in this version (STUdio for Lunii Pack)
+
+**0.4.3** — the repository moves to [lokidoki-lu/studio](https://github.com/lokidoki-lu/studio):
+STUdio checks it for updates, "Report an issue" opens an issue there, and releases are published there.
+
+**0.4.3-lunii.9** — fixes from the global review; stronger protection of official packs; visible
+loading state in the UI.
+
+**0.4.3-lunii.8** — YouTube import: choice of image style; automatic release on `0.4.3-lunii.N` /
+`X.Y.Z` tags.
+
+**0.4.3-lunii.7** — fixes from browser testing: release encoding, pause, selection, YouTube voice.
+
+**0.4.3-lunii.6** — repair and update of a pack on the device, streamed conversions (less memory),
+sending several packs at once, estimate of the space needed.
+
+**0.4.3-lunii.5**
+- Library: size of each pack, create a pack from YouTube, pack preview with a simulated device,
+  simplified library (alongside the full one).
+- Editor: Lunii Pack voice for titles.
+- UI: theme picker (Auto, Light, Dark).
+- Static files no longer block the server; YouTube temporary files removed on Windows.
+
+**0.4.3-lunii.4**
+- Modernised library UI, with pack search.
+- Purge old packs in one go.
+- Editor: images converted to the pack format automatically, voice and image generator for titles,
+  fast opening of a library pack.
+
+**0.4.3-lunii.3** — import several packs into the library at once.
+
+**0.4.3-lunii.2** — much faster library loading (packs are no longer re-read one by one).
+
+**0.4.3-lunii.1**
+- API for scripts such as Lunii Pack: transfer tracking (`GET /api/device/transfer/{id}`), typed
+  JSON errors, server-side queue for device operations, removal of orphan folders (see [API.md](API.md)).
+- Security and robustness fixes (Lunii drivers, V2/V3 pack extraction, conversion).
 
 This is a fork of [marian-m12l/studio](https://github.com/marian-m12l/studio), maintained
 independently and focused on **robustness in real use**: making the device detect reliably, making
