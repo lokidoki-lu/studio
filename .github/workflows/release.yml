@@ -8,7 +8,7 @@ name: Release
 # If a release for the tag already exists (e.g. created by hand), the zip is only attached to it
 # when it has no `.zip` yet; an existing release is never otherwise modified.
 #
-# Lunii Pack's installers (phsoulaneix/studio: installer_studio.ps1, installer_mac_linux.sh) read
+# Lunii Pack's installers (Lunii Pack: installer_studio.ps1, installer_mac_linux.sh) read
 # this repository's releases, pre-releases included, and take the FIRST `.zip` asset, then look for
 # `studio-windows.bat` / `studio-linux.sh` / `studio-macos.sh` inside it. That is why exactly one
 # `.zip` is attached, and why the archive layout produced by web-ui/src/main/assembly/dist.xml must
