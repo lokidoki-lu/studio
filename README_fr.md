@@ -6,8 +6,48 @@
 > utilisable par des scripts : état des transferts en HTTP, erreurs typées, opérations sur l'appareil
 > mises en série côté serveur, retrait des dossiers de packs orphelins (voir [API.md](API.md)). Les
 > versions (`studio-web-ui-<version>-dist.zip`) sont sur [la page des releases](https://github.com/lokidoki-lu/studio/releases), et
-> STUdio y vérifie l'arrivée de nouvelles versions. Tout ce qui suit décrit le fork de base et reste
-> valable.
+> STUdio y vérifie l'arrivée de nouvelles versions. Après les évolutions ci-dessous, le reste du
+> document décrit le fork de base et reste valable.
+
+## Évolutions de cette version (STUdio pour Lunii Pack)
+
+**0.4.3** — le dépôt devient [lokidoki-lu/studio](https://github.com/lokidoki-lu/studio) : STUdio y
+vérifie ses mises à jour, « Signaler un problème » y ouvre une issue, et les releases y sont publiées.
+
+**0.4.3-lunii.9** — corrections de la revue globale ; protection des packs officiels renforcée ;
+chargement visible dans l'interface.
+
+**0.4.3-lunii.8** — import YouTube : choix du style des images ; release automatique sur les tags
+`0.4.3-lunii.N` / `X.Y.Z`.
+
+**0.4.3-lunii.7** — retours des tests : encodage des releases, pause, sélection, voix YouTube.
+
+**0.4.3-lunii.6** — réparation et mise à jour d'un pack sur la Lunii, conversions en flux (moins de
+mémoire), envoi de plusieurs packs à la fois, estimation de la place nécessaire.
+
+**0.4.3-lunii.5**
+- Bibliothèque : poids de chaque pack, création d'un pack depuis YouTube, aperçu d'un pack avec
+  simulation de la Lunii, bibliothèque simplifiée (au choix avec la complète).
+- Éditeur : voix de Lunii Pack pour les titres.
+- Interface : choix du thème (Auto, Clair, Sombre).
+- Les fichiers statiques ne bloquent plus le serveur ; fichiers temporaires YouTube supprimés sous
+  Windows.
+
+**0.4.3-lunii.4**
+- Interface modernisée de la bibliothèque, avec recherche de packs.
+- Purge des vieux packs en une fois.
+- Éditeur : conversion automatique des images au format du pack, générateur de voix et d'image
+  pour les titres, ouverture rapide d'un pack de la bibliothèque.
+
+**0.4.3-lunii.3** — import de plusieurs packs d'un coup dans la bibliothèque.
+
+**0.4.3-lunii.2** — chargement de la bibliothèque beaucoup plus rapide (sans relire chaque pack).
+
+**0.4.3-lunii.1**
+- API pour les scripts comme Lunii Pack : suivi des transferts (`GET /api/device/transfer/{id}`),
+  erreurs typées en JSON, opérations sur l'appareil mises en file côté serveur, retrait des
+  dossiers orphelins (voir [API.md](API.md)).
+- Correctifs de sécurité et de robustesse (pilotes Lunii, extraction des packs V2/V3, conversion).
 
 Ceci est un fork de [marian-m12l/studio](https://github.com/marian-m12l/studio), maintenu de façon
 indépendante et orienté vers la **robustesse à l'usage réel** : que l'appareil soit détecté de
